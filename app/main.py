@@ -25,21 +25,6 @@ from app.warehouse.router import app as warehouse_app
 
 app = FastAPI(title="Soborbum")
 
-
-@app.middleware("http")
-async def security_headers(request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith(("/api/", "/files/")):
-        response.headers["Cache-Control"] = "no-store"
-    if settings.environment == "production" and request.url.scheme == "https":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000"
-    return response
-
 # Applied at the root app, so it also covers requests routed into the mounted
 # per-section sub-apps below (CORSMiddleware wraps the whole ASGI stack,
 # including Mount dispatch) - the frontend only ever talks to this one origin.

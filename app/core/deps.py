@@ -1,11 +1,9 @@
-import hmac
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
-from app.core.security import decode_access_token, password_version
+from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.users.models import User, UserRole
 
@@ -20,11 +18,11 @@ def get_current_user(token: str | None = Depends(oauth2_scheme), db: Session = D
     )
     if token is None:
         raise credentials_error
-    payload = decode_access_token(token)
-    if payload is None:
+    subject = decode_access_token(token)
+    if subject is None:
         raise credentials_error
-    user = db.get(User, int(payload["sub"]))
-    if user is None or not user.is_active or not hmac.compare_digest(payload["pwdv"], password_version(user.hashed_password)):
+    user = db.get(User, int(subject))
+    if user is None or not user.is_active:
         raise credentials_error
     return user
 

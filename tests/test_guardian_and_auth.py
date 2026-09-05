@@ -1,73 +1,19 @@
-from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
-from jose import jwt
-from pydantic import ValidationError
 
 from app.ai import engine, service
 from app.ai.models import ChatDomain, ChatMode, PendingActionStatus
 from app.ai.router import _to_pending_out
 from app.ai.tools import TOOLS
 from app.common.module_access import Module
-from app.core.config import Settings, settings
-from app.core.deps import get_current_user
-from app.core.security import create_access_token, decode_access_token
-from app.users.schemas import UserCreate
+from app.core.config import settings
 from test_pilot_regressions import make_chat, make_pending, tool_response, final_response
-
-
-@pytest.mark.parametrize("secret", ["", "change-me-in-production", "short"])
-def test_missing_or_default_jwt_secret_fails_startup(secret):
-    with pytest.raises(ValidationError):
-        Settings(jwt_secret=secret, _env_file=None)
-
-
-def test_production_rejects_wildcard_cors():
-    with pytest.raises(ValidationError):
-        Settings(environment="production", cors_allowed_origins="*", _env_file=None)
-
-
-@pytest.mark.parametrize("subject", ["nobody", "-1", "0", "9" * 40, "١٢٣"])
-def test_malformed_token_subject_is_rejected(subject):
-    token = jwt.encode({"sub": subject, "exp": datetime.now(timezone.utc) + timedelta(minutes=5), "pwdv": "x"},
-                       settings.jwt_secret, algorithm=settings.jwt_algorithm)
-    assert decode_access_token(token) is None
-
-
-def test_changing_password_revokes_existing_tokens(db, make_user):
-    user = make_user(Module.PRODUCTION)
-    token = create_access_token(str(user.id), user.hashed_password)
-    assert get_current_user(token, db).id == user.id
-    user.hashed_password = "changed-password-hash"
-    db.commit()
-    with pytest.raises(HTTPException) as error:
-        get_current_user(token, db)
-    assert error.value.status_code == 401
-
-
-def test_legacy_tokens_without_password_version_are_rejected():
-    token = jwt.encode({"sub": "1", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
-                       settings.jwt_secret, algorithm=settings.jwt_algorithm)
-    assert decode_access_token(token) is None
-
-
-@pytest.mark.parametrize("password", ["admin123", "я" * 37])
-def test_account_password_length_matches_bcrypt_limit(password):
-    with pytest.raises(ValidationError):
-        UserCreate(email="person@example.com", full_name="Сотрудник", password=password)
 
 
 def test_production_data_requires_production_access(api, make_user):
     assert api(make_user(Module.AI)).get("/api/production/").status_code == 403
-
-
-def test_operational_response_prevents_shared_caching(api, make_user):
-    response = api(make_user(Module.PRODUCTION)).get("/api/dashboard/today")
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
 
 
 def test_tool_from_another_domain_is_blocked(db, make_user, monkeypatch):

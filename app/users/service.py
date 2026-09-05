@@ -10,8 +10,6 @@ def bootstrap_admin(db: Session) -> None:
     has_admin = db.query(User).filter(User.role == UserRole.ADMIN).first()
     if has_admin:
         return
-    if not settings.admin_password:
-        raise RuntimeError("Set ADMIN_PASSWORD before creating the first administrator")
     admin = User(
         email=settings.admin_email,
         hashed_password=hash_password(settings.admin_password),

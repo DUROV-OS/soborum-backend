@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 from app.common.module_access import Module
 from app.users.models import UserRole
@@ -14,16 +14,9 @@ class Token(BaseModel):
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
-    full_name: str = Field(min_length=1, max_length=255)
+    full_name: str
     role: UserRole = UserRole.WORKER
     module_access: list[Module] = []
-
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, value: str) -> str:
-        if len(value) < 12 or len(value.encode("utf-8")) > 72:
-            raise ValueError("Пароль должен содержать не менее 12 символов и не более 72 байт UTF-8")
-        return value
 
 
 class UserUpdate(BaseModel):
@@ -31,11 +24,6 @@ class UserUpdate(BaseModel):
     password: str | None = None
     is_active: bool | None = None
     role: UserRole | None = None
-
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, value: str | None) -> str | None:
-        return UserCreate.validate_password(value) if value is not None else None
 
 
 class UserAccessUpdate(BaseModel):
