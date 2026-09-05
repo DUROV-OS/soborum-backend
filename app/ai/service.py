@@ -14,7 +14,8 @@ def get_or_create_chat(db: Session, owner: User, domain: ChatDomain, chat_id: in
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Этот чат относится к другому разделу")
         return chat
 
-    chat = Chat(owner_id=owner.id, domain=domain, mode=mode)
+    chat = Chat(owner_id=owner.id, domain=domain,
+                mode=ChatMode.REQUIRE_APPROVAL if mode == ChatMode.AUTO_APPROVE else mode)
     db.add(chat)
     db.commit()
     db.refresh(chat)
@@ -36,7 +37,7 @@ def list_own_chats(db: Session, owner: User, domain: ChatDomain | None = None) -
 
 
 def update_mode(db: Session, chat: Chat, mode: ChatMode) -> Chat:
-    chat.mode = mode
+    chat.mode = ChatMode.REQUIRE_APPROVAL if mode == ChatMode.AUTO_APPROVE else mode
     db.commit()
     db.refresh(chat)
     return chat
@@ -50,6 +51,8 @@ def update_title(db: Session, chat: Chat, title: str | None) -> Chat:
 
 
 def delete_chat(db: Session, chat: Chat) -> None:
+    if db.query(PendingAction).filter(PendingAction.chat_id == chat.id).first():
+        raise HTTPException(409, "Чат содержит историю решений. Его удаление отключено для сохранения этой истории.")
     db.delete(chat)
     db.commit()
 

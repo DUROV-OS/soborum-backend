@@ -4,34 +4,32 @@ the model produces a final text answer or the turn pauses on PendingAction.
 """
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import anthropic
 from fastapi import HTTPException, status
+from pydantic import ValidationError
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.ai import attachments as ai_attachments
 from app.ai import mcp_auth
+from app.ai.guardian import authorize_tool, decision_record
 from app.ai.models import Chat, ChatMode, Message, PendingAction, PendingActionStatus
 from app.ai.prompts import SYSTEM_PROMPTS
 from app.ai.tools import DOMAIN_TOOLS, TOOLS
 from app.common.files import FileAsset
 from app.core.config import settings
-from app.users.models import User
+from app.users.models import User, UserRole
 
 MAX_ITERATIONS = 8
 MCP_BETA = "mcp-client-2025-04-04"
+logger = logging.getLogger(__name__)
 
-# The knowledge-base MCP server executes tool calls on Anthropic's side,
-# inline within a single messages.create response - unlike our own tools,
-# we never see the call before it runs, so there's no way to route a
-# mutating one through PendingAction for require_approval. The only lever
-# is the connector's tool_configuration.allowed_tools, applied per call
-# below: NO_ACTIONS and REQUIRE_APPROVAL both get read-only KB tools only,
-# AUTO_APPROVE gets all of them (mirrors how strict each mode already is
-# for our own tools, since REQUIRE_APPROVAL can't honestly offer per-call
-# approval here).
+# Remote calls run on the provider side before our gateway can inspect them.
+# Every mode therefore gets only this explicit read allowlist.
 MCP_READ_ONLY_TOOLS = ["read_index", "list_notes", "search_notes", "read_note", "get_unread_files"]
 
 
@@ -45,10 +43,10 @@ class TurnResult:
 def _get_client() -> anthropic.Anthropic:
     if not settings.anthropic_api_key:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ИИ не настроен: не задан ANTHROPIC_API_KEY (см. backend/.env)",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Марина пока не подключена. Обратитесь к администратору.",
         )
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=60.0, max_retries=1)
 
 
 def _available_tools(chat: Chat, user: User) -> list[dict]:
@@ -81,7 +79,7 @@ def _build_history(db: Session, chat: Chat) -> list[dict]:
     return [{"role": m.role, "content": _resolve_content(db, m.content)} for m in chat.messages]
 
 
-def _call_claude(db: Session, system: str, messages: list[dict], tools: list[dict], mode: ChatMode):
+def _call_claude(db: Session, system: str, messages: list[dict], tools: list[dict], mode: ChatMode, user: User):
     client = _get_client()
     kwargs = {
         "model": settings.ai_model,
@@ -97,15 +95,16 @@ def _call_claude(db: Session, system: str, messages: list[dict], tools: list[dic
     if tools:
         kwargs["tools"] = tools
 
-    if settings.mcp_configured:
+    # The shared connector has no employee/document ACL. Restrict it to administrators
+    # until per-user knowledge access is implemented, and never allow remote writes.
+    if settings.mcp_configured and user.role == UserRole.ADMIN:
         mcp_server: dict = {
             "type": "url",
             "url": settings.mcp_server_url,
             "name": "knowledge-base",
             "authorization_token": mcp_auth.get_access_token(db),
         }
-        if mode != ChatMode.AUTO_APPROVE:
-            mcp_server["tool_configuration"] = {"allowed_tools": MCP_READ_ONLY_TOOLS}
+        mcp_server["tool_configuration"] = {"allowed_tools": MCP_READ_ONLY_TOOLS}
         return client.beta.messages.create(
             betas=[MCP_BETA],
             mcp_servers=[mcp_server],
@@ -125,20 +124,32 @@ def _to_tool_result(tool_use_id: str, resolution: dict) -> dict:
     }
 
 
-def _execute_tool(db: Session, name: str, tool_input: dict, user: User) -> dict:
-    tool_def = TOOLS.get(name)
-    if tool_def is None:
-        return {"content": {"error": f"Неизвестный инструмент: {name}"}, "is_error": True}
+def _execute_tool(db: Session, name: str, tool_input: dict, user: User, chat: Chat,
+                  *, approved: bool = False, commit: bool = True) -> dict:
     try:
-        result = tool_def.handler(db, user, **tool_input)
-        db.commit()
-        return {"content": result, "is_error": False}
+        tool_def = authorize_tool(chat, user, name, tool_input, approved=approved)
+        # Domain handlers flush, never commit. A savepoint keeps a failed operation
+        # from discarding the approval decision in the outer transaction.
+        with db.begin_nested():
+            result = tool_def.handler(db, user, **tool_input)
+        if commit:
+            db.commit()
+        return {"content": result, "is_error": False, "guardian": decision_record(user, approved=approved)}
     except HTTPException as e:
-        db.rollback()
-        return {"content": {"error": e.detail}, "is_error": True}
+        if commit:
+            db.rollback()
+        return {"content": {"error": e.detail}, "is_error": True, "guardian": decision_record(user, approved=approved)}
+    except (ValidationError, TypeError, ValueError):
+        if commit:
+            db.rollback()
+        return {"content": {"error": "Некорректные аргументы действия"}, "is_error": True,
+                "guardian": decision_record(user, approved=approved)}
 
 
 def run_turn(db: Session, chat: Chat, user: User, user_text: str, file_ids: list[int] | None = None) -> TurnResult:
+    if db.query(PendingAction).filter(PendingAction.chat_id == chat.id,
+                                     PendingAction.status == PendingActionStatus.PENDING).first():
+        raise HTTPException(409, "Сначала подтвердите или отклоните ожидающие действия")
     content = ai_attachments.resolve_file_ids(db, file_ids or [], user)
     if user_text:
         content.append({"type": "text", "text": user_text})
@@ -156,7 +167,11 @@ def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
         system = SYSTEM_PROMPTS[chat.domain]
         history = _build_history(db, chat)
         tools = _available_tools(chat, user)
-        response = _call_claude(db, system, history, tools, chat.mode)
+        try:
+            response = _call_claude(db, system, history, tools, chat.mode, user)
+        except anthropic.APIError:
+            logger.warning("AI provider unavailable for chat %s", chat.id)
+            raise HTTPException(503, "Марина временно недоступна. Попробуйте позже.") from None
 
         content_blocks = [block.model_dump(mode="json") for block in response.content]
         assistant_message = Message(chat_id=chat.id, role="assistant", content=content_blocks)
@@ -170,7 +185,12 @@ def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
                 "Ответ обрезан из-за лимита длины (возможно, посреди вызова инструмента) - "
                 "попробуй сформулировать запрос уже или разбить его на части."
             )
-            return TurnResult(status="completed", reply=(text + "\n\n" + note) if text else note)
+            reply = (text + "\n\n" + note) if text else note
+            # An unfinished tool_use cannot be replayed without a matching tool_result.
+            # Preserve the user-visible partial answer, never the unexecuted tool block.
+            assistant_message.content = [{"type": "text", "text": reply}]
+            db.commit()
+            return TurnResult(status="completed", reply=reply)
 
         if response.stop_reason != "tool_use":
             text = "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
@@ -182,9 +202,14 @@ def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
 
         for block in tool_use_blocks:
             tool_use_id, name, tool_input = block["id"], block["name"], block.get("input", {})
-            tool_def = TOOLS.get(name)
+            try:
+                tool_def = authorize_tool(chat, user, name, tool_input, proposal=True)
+            except HTTPException as exc:
+                resolutions[tool_use_id] = {"status": "blocked", "content": {"error": exc.detail},
+                                            "is_error": True, "guardian": decision_record(user)}
+                continue
 
-            if tool_def is not None and not tool_def.read_only and chat.mode == ChatMode.REQUIRE_APPROVAL:
+            if not tool_def.read_only:
                 pa = PendingAction(
                     chat_id=chat.id,
                     message_id=assistant_message.id,
@@ -196,9 +221,9 @@ def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
                 db.commit()
                 db.refresh(pa)
                 pending.append(pa)
-                resolutions[tool_use_id] = {"status": "pending"}
+                resolutions[tool_use_id] = {"status": "pending", "guardian": decision_record(user, approved=True)}
             else:
-                outcome = _execute_tool(db, name, tool_input, user)
+                outcome = _execute_tool(db, name, tool_input, user, chat)
                 resolutions[tool_use_id] = {"status": "executed", **outcome}
 
         assistant_message.tool_resolutions = resolutions
@@ -220,27 +245,39 @@ def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
 
 
 def resolve_pending_action(db: Session, pending_action: PendingAction, approve: bool, decided_by: User) -> TurnResult:
-    if pending_action.status != PendingActionStatus.PENDING:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Это действие уже обработано")
-
-    pending_action.status = PendingActionStatus.APPROVED if approve else PendingActionStatus.REJECTED
-    pending_action.decided_by_id = decided_by.id
-    pending_action.decided_at = datetime.now(timezone.utc)
-    db.add(pending_action)
-    db.commit()
+    # Serialize sibling decisions so their JSON resolutions cannot overwrite one another.
+    chat = (db.query(Chat).filter(Chat.id == pending_action.chat_id)
+            .populate_existing().with_for_update().one())
+    db.refresh(decided_by)
+    db.expire(decided_by, ["module_access"])
+    if chat.owner_id != decided_by.id or not decided_by.is_active:
+        raise HTTPException(403, "Нет полномочий на это решение")
+    if approve:
+        authorize_tool(chat, decided_by, pending_action.tool_name, pending_action.tool_input, approved=True)
+    changed = db.execute(update(PendingAction).where(
+        PendingAction.id == pending_action.id, PendingAction.status == PendingActionStatus.PENDING,
+    ).values(status=PendingActionStatus.APPROVED if approve else PendingActionStatus.REJECTED,
+             decided_by_id=decided_by.id, decided_at=datetime.now(timezone.utc)),
+             execution_options={"synchronize_session": False})
+    if changed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "Это действие уже обработано")
+    db.refresh(pending_action)
 
     if approve:
-        outcome = _execute_tool(db, pending_action.tool_name, pending_action.tool_input, decided_by)
+        outcome = _execute_tool(db, pending_action.tool_name, pending_action.tool_input, decided_by, chat,
+                                approved=True, commit=False)
         resolution = {"status": "executed", **outcome}
     else:
         resolution = {"status": "executed", "content": {"error": "Действие отклонено сотрудником"}, "is_error": True}
 
     message = pending_action.message
+    db.refresh(message)
     resolutions = dict(message.tool_resolutions or {})
     resolutions[pending_action.tool_use_id] = resolution
     message.tool_resolutions = resolutions
     db.add(message)
-    db.commit()
+    db.flush()
     db.refresh(message)
 
     tool_use_ids = [b["id"] for b in message.content if b.get("type") == "tool_use"]
@@ -250,12 +287,19 @@ def resolve_pending_action(db: Session, pending_action: PendingAction, approve: 
         .all()
     )
     if still_pending:
+        db.commit()
         return TurnResult(status="pending_approval", pending_actions=still_pending)
 
     tool_result_content = [_to_tool_result(tid, resolutions[tid]) for tid in tool_use_ids]
-    chat = pending_action.chat
     db.add(Message(chat_id=chat.id, role="user", content=tool_result_content))
     db.commit()
     db.refresh(chat)
 
-    return _advance(db, chat, decided_by)
+    try:
+        return _advance(db, chat, decided_by)
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        # The action transaction already committed. A provider outage must not turn
+        # a completed action into a failed HTTP response inviting another attempt.
+        return TurnResult(status="completed", reply="Решение сохранено. Продолжение ответа Марины временно недоступно.")

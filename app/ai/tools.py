@@ -54,7 +54,7 @@ def register(name: str, description: str, properties: dict, required: list[str] 
             schema={
                 "name": name,
                 "description": description,
-                "input_schema": {"type": "object", "properties": properties, "required": required or []},
+                "input_schema": {"type": "object", "properties": properties, "required": required or [], "additionalProperties": False},
             },
             handler=fn,
             required_module=required_module,
@@ -290,7 +290,12 @@ def _get_client_context(db: Session, user: User, cycle_id: int) -> dict:
     cycle = db.get(Cycle, cycle_id)
     if not cycle or not cycle.client:
         return {"error": "У этого цикла нет данных клиента"}
-    return _serialize_client(cycle.client)
+    # Production staff need the approved specification, not identity or payment data.
+    client = cycle.client
+    return {"cycle_id": cycle.id, "house_area": client.house_area,
+            "wishes_description": client.wishes_description, "layout_notes": client.layout_notes,
+            "project_locked": client.project_locked_at is not None,
+            "house_project_file_id": client.house_project_file_id}
 
 
 @register(

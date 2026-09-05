@@ -58,6 +58,9 @@ class PendingActionOut(BaseModel):
     decided_by_id: int | None
     decided_at: datetime | None
     created_at: datetime
+    summary: str = "Действие Марины"
+    execution_status: Literal["pending", "succeeded", "failed", "rejected", "unknown"] = "unknown"
+    policy_version: str | None = None
 
 
 class AskResponse(BaseModel):

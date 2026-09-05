@@ -5,14 +5,25 @@ FastAPI-бэкенд для управления производством мо
 
 ## Запуск
 
+Скопировать `.env.example` в `.env`, заполнить уникальные `JWT_SECRET`, `POSTGRES_PASSWORD`, `DATABASE_URL` и пароль первого администратора `ADMIN_PASSWORD`. Пример больше не содержит работающих стандартных секретов. Для production указать `ENVIRONMENT=production` и точные `CORS_ALLOWED_ORIGINS`.
+
 ```bash
 docker compose up --build
 ```
 
-Поднимутся `db` (PostgreSQL) и `backend` (FastAPI, с автоперезагрузкой на dev-запуске).
-При первом старте контейнер сам сгенерирует и применит миграции Alembic и создаст
-администратора из переменных окружения `ADMIN_EMAIL` / `ADMIN_PASSWORD`
-(по умолчанию `admin@soborbum.local` / `admin123`, см. `.env.example`).
+Compose публикует API на `http://localhost:8005`. Контейнер применяет миграции Alembic и создаёт администратора только при отсутствии администратора в БД. `ADMIN_PASSWORD` не меняет пароль существующего пользователя. После установки этого пакета требуется новый вход: старые токены отзываются.
+
+«Сегодня» и рабочие разделы работают без AI-ключа. Для диалога Марины нужен `ANTHROPIC_API_KEY` и доступная провайдеру модель из `AI_MODEL`. Общий MCP в пилотной политике доступен только администратору и только для чтения.
+
+## Проверки и передача
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+
+Тесты используют отдельную SQLite в памяти и синтетические данные. Секрет для тестов задаётся только в тестовой среде. Полные изменения, влияние на существующий деплой, ограничения и следующая приёмка: [пакет исправлений 05.09.2026](docs/ASTRA_REVIEW_2026-09-05.md).
 
 ## Разделы API
 
@@ -20,16 +31,16 @@ docker compose up --build
 
 | Раздел | Swagger UI |
 | --- | --- |
-| Аутентификация и пользователи | http://localhost:8000/api/auth/docs |
-| Клиенты | http://localhost:8000/api/clients/docs |
-| Производство | http://localhost:8000/api/production/docs |
-| Монтаж | http://localhost:8000/api/installation/docs |
-| Цикл клиента | http://localhost:8000/api/cycles/docs |
-| Склад | http://localhost:8000/api/warehouse/docs |
-| Маркетинг | http://localhost:8000/api/marketing/docs |
-| Задачи | http://localhost:8000/api/tasks/docs |
-| ИИ-ассистент | http://localhost:8000/api/ai/docs |
-| Совет директоров | http://localhost:8000/api/board/docs |
+| Аутентификация и пользователи | http://localhost:8005/api/auth/docs |
+| Клиенты | http://localhost:8005/api/clients/docs |
+| Производство | http://localhost:8005/api/production/docs |
+| Монтаж | http://localhost:8005/api/installation/docs |
+| Цикл клиента | http://localhost:8005/api/cycles/docs |
+| Склад | http://localhost:8005/api/warehouse/docs |
+| Маркетинг | http://localhost:8005/api/marketing/docs |
+| Задачи | http://localhost:8005/api/tasks/docs |
+| ИИ-ассистент | http://localhost:8005/api/ai/docs |
+| Совет директоров | http://localhost:8005/api/board/docs |
 
 Авторизация — JWT: `POST /api/auth/login` (форма `username`/`password`), затем
 `Authorize` в любом Swagger UI с полученным токеном (действует на все разделы,

@@ -7,7 +7,8 @@ from app.ai import engine
 from app.ai import mcp_auth
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
-from app.ai.models import ChatDomain, McpCredential, PendingAction
+from app.ai.models import ChatDomain, McpCredential, PendingAction, PendingActionStatus
+from app.ai.tools import TOOLS
 from app.ai.schemas import (
     AskRequest,
     AskResponse,
@@ -49,10 +50,25 @@ def require_ai_and(module: Module):
 
 
 def _to_pending_out(pa: PendingAction) -> PendingActionOut:
-    return PendingActionOut.model_validate(pa)
+    resolution = (pa.message.tool_resolutions or {}).get(pa.tool_use_id, {})
+    execution_status = "unknown"
+    if pa.status == PendingActionStatus.PENDING:
+        execution_status = "pending"
+    elif pa.status == PendingActionStatus.REJECTED:
+        execution_status = "rejected"
+    elif resolution.get("status") == "executed":
+        execution_status = "failed" if resolution.get("is_error") else "succeeded"
+    tool = TOOLS.get(pa.tool_name)
+    return PendingActionOut.model_validate(pa).model_copy(update={
+        "summary": tool.schema["description"] if tool else "Действие Марины",
+        "execution_status": execution_status,
+        "policy_version": resolution.get("guardian", {}).get("policy_version"),
+    })
 
 
 def _ask(db: Session, user: User, domain: ChatDomain, payload: AskRequest) -> AskResponse:
+    if not settings.anthropic_api_key:
+        raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
     chat = ai_service.get_or_create_chat(db, user, domain, payload.chat_id, payload.mode)
     result = engine.run_turn(db, chat, user, payload.message, payload.file_ids)
     return AskResponse(

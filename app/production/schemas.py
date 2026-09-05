@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.production.models import MaterialRequestStatus
+from app.cycle.models import CycleStatus
 
 
 class ModuleCreate(BaseModel):
@@ -77,3 +78,11 @@ class ProductionOut(BaseModel):
     name: str
     created_at: datetime
     modules: list[ModuleOut] = []
+
+
+class ProductionListOut(BaseModel):
+    id: int
+    cycle_id: int
+    cycle_status: CycleStatus
+    created_at: datetime
+    module_count: int
