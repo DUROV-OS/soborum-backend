@@ -83,6 +83,8 @@ class ProductionOut(BaseModel):
 class ProductionListOut(BaseModel):
     id: int
     cycle_id: int
+    house_index: int
+    name: str
     cycle_status: CycleStatus
     created_at: datetime
     module_count: int
