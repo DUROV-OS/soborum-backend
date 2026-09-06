@@ -4,6 +4,24 @@ from app.agents.types import LegalCategory, LegalVerdict
 from app.common.module_access import Module
 
 
+def _write_vault(root):
+    always = {
+        "00_Agent/Constitution.md": "Окончательная цена — только человек. Продаём предсказуемость.",
+        "00_Agent/Operating_Principles.md": "Скидка автономно до 5%.",
+        "00_Agent/Legal_Risk_Filter.md": "Ворованную информацию конкурентов использовать нельзя.",
+        "00_Agent/Shared_Company_Context.md": "База знаний — источник истины.",
+        "00_Agent/Agent_Roster_MVP.md": "Восемь агентов MVP.",
+        "02_Business/00_Decision_Log/MOC_Decision_Log.md": "Журнал решений владельца.",
+        "02_Business/01_Production/Module.md": "Цех собирает модуль. Срок изготовления считает производственник.",
+        "02_Business/07_Logistics_and_Supply_Chain/Stock.md": "Материалы для ближайшего модуля проверяет кладовщик.",
+    }
+    for rel, body in always.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        title = path.stem.replace("_", " ")
+        path.write_text(f"---\ntitle: {title}\nkind: fact\nstatus: draft\n---\n\n{body}\n", encoding="utf-8")
+
+
 def test_stolen_competitor_data_is_blocked():
     decision = scan("Можно ли использовать ворованную информацию конкурентов?")
     assert decision.verdict == LegalVerdict.BLOCK
@@ -85,3 +103,12 @@ def test_admin_sees_live_stats_not_seed(api, make_user):
 def test_empty_text_is_rejected(api, make_user):
     client = api(make_user(admin=True))
     assert client.post("/api/agents/runs", json={"text": "  "}).status_code == 422
+
+
+def test_run_cites_local_vault_checkout(tmp_path):
+    _write_vault(tmp_path)
+    result = run_task("Цех не успевает модуль, каких материалов не хватает на складе?", vault_root=str(tmp_path))
+    assert result.released is True
+    assert "Источники:" in result.reply
+    assert "Stock.md" in result.reply or "материалов" in result.reply.lower()
+    assert any(hit.path and hit.path.endswith("Stock.md") for hit in result.context.hits)

@@ -58,6 +58,20 @@ class Route(BaseModel):
 class Opinion(BaseModel):
     agent: AgentId
     stance: str
+    citations: list[str] = Field(default_factory=list)
+
+
+class ContextHit(BaseModel):
+    source: str
+    title: str
+    excerpt: str
+    kind: str = "fact"
+    path: str | None = None
+
+
+class SharedContext(BaseModel):
+    hits: list[ContextHit] = Field(default_factory=list)
+    policy: dict[str, str] = Field(default_factory=dict)
 
 
 class RunResult(BaseModel):
@@ -65,5 +79,6 @@ class RunResult(BaseModel):
     route: Route
     legal: LegalDecision
     opinions: list[Opinion] = Field(default_factory=list)
+    context: SharedContext = Field(default_factory=SharedContext)
     released: bool
     trace_id: str
