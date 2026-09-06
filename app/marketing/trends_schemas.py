@@ -43,32 +43,66 @@ class RelatedOut(BaseModel):
     rising: list[RelatedEntry]
 
 
-class TrendNews(BaseModel):
-    title: str | None = None
-    url: str | None = None
-    source: str | None = None
-    picture: str | None = None
-    time: str | None = None
-
-
-class TrendingItem(BaseModel):
-    keyword: str
-    volume: int | None = None
-    volume_growth_pct: float | None = None
-    geo: str | None = None
-    started_at: str | None = None
-    ended_at: str | None = None
-    trend_keywords: list[str] = []
-    topics: list[str] = []
-    news: list[TrendNews] = []
-
-
-class TrendingNowOut(BaseModel):
-    geo: str
-    with_news: bool
-    items: list[TrendingItem]
-
-
 class LookupEntry(BaseModel):
     name: str | None
     id: str | None
+
+
+# --- «Тренды ниши»: модульные дома / турбазы / строительство ------------------
+
+
+class KeywordGroup(BaseModel):
+    group: str
+    keywords: list[str]
+
+
+class NicheKeywordsOut(BaseModel):
+    geo: str
+    groups: list[KeywordGroup]
+
+
+class NicheTopicStat(BaseModel):
+    keyword: str
+    group: str
+    current: int | None
+    average: int | None
+    peak: int | None
+    peak_date: str | None
+    growth_pct: float | None
+    direction: str  # rising | flat | falling | n/a
+
+
+class NicheOverviewOut(BaseModel):
+    timeframe: str
+    geo: str
+    resolved: int  # сколько запросов реально отдал Google
+    unavailable: list[str]
+    topics: list[NicheTopicStat]
+
+
+class NicheRegion(BaseModel):
+    geo_name: str | None
+    geo_code: str | None = None
+    value: int | None  # 0..100, усреднено по ключевым запросам ниши
+
+
+class NicheRegionsOut(BaseModel):
+    keywords: list[str]
+    timeframe: str
+    geo: str
+    resolution: str
+    regions: list[NicheRegion]
+
+
+class NicheRisingEntry(BaseModel):
+    query: str
+    value: int | None
+    seed: str  # какой запрос ниши вывел эту тему
+
+
+class NicheRisingOut(BaseModel):
+    timeframe: str
+    geo: str
+    seeds_used: list[str]
+    unavailable: list[str]
+    rising: list[NicheRisingEntry]

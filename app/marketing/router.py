@@ -21,8 +21,11 @@ from app.marketing.trends_schemas import (
     InterestByRegionOut,
     InterestOverTimeOut,
     LookupEntry,
+    NicheKeywordsOut,
+    NicheOverviewOut,
+    NicheRegionsOut,
+    NicheRisingOut,
     RelatedOut,
-    TrendingNowOut,
 )
 from app.users.models import User
 
@@ -202,18 +205,57 @@ def trends_related_topics(
     return trends_client.related_topics(q, timeframe, geo)
 
 
-@app.get("/trends/trending-now", response_model=TrendingNowOut)
-def trends_trending_now(
+# -- Тренды ниши: срез по бизнесу «модульные дома» вместо общих hot-запросов --
+
+
+@app.get("/trends/niche/keywords", response_model=NicheKeywordsOut)
+def trends_niche_keywords(geo: str | None = None, _: User = Depends(require_marketing)):
+    """Готовые группы поисковых запросов ниши (для фильтров на странице «Тренд»)."""
+    return trends_client.niche_keywords(geo)
+
+
+@app.get("/trends/niche/overview", response_model=NicheOverviewOut)
+def trends_niche_overview(
+    timeframe: str | None = None,
     geo: str | None = None,
-    limit: int = 20,
-    with_news: bool = False,
+    groups: str | None = None,
     _: User = Depends(require_marketing),
 ):
-    """Что в тренде прямо сейчас в регионе ``geo`` (по умолчанию ``US``).
-
-    ``with_news=true`` — добавляет к каждому тренду связанные новости.
+    """Сводка спроса по нише: по каждому запросу — текущий и средний уровень,
+    пик, рост за период и направление (``rising`` / ``flat`` / ``falling``).
+    Отсортировано по росту. ``geo`` по умолчанию ``RU``; ``groups`` —
+    названия групп через запятую (см. ``/trends/niche/keywords``).
     """
-    return trends_client.trending_now(geo, max(1, min(limit, 100)), with_news)
+    return trends_client.niche_overview(timeframe, geo, groups)
+
+
+@app.get("/trends/niche/regions", response_model=NicheRegionsOut)
+def trends_niche_regions(
+    q: str | None = None,
+    timeframe: str | None = None,
+    geo: str | None = None,
+    resolution: str | None = None,
+    _: User = Depends(require_marketing),
+):
+    """В каких регионах чаще интересуются нишей. Значение 0..100 усреднено по
+    нескольким ключевым запросам. По умолчанию ``geo=RU``, ``resolution=REGION``
+    (субъекты РФ); ``q`` — свои запросы через запятую (до 5).
+    """
+    return trends_client.niche_regions(q, timeframe, geo, resolution)
+
+
+@app.get("/trends/niche/rising", response_model=NicheRisingOut)
+def trends_niche_rising(
+    timeframe: str | None = None,
+    geo: str | None = None,
+    limit: int = 25,
+    groups: str | None = None,
+    _: User = Depends(require_marketing),
+):
+    """Набирающие темы вокруг ниши: объединённые ``rising``-запросы Google
+    по ключевым словам бизнеса, с указанием, какой запрос их вывел.
+    """
+    return trends_client.niche_rising(timeframe, geo, max(1, min(limit, 100)), groups)
 
 
 @app.get("/trends/geo", response_model=list[LookupEntry])

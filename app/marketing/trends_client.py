@@ -11,9 +11,10 @@ Trends, замена pytrends). Здесь только получение да�
 from __future__ import annotations
 
 import math
+import time
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException, status
 
@@ -22,6 +23,62 @@ DEFAULT_TIMEFRAME = "today 12-m"
 # «Человеческий» referer заметно снижает частоту отказов Google по квоте
 # (совет самой trendspy для related_*). Для остальных методов безвреден.
 _GT_HEADERS = {"referer": "https://www.google.com/"}
+
+# Google Trends жёстко лимитирует неофициальный доступ, а «Тренды ниши»
+# бьют по нему десятками запросов. Данные меняются медленно (недельный шаг),
+# поэтому держим короткий кэш ответов в памяти процесса.
+_CACHE_TTL_SECONDS = 1800.0
+_cache: dict[tuple, tuple[float, Any]] = {}
+
+
+def _cached(key: tuple, producer: Callable[[], Any]) -> Any:
+    now = time.monotonic()
+    hit = _cache.get(key)
+    if hit is not None and now - hit[0] < _CACHE_TTL_SECONDS:
+        return hit[1]
+    value = producer()  # ошибки Google (HTTPException) наверх, в кэш не кладём
+    _cache[key] = (now, value)
+    return value
+
+
+# Ключевые запросы бизнеса «модульные дома»: сгруппированы для фильтров на фронте.
+# Google Trends понимает русские запросы; порядок групп = порядок вывода.
+NICHE_KEYWORDS: dict[str, list[str]] = {
+    "Модульные дома": [
+        "модульный дом",
+        "модульные дома",
+        "дом под ключ",
+        "каркасный дом",
+        "дом из сип панелей",
+        "барнхаус",
+        "дом а-фрейм",
+        "префаб дом",
+    ],
+    "Турбазы и глэмпинг": [
+        "глэмпинг",
+        "модульная база отдыха",
+        "турбаза",
+        "модульный отель",
+        "дом для глэмпинга",
+        "база отдыха под ключ",
+    ],
+    "Тренды строительства": [
+        "модульное строительство",
+        "быстровозводимые дома",
+        "каркасное строительство",
+        "дом из бруса",
+        "строительство дома 2026",
+    ],
+    "Бани и хозпостройки": [
+        "модульная баня",
+        "баня бочка",
+        "хозблок",
+        "дачный домик",
+    ],
+}
+
+# Чем меряем «в каких регионах интересуются» и «что растёт», если q не задан.
+NICHE_CORE_KEYWORDS = ["модульный дом", "каркасный дом", "глэмпинг"]
 
 
 @lru_cache(maxsize=1)
@@ -34,6 +91,25 @@ def _trends():
             detail="Библиотека trendspy не установлена на сервере",
         ) from exc
     return Trends()
+
+
+def _cache_key(method: str, *args, **kwargs) -> tuple:
+    # dict-аргументы (headers) в ключ не идут — на результат они не влияют
+    return (
+        method,
+        tuple(tuple(a) if isinstance(a, list) else a for a in args),
+        tuple(sorted((k, v) for k, v in kwargs.items() if not isinstance(v, dict))),
+    )
+
+
+def _is_fresh(key: tuple) -> bool:
+    hit = _cache.get(key)
+    return hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_SECONDS
+
+
+def _call_cached(method: str, *args, **kwargs) -> Any:
+    """``_call`` с кэшем ответов в памяти процесса (TTL ~30 мин)."""
+    return _cached(_cache_key(method, *args, **kwargs), lambda: _call(method, *args, **kwargs))
 
 
 def _call(method: str, *args, **kwargs) -> Any:
@@ -115,7 +191,7 @@ def _records(df) -> list[dict]:
 def interest_over_time(q: str, timeframe: str | None, geo: str | None, cat: str | None) -> dict:
     keywords = _keywords(q)
     timeframe = timeframe or DEFAULT_TIMEFRAME
-    df = _call(
+    df = _call_cached(
         "interest_over_time",
         keywords,
         timeframe=timeframe,
@@ -146,7 +222,7 @@ def interest_over_time(q: str, timeframe: str | None, geo: str | None, cat: str 
 def interest_by_region(q: str, timeframe: str | None, geo: str | None, resolution: str | None) -> dict:
     keyword = _keywords(q)[0]
     resolution = (resolution or "COUNTRY").upper()
-    df = _call(
+    df = _call_cached(
         "interest_by_region",
         keyword,
         timeframe=timeframe or DEFAULT_TIMEFRAME,
@@ -200,7 +276,7 @@ def _split_top_rising(result: Any, keyword: str) -> dict:
 
 def related_queries(q: str, timeframe: str | None, geo: str | None) -> dict:
     keyword = _keywords(q)[0]
-    result = _call(
+    result = _call_cached(
         "related_queries",
         keyword,
         timeframe=timeframe or DEFAULT_TIMEFRAME,
@@ -212,7 +288,7 @@ def related_queries(q: str, timeframe: str | None, geo: str | None) -> dict:
 
 def related_topics(q: str, timeframe: str | None, geo: str | None) -> dict:
     keyword = _keywords(q)[0]
-    result = _call(
+    result = _call_cached(
         "related_topics",
         keyword,
         timeframe=timeframe or DEFAULT_TIMEFRAME,
@@ -222,41 +298,164 @@ def related_topics(q: str, timeframe: str | None, geo: str | None) -> dict:
     return {"keyword": keyword, **_split_top_rising(result, keyword)}
 
 
-def _news(item: Any) -> dict:
-    def field(name: str) -> Any:
-        return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+# ------------------------------------------------------ «Тренды ниши» ---------
+# Вместо общих «горячих запросов Google» — срез по бизнесу «модульные дома»:
+# что растёт/падает в спросе, в каких регионах РФ интересуются, какие темы
+# набирают. Всё собирается из тех же нормализованных функций выше; каждый
+# внешний вызов может упасть по лимиту Google — такие запросы уходят в
+# ``unavailable``, а не роняют весь ответ.
 
+
+def _select_groups(groups: str | None) -> dict[str, list[str]]:
+    if not groups:
+        return NICHE_KEYWORDS
+    wanted = {g.strip() for g in groups.split(",") if g.strip()}
+    picked = {name: kws for name, kws in NICHE_KEYWORDS.items() if name in wanted}
+    return picked or NICHE_KEYWORDS
+
+
+def _chunks(seq: list[str], size: int = 5) -> list[list[str]]:
+    return [seq[i : i + size] for i in range(0, len(seq), size)]
+
+
+def _topic_stat(series: list[dict], kw: str) -> dict | None:
+    points = [(p["date"], p["values"].get(kw)) for p in series]
+    nums = [(d, v) for d, v in points if v is not None]
+    if not nums:
+        return None
+    values = [v for _, v in nums]
+    peak = max(values)
+    window = max(1, min(4, len(values) // 3))
+    early = sum(values[:window]) / window
+    late = sum(values[-window:]) / window
+    growth = round(((late - early) / early) * 100, 1) if early > 0 else None
+    if growth is None:
+        direction = "n/a"
+    elif growth >= 15:
+        direction = "rising"
+    elif growth <= -15:
+        direction = "falling"
+    else:
+        direction = "flat"
     return {
-        "title": field("title"),
-        "url": field("url"),
-        "source": field("source"),
-        "picture": field("picture"),
-        "time": _iso(field("time")),
+        "current": values[-1],
+        "average": round(sum(values) / len(values)),
+        "peak": peak,
+        "peak_date": next(d for d, v in nums if v == peak),
+        "growth_pct": growth,
+        "direction": direction,
     }
 
 
-def trending_now(geo: str | None, limit: int, with_news: bool) -> dict:
-    geo = geo or "US"
-    raw = _call("trending_now_by_rss", geo=geo) if with_news else _call("trending_now", geo=geo)
-    items: list[dict] = []
-    for t in list(raw or [])[:limit]:
-        if isinstance(t, str):
-            items.append({"keyword": t})
+def niche_overview(timeframe: str | None, geo: str | None, groups: str | None) -> dict:
+    timeframe = timeframe or DEFAULT_TIMEFRAME
+    geo = "RU" if geo is None else geo
+    topics: list[dict] = []
+    unavailable: list[str] = []
+    for group, keywords in _select_groups(groups).items():
+        for chunk in _chunks(keywords, 5):
+            try:
+                data = interest_over_time(",".join(chunk), timeframe, geo, None)
+            except HTTPException:
+                unavailable.extend(chunk)
+                continue
+            for kw in chunk:
+                stat = _topic_stat(data["series"], kw)
+                if stat is None:
+                    unavailable.append(kw)
+                    continue
+                topics.append({"keyword": kw, "group": group, **stat})
+    topics.sort(key=lambda t: (t["growth_pct"] is None, -(t["growth_pct"] or -1e9)))
+    return {
+        "timeframe": timeframe,
+        "geo": geo,
+        "resolved": len(topics),
+        "unavailable": unavailable,
+        "topics": topics,
+    }
+
+
+def niche_regions(q: str | None, timeframe: str | None, geo: str | None, resolution: str | None) -> dict:
+    timeframe = timeframe or DEFAULT_TIMEFRAME
+    geo = "RU" if geo is None else geo
+    resolution = (resolution or "REGION").upper()
+    keywords = _keywords(q) if q else list(NICHE_CORE_KEYWORDS)
+    acc: dict[str, dict] = {}
+    used: list[str] = []
+    for kw in keywords[:5]:
+        try:
+            data = interest_by_region(kw, timeframe, geo, resolution)
+        except HTTPException:
             continue
-        items.append(
-            {
-                "keyword": getattr(t, "keyword", None) or str(t),
-                "volume": _int(getattr(t, "volume", None)),
-                "volume_growth_pct": getattr(t, "volume_growth_pct", None),
-                "geo": getattr(t, "geo", None) or geo,
-                "started_at": _iso(getattr(t, "started_timestamp", None)),
-                "ended_at": _iso(getattr(t, "ended_timestamp", None)),
-                "trend_keywords": [str(x) for x in (getattr(t, "trend_keywords", []) or [])],
-                "topics": [str(x) for x in (getattr(t, "topics", []) or [])],
-                "news": [_news(n) for n in (getattr(t, "news", None) or [])],
-            }
-        )
-    return {"geo": geo, "with_news": with_news, "items": items}
+        used.append(kw)
+        for region in data["regions"]:
+            name = region["geo_name"]
+            if not name:
+                continue
+            slot = acc.setdefault(name, {"geo_code": region["geo_code"], "sum": 0, "n": 0})
+            if region["value"] is not None:
+                slot["sum"] += region["value"]
+                slot["n"] += 1
+    regions = [
+        {
+            "geo_name": name,
+            "geo_code": slot["geo_code"],
+            "value": round(slot["sum"] / slot["n"]) if slot["n"] else None,
+        }
+        for name, slot in acc.items()
+    ]
+    regions.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0)))
+    return {
+        "keywords": used,
+        "timeframe": timeframe,
+        "geo": geo,
+        "resolution": resolution,
+        "regions": regions,
+    }
+
+
+def niche_rising(timeframe: str | None, geo: str | None, limit: int, groups: str | None) -> dict:
+    timeframe = timeframe or DEFAULT_TIMEFRAME
+    geo = "RU" if geo is None else geo
+    seeds = [kw for keywords in _select_groups(groups).values() for kw in keywords][:5]
+    merged: dict[str, dict] = {}
+    used: list[str] = []
+    unavailable: list[str] = []
+    for seed in seeds:
+        cached = _is_fresh(_cache_key("related_queries", seed, timeframe=timeframe, geo=geo or ""))
+        if used and not cached:
+            # related_queries у Google лимитируется жёстче всего — разносим живые вызовы
+            time.sleep(0.6)
+        try:
+            data = related_queries(seed, timeframe, geo)
+        except HTTPException:
+            unavailable.append(seed)
+            continue
+        used.append(seed)
+        pool = data["rising"] or data["top"]
+        for entry in pool:
+            query = (entry.get("query") or "").strip()
+            if not query:
+                continue
+            value = entry.get("value")
+            current = merged.get(query)
+            if current is None or (value or 0) > (current["value"] or 0):
+                merged[query] = {"query": query, "value": value, "seed": seed}
+    rising = sorted(merged.values(), key=lambda e: -(e["value"] or 0))[: max(1, limit)]
+    return {
+        "timeframe": timeframe,
+        "geo": geo,
+        "seeds_used": used,
+        "unavailable": unavailable,
+        "rising": rising,
+    }
+
+
+def niche_keywords(geo: str | None) -> dict:
+    return {
+        "geo": "RU" if geo is None else geo,
+        "groups": [{"group": name, "keywords": list(kws)} for name, kws in NICHE_KEYWORDS.items()],
+    }
 
 
 def geo_lookup(find: str | None) -> list[dict]:
