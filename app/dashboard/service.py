@@ -6,7 +6,7 @@ from typing import Callable
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.clients.models import Client, ClientStage
+from app.clients.models import Client, ClientStage, PaymentPlan
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import Installation, InstallationStage
@@ -44,7 +44,18 @@ def _snapshot_clients(db: Session) -> dict:
         "total_clients": sum(stage_counts.values()),
         "stage_counts": stage_counts,
         "awaiting_payment_confirmation": db.query(Client)
-        .filter(Client.stage == ClientStage.PAYMENT, Client.is_paid.isnot(True))
+        .filter(
+            Client.stage == ClientStage.PAYMENT,
+            Client.is_paid.isnot(True),
+            Client.payment_plan != PaymentPlan.POST_PAYMENT,
+        )
+        .count(),
+        "awaiting_balance_payment": db.query(Client)
+        .filter(
+            Client.stage == ClientStage.POSTPAYMENT,
+            Client.payment_plan != PaymentPlan.FULL_PREPAYMENT,
+            Client.balance_paid.isnot(True),
+        )
         .count(),
         "new_leads_last_7_days": db.query(Client)
         .filter(Client.stage == ClientStage.LEAD, Client.created_at >= week_ago)

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
 from app.clients.schemas import (
+    ClientBalancePaymentUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientNoteCreate,
@@ -22,8 +23,8 @@ from app.users.models import User
 app = FastAPI(
     title="Soborbum — Клиенты",
     description="Клиенты от лида до постоплаты: базовые, проектные, "
-    "документные данные, оплата и заметки.",
-    version="0.4.0",
+    "документные данные, формат расчёта, оплата и заметки.",
+    version="0.5.0",
 )
 
 require_clients = require_module(Module.CLIENTS)
@@ -91,6 +92,20 @@ def update_payment(
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_payment(db, client, payload)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.patch("/{client_id}/balance-payment", response_model=ClientOut)
+def record_balance_payment(
+    client_id: int,
+    payload: ClientBalancePaymentUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_clients),
+):
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.record_balance_payment(db, client, payload)
     db.commit()
     db.refresh(client)
     return client

@@ -26,6 +26,9 @@ class TaskLinkType(str, enum.Enum):
 
     NONE = "none"
     CLIENT_STAGE = "client_stage"
+    # Приём остатка «после получения» для клиента с планом оплаты
+    # ADVANCE_THEN_BALANCE / POST_PAYMENT (см. app.clients.models.PaymentPlan).
+    CLIENT_BALANCE_PAYMENT = "client_balance_payment"
     CONTENT_STAGE = "content_stage"
     WAREHOUSE_REQUEST = "warehouse_request"
     WAREHOUSE_SHORTAGE = "warehouse_shortage"

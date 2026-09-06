@@ -3,8 +3,14 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.clients.models import CLIENT_STAGE_ORDER, Client, ClientNote, ClientStage, OrderType
-from app.clients.schemas import ClientCreate, ClientDocumentsUpdate, ClientPaymentUpdate, ClientProjectUpdate
+from app.clients.models import CLIENT_STAGE_ORDER, Client, ClientNote, ClientStage, OrderType, PaymentPlan
+from app.clients.schemas import (
+    ClientBalancePaymentUpdate,
+    ClientCreate,
+    ClientDocumentsUpdate,
+    ClientPaymentUpdate,
+    ClientProjectUpdate,
+)
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.tasks import service as task_service
@@ -82,6 +88,8 @@ def update_documents(db: Session, client: Client, payload: ClientDocumentsUpdate
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Количество домов > 1 доступно только для множественного заказа",
             )
+    if data.get("advance_amount") is not None and data["advance_amount"] <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Аванс должен быть положительным")
     for field, value in data.items():
         setattr(client, field, value)
     db.flush()
@@ -93,6 +101,28 @@ def update_payment(db: Session, client: Client, payload: ClientPaymentUpdate) ->
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Статус оплаты уже зафиксирован")
     client.is_paid = payload.is_paid
     db.flush()
+    return client
+
+
+def record_balance_payment(db: Session, client: Client, payload: ClientBalancePaymentUpdate) -> Client:
+    """Отметить приём остатка «после получения». Осмысленно только на
+    «постоплате» и только для планов с оплатой после получения дома —
+    у полной предоплаты остаток погашен ещё на стадии «оплата»."""
+    if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="У клиента полная предоплата — остаток «после получения» не предусмотрен",
+        )
+    if client.stage != ClientStage.POSTPAYMENT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Остаток «после получения» принимается на стадии «постоплата»",
+        )
+    client.balance_paid = payload.balance_paid
+    client.balance_paid_at = datetime.now(timezone.utc) if payload.balance_paid else None
+    db.flush()
+    if payload.balance_paid:
+        task_service.close_open_link_task(db, TaskLinkType.CLIENT_BALANCE_PAYMENT, client.id)
     return client
 
 
@@ -162,11 +192,38 @@ def transition_stage(db: Session, client: Client) -> Client:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Для множественного заказа укажите количество домов (не меньше 2)",
             )
+        if client.payment_plan == PaymentPlan.ADVANCE_THEN_BALANCE:
+            if client.advance_amount is None or client.advance_amount <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Для плана «аванс + оплата после получения» укажите сумму аванса",
+                )
+            if client.final_price is not None and client.advance_amount >= client.final_price:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Аванс должен быть меньше итоговой стоимости",
+                )
         client.documents_locked_at = datetime.now(timezone.utc)
 
     elif client.stage == ClientStage.PAYMENT:
-        if client.is_paid is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Не указан статус оплаты")
+        # В какой момент нужны деньги — зависит от плана оплаты.
+        if client.payment_plan == PaymentPlan.POST_PAYMENT:
+            # Деньги на этой стадии не требуются, производство стартует сразу.
+            if client.is_paid is None:
+                client.is_paid = False
+        else:
+            # Полная предоплата — вся сумма; аванс + остаток — аванс.
+            if client.is_paid is not True:
+                detail = (
+                    "Не подтверждено поступление полной предоплаты"
+                    if client.payment_plan == PaymentPlan.FULL_PREPAYMENT
+                    else "Не подтверждено поступление аванса"
+                )
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+        if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
+            # Остаток «после получения» уже покрыт полной предоплатой.
+            client.balance_paid = True
+            client.balance_paid_at = datetime.now(timezone.utc)
         client.payment_locked_at = datetime.now(timezone.utc)
 
     client.stage = next_stage
@@ -186,11 +243,31 @@ def transition_stage(db: Session, client: Client) -> Client:
             )
         client.cycle.status = CycleStatus.PRODUCTION
         db.flush()
+        if client.payment_plan != PaymentPlan.FULL_PREPAYMENT:
+            _create_balance_payment_task(db, client)
 
     task_service.close_open_link_task(db, TaskLinkType.CLIENT_STAGE, client.id)
     _create_transition_task(db, client)
 
     return client
+
+
+def _create_balance_payment_task(db: Session, client: Client) -> None:
+    assignees = user_service.users_with_access(db, Module.CLIENTS)
+    task_service.create_link_task(
+        db,
+        title=f"Клиент «{client.full_name}»: принять оплату после получения (остаток)",
+        link_type=TaskLinkType.CLIENT_BALANCE_PAYMENT,
+        link_id=client.id,
+        assignees=assignees,
+    )
+
+
+@task_sync.register(TaskLinkType.CLIENT_BALANCE_PAYMENT)
+def _on_balance_payment_task_closed(db: Session, task) -> None:
+    client = db.get(Client, task.link_id)
+    if client is not None and not client.balance_paid:
+        record_balance_payment(db, client, ClientBalancePaymentUpdate(balance_paid=True))
 
 
 @task_sync.register(TaskLinkType.CLIENT_STAGE)

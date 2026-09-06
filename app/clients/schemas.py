@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.clients.models import ClientStage, OrderType
+from app.clients.models import ClientStage, OrderType, PaymentPlan
 from app.common.files import FileAssetOut
 
 
@@ -32,10 +32,16 @@ class ClientDocumentsUpdate(BaseModel):
     final_price: float | None = None
     installation_address: str | None = None
     houses_count: int | None = None
+    payment_plan: PaymentPlan | None = None
+    advance_amount: float | None = None
 
 
 class ClientPaymentUpdate(BaseModel):
     is_paid: bool
+
+
+class ClientBalancePaymentUpdate(BaseModel):
+    balance_paid: bool
 
 
 class ClientNoteCreate(BaseModel):
@@ -78,6 +84,8 @@ class ClientOut(BaseModel):
 
     houses_count: int
     final_price: float | None
+    payment_plan: PaymentPlan
+    advance_amount: float | None
     installation_address: str | None
     contract_file: FileAssetOut | None
     house_project_file: FileAssetOut | None
@@ -85,5 +93,7 @@ class ClientOut(BaseModel):
 
     is_paid: bool | None
     payment_locked_at: datetime | None
+    balance_paid: bool | None
+    balance_paid_at: datetime | None
 
     notes: list[ClientNoteOut] = []

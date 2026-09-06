@@ -16,8 +16,13 @@ from sqlalchemy.orm import Session
 
 from app.ai.models import ChatDomain
 from app.clients import service as client_service
-from app.clients.models import Client, ClientStage, OrderType
-from app.clients.schemas import ClientDocumentsUpdate, ClientPaymentUpdate, ClientProjectUpdate
+from app.clients.models import Client, ClientStage, OrderType, PaymentPlan
+from app.clients.schemas import (
+    ClientBalancePaymentUpdate,
+    ClientDocumentsUpdate,
+    ClientPaymentUpdate,
+    ClientProjectUpdate,
+)
 from app.common.files import FilePurpose, save_text_file
 from app.common.module_access import Module
 from app.cycle.models import Cycle
@@ -101,12 +106,15 @@ def _serialize_client(c: Client) -> dict:
         "layout_notes": c.layout_notes,
         "project_locked": c.project_locked_at is not None,
         "final_price": c.final_price,
+        "payment_plan": c.payment_plan.value,
+        "advance_amount": c.advance_amount,
         "installation_address": c.installation_address,
         "contract_file_id": c.contract_file_id,
         "house_project_file_id": c.house_project_file_id,
         "documents_locked": c.documents_locked_at is not None,
         "is_paid": c.is_paid,
         "payment_locked": c.payment_locked_at is not None,
+        "balance_paid": c.balance_paid,
         "notes": [{"id": n.id, "text": n.text, "created_at": _iso(n.created_at)} for n in c.notes],
     }
 
@@ -197,6 +205,8 @@ def _update_client_project(db: Session, user: User, client_id: int, **fields) ->
         "final_price": {"type": "number"},
         "installation_address": {"type": "string"},
         "houses_count": {"type": "integer"},
+        "payment_plan": {"type": "string", "enum": [p.value for p in PaymentPlan]},
+        "advance_amount": {"type": "number"},
     },
     ["client_id"],
     required_module=Module.CLIENTS, domains=[ChatDomain.CLIENTS],
@@ -209,13 +219,30 @@ def _update_client_documents(db: Session, user: User, client_id: int, **fields) 
 
 
 @register(
-    "update_client_payment", "Указать, поступила ли оплата от клиента.",
+    "update_client_payment",
+    "Указать, поступил ли платёж для старта производства (полная предоплата или аванс — "
+    "в зависимости от формата расчёта клиента).",
     {"client_id": {"type": "integer"}, "is_paid": {"type": "boolean"}}, ["client_id", "is_paid"],
     required_module=Module.CLIENTS, domains=[ChatDomain.CLIENTS],
 )
 def _update_client_payment(db: Session, user: User, client_id: int, is_paid: bool) -> dict:
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_payment(db, client, ClientPaymentUpdate(is_paid=is_paid))
+    return _serialize_client(client)
+
+
+@register(
+    "update_client_balance_payment",
+    "Отметить приём остатка «после получения» (для клиентов с форматом «аванс + оплата после "
+    "получения» или «оплата после получения», на стадии «постоплата»).",
+    {"client_id": {"type": "integer"}, "balance_paid": {"type": "boolean"}}, ["client_id", "balance_paid"],
+    required_module=Module.CLIENTS, domains=[ChatDomain.CLIENTS],
+)
+def _update_client_balance_payment(db: Session, user: User, client_id: int, balance_paid: bool) -> dict:
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.record_balance_payment(
+        db, client, ClientBalancePaymentUpdate(balance_paid=balance_paid)
+    )
     return _serialize_client(client)
 
 
