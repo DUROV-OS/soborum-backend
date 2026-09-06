@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.common.files import FileAsset
 from app.tasks import sync as task_sync
+from app.tasks import timelog
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users.models import User
 
@@ -82,6 +83,7 @@ def create_task(
         task.images = db.query(FileAsset).filter(FileAsset.id.in_(list(image_ids))).all()
     db.add(task)
     db.flush()
+    timelog.record_stage(db, task, None, task.status, automatic=True, note="created")
     return task
 
 
@@ -110,7 +112,14 @@ def update_task(
     if depends_on_ids is not None:
         task.depends_on = _resolve_tasks(db, depends_on_ids)
         if task.status == TaskStatus.NOT_READY:
-            task.status = _initial_status(task.depends_on)
+            new_status = _initial_status(task.depends_on)
+            if new_status != task.status:
+                task.status = new_status
+                db.flush()
+                timelog.record_stage(
+                    db, task, TaskStatus.NOT_READY, new_status,
+                    automatic=True, note="dependencies changed",
+                )
     if image_ids is not None:
         task.images = db.query(FileAsset).filter(FileAsset.id.in_(image_ids)).all()
     db.flush()
@@ -119,21 +128,40 @@ def update_task(
 
 def _cascade_readiness(db: Session, completed_task: Task) -> None:
     dependents = [t for t in completed_task.blocks if t.status == TaskStatus.NOT_READY]
+    became_ready = []
     for dependent in dependents:
         if all(dep.status == TaskStatus.DONE for dep in dependent.depends_on):
             dependent.status = TaskStatus.READY
+            became_ready.append(dependent)
     db.flush()
+    for dependent in became_ready:
+        timelog.record_stage(
+            db, dependent, TaskStatus.NOT_READY, TaskStatus.READY,
+            automatic=True, note="dependencies satisfied",
+        )
 
 
-def _finalize_status(db: Session, task: Task, new_status: TaskStatus) -> Task:
+def _finalize_status(
+    db: Session,
+    task: Task,
+    new_status: TaskStatus,
+    *,
+    actor: User | None = None,
+    automatic: bool = False,
+) -> Task:
     """Apply a status that has already been permission-checked (or needs no
     check, e.g. the auto DONE below), then run the readiness cascade and
     task_sync. Not exported: always go through set_status or force_close."""
+    previous = task.status
     task.status = new_status
     db.flush()
 
+    if previous != new_status:
+        timelog.record_stage(db, task, previous, new_status, actor=actor, automatic=automatic)
+
     if task.status == TaskStatus.IN_REVIEW and not task.reviewers:
-        return _finalize_status(db, task, TaskStatus.DONE)
+        # Auto-close when there is nobody to review: not attributable to a person.
+        return _finalize_status(db, task, TaskStatus.DONE, automatic=True)
 
     if task.status == TaskStatus.DONE:
         _cascade_readiness(db, task)
@@ -161,7 +189,7 @@ def set_status(db: Session, task: Task, new_status: TaskStatus, actor: User) -> 
     if role_required == "reviewer" and actor not in task.reviewers:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Перевести задачу может только проверяющий")
 
-    return _finalize_status(db, task, new_status)
+    return _finalize_status(db, task, new_status, actor=actor)
 
 
 def force_close(db: Session, task: Task) -> None:
@@ -173,8 +201,12 @@ def force_close(db: Session, task: Task) -> None:
     """
     if task.status == TaskStatus.DONE:
         return
+    previous = task.status
     task.status = TaskStatus.DONE
     db.flush()
+    timelog.record_stage(
+        db, task, previous, TaskStatus.DONE, automatic=True, note="closed by domain stage",
+    )
     _cascade_readiness(db, task)
 
 
@@ -207,4 +239,5 @@ def create_link_task(
     task.assignees = assignees
     db.add(task)
     db.flush()
+    timelog.record_stage(db, task, None, task.status, automatic=True, note="created (linked)")
     return task
