@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.ai import cache as ai_cache
+from app.ai import model_profiles
 from app.ai.schemas import SectionAnalyticsOut
 from app.core.config import settings
 from app.dashboard.service import SECTION_BUILDERS, SECTION_LABELS
@@ -70,7 +71,7 @@ def generate_section_analytics(db: Session, user: User, section: str, force: boo
 
     client = _get_client()
     response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(model_profiles.ModelProfile.QUICK),
         max_tokens=768,
         system=SYSTEM_PROMPT,
         messages=[

@@ -15,6 +15,8 @@ import anthropic
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.ai import model_profiles
+from app.ai.model_profiles import ModelProfile
 from app.board import prompts
 from app.board import service as board_service
 from app.board.models import BoardChangeSource, BoardChangeType, BoardNode, BoardNodeChange
@@ -49,7 +51,7 @@ def actualize(db: Session, root: BoardNode, actor: User) -> list[BoardNodeChange
 
     client = _get_client()
     response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_LEAD),
         max_tokens=4096,
         system=prompts.ACTUALIZE_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],

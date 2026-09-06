@@ -33,12 +33,43 @@ services:
       MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-}
       MCP_OAUTH_CLIENT_SECRET: ${MCP_OAUTH_CLIENT_SECRET:-}
       MCP_REDIRECT_URI: ${MCP_REDIRECT_URI:-http://127.0.0.1:8005/callback}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      CHAT_ID: ${CHAT_ID:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8005}
+      KB_DAILY_DIR: ${KB_DAILY_DIR:-01_Inbox/Daily}
+      KB_TIMEZONE: ${KB_TIMEZONE:-Europe/Moscow}
     volumes:
       - ./app:/app/app
       - ./alembic:/app/alembic
       - storage_data:/app/storage
     ports:
       - "127.0.0.1:8005:8000"
+
+  # Long-poll воркер Telegram: складывает сообщения группы в БД по мере
+  # поступления. Не нужен, если вместо него настроен вебхук
+  # (TELEGRAM_WEBHOOK_SECRET + setWebhook на /api/telegram/webhook/<secret>).
+  telegram-poller:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["python", "-m", "app.telegram.poller"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://soborbum:soborbum@db:5432/soborbum
+      STORAGE_DIR: /app/storage
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-sonnet-5}
+      MCP_SERVER_URL: ${MCP_SERVER_URL:-}
+      MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-}
+      MCP_OAUTH_CLIENT_SECRET: ${MCP_OAUTH_CLIENT_SECRET:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      CHAT_ID: ${CHAT_ID:-}
+      KB_TIMEZONE: ${KB_TIMEZONE:-Europe/Moscow}
+    volumes:
+      - ./app:/app/app
+      - storage_data:/app/storage
 
 volumes:
   db_data:

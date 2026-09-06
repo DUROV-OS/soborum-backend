@@ -32,6 +32,8 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.ai import mcp_auth
+from app.ai import model_profiles
+from app.ai.model_profiles import ModelProfile
 from app.board import conductor as board_conductor
 from app.board import prompts
 from app.board import service as board_service
@@ -94,7 +96,7 @@ def _call_subagent(
     structured answer - see the comment below for why that fallback can't
     just replay the first response's content as history."""
     kwargs = {
-        "model": settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_AGENT),
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{"role": "user", "content": user_content}],
@@ -121,7 +123,7 @@ def _call_subagent(
             "\n\nЧерновые заметки по итогам предыдущего исследования (могут быть неполными):\n" + already_written
         )
     fallback_response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_AGENT),
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": fallback_user_content}],
@@ -187,7 +189,7 @@ def _synthesize(
     if history_note:
         payload["previous_round"] = history_note
     response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_LEAD),
         max_tokens=1024,
         system=prompts.SYNTHESIS_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -290,7 +292,7 @@ def _decide_node_edit(client: anthropic.Anthropic, node: BoardNode, round_data: 
         "employee_request": round_data.get("user_message"),
     }
     response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_LEAD),
         max_tokens=1024,
         system=prompts.EDITOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -341,7 +343,7 @@ def _review_children(client: anthropic.Anthropic, parent: BoardNode, change_note
         ],
     }
     response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_LEAD),
         max_tokens=2048,
         system=prompts.CASCADE_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -409,7 +411,7 @@ def _review_ancestor(client: anthropic.Anthropic, ancestor: BoardNode, siblings:
         "other_children": [{"id": c.id, "title": c.title, "color": c.color.value} for c in siblings],
     }
     response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_LEAD),
         max_tokens=1024,
         system=prompts.ANCESTOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],

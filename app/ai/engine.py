@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.ai import attachments as ai_attachments
 from app.ai import mcp_auth
+from app.ai import model_profiles
 from app.ai.guardian import authorize_tool, decision_record
 from app.ai.models import Chat, ChatMode, Message, PendingAction, PendingActionStatus
 from app.ai.prompts import SYSTEM_PROMPTS
@@ -82,7 +83,7 @@ def _build_history(db: Session, chat: Chat) -> list[dict]:
 def _call_claude(db: Session, system: str, messages: list[dict], tools: list[dict], mode: ChatMode, user: User):
     client = _get_client()
     kwargs = {
-        "model": settings.ai_model,
+        **model_profiles.profile_params(model_profiles.ModelProfile.CHAT),
         # Generous on purpose: a single turn can involve reading several full
         # knowledge-base documents inline (the MCP connector embeds their
         # content as mcp_tool_result blocks in this same response) before the

@@ -28,6 +28,7 @@ class FilePurpose(str, enum.Enum):
     MARKETING_RAW = "marketing_raw"
     MARKETING_FINAL = "marketing_final"
     AI_CHAT_ATTACHMENT = "ai_chat_attachment"
+    TELEGRAM_INGEST = "telegram_ingest"
 
 
 PURPOSE_MODULE = {
@@ -37,6 +38,8 @@ PURPOSE_MODULE = {
     FilePurpose.MARKETING_RAW: Module.MARKETING,
     FilePurpose.MARKETING_FINAL: Module.MARKETING,
     FilePurpose.AI_CHAT_ATTACHMENT: Module.AI,
+    # Media pulled out of the watched Telegram group by the daily ingest.
+    FilePurpose.TELEGRAM_INGEST: Module.AI,
 }
 
 
@@ -77,6 +80,29 @@ def save_text_file(db: Session, filename: str, content: str, purpose: FilePurpos
     asset = FileAsset(
         filename=filename,
         content_type="text/plain; charset=utf-8",
+        path_on_disk=path_on_disk,
+        purpose=purpose,
+        uploaded_by_id=user.id,
+    )
+    db.add(asset)
+    db.flush()
+    return asset
+
+
+def save_bytes_file(
+    db: Session, filename: str, data: bytes, content_type: str, purpose: FilePurpose, user
+) -> FileAsset:
+    """Persist already-in-memory binary content (e.g. a file downloaded from
+    the Telegram Bot API) as a FileAsset. Binary sibling of save_text_file."""
+    os.makedirs(settings.storage_dir, exist_ok=True)
+    disk_name = f"{uuid.uuid4().hex}_{filename}"
+    path_on_disk = os.path.join(settings.storage_dir, disk_name)
+    with open(path_on_disk, "wb") as f:
+        f.write(data)
+
+    asset = FileAsset(
+        filename=filename,
+        content_type=content_type or "application/octet-stream",
         path_on_disk=path_on_disk,
         purpose=purpose,
         uploaded_by_id=user.id,

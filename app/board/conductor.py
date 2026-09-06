@@ -24,6 +24,8 @@ import anthropic
 from sqlalchemy.orm import Session
 
 from app.ai import mcp_auth
+from app.ai import model_profiles
+from app.ai.model_profiles import ModelProfile
 from app.board import prompts
 from app.core.config import settings
 from app.dashboard.service import SECTION_BUILDERS
@@ -41,7 +43,7 @@ def _production_snapshot(db: Session) -> dict:
 def _research_brief(client: anthropic.Anthropic, db: Session, node_ctx: dict, user_message: str) -> str | None:
     payload = {"node": node_ctx, "employee_request": user_message}
     kwargs = {
-        "model": settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_AGENT),
         "max_tokens": 1024,
         "system": prompts.CONDUCTOR_SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],

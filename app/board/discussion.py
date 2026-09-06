@@ -18,6 +18,8 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.ai import mcp_auth
+from app.ai import model_profiles
+from app.ai.model_profiles import ModelProfile
 from app.board import conductor as board_conductor
 from app.board import council as board_council
 from app.board import prompts
@@ -89,7 +91,7 @@ def _history_note(discussion: BoardDiscussion) -> str | None:
 def _call(db: Session, system: str, messages: list[dict]) -> str:
     client = _get_client()
     kwargs = {
-        "model": settings.ai_model,
+        **model_profiles.profile_params(ModelProfile.BOARD_LEAD),
         "max_tokens": 4096,
         "system": system,
         "messages": messages,

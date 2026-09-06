@@ -13,6 +13,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.ai import cache as ai_cache
+from app.ai import model_profiles
 from app.ai.schemas import PriorityTaskOut, TaskPrioritiesOut
 from app.core.config import settings
 from app.tasks.models import Task, TaskStatus
@@ -133,7 +134,7 @@ def generate_task_priorities(db: Session, user: User, force: bool = False) -> Ta
 
     client = _get_client()
     response = client.messages.create(
-        model=settings.ai_model,
+        **model_profiles.profile_params(model_profiles.ModelProfile.QUICK),
         max_tokens=768,
         system=SYSTEM_PROMPT,
         messages=[

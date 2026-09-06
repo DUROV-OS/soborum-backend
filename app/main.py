@@ -19,6 +19,7 @@ from app.installation.router import app as installation_app
 from app.marketing.router import app as marketing_app
 from app.production.router import app as production_app
 from app.tasks.router import app as tasks_app
+from app.telegram.router import app as telegram_app
 from app.users.router import app as auth_app
 from app.users.service import bootstrap_admin
 from app.warehouse.router import app as warehouse_app
@@ -82,3 +83,4 @@ app.mount("/api/tasks", tasks_app)
 app.mount("/api/ai", ai_app)
 app.mount("/api/dashboard", dashboard_app)
 app.mount("/api/board", board_app)
+app.mount("/api/telegram", telegram_app)
