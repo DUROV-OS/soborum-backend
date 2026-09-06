@@ -1,10 +1,14 @@
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, JSON, String, Table, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, JSON, String, Table, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class TaskStatus(str, enum.Enum):
@@ -89,3 +93,83 @@ class Task(Base):
         secondaryjoin=id == task_dependencies.c.depends_on_id,
         backref="blocks",
     )
+
+
+class TaskStageEvent(Base):
+    """Append-only audit row: one per status transition of a task, written by
+    app.tasks.timelog at the moment the transition is applied in
+    app.tasks.service. Never mutated or deleted (except by the task's own
+    CASCADE). The Tasks API is unchanged - this table is written as a side
+    effect and read only by reporting / the AI layer.
+
+    from_status is NULL for the row that records the task's creation. actor_id
+    is the user who triggered a manual transition (assignee / reviewer) and
+    NULL for automatic ones (dependency cascade, auto-close without reviewers,
+    domain stage force-close); `automatic` flags the latter explicitly.
+    """
+
+    __tablename__ = "task_stage_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_status: Mapped[TaskStatus | None] = mapped_column(
+        Enum(TaskStatus, name="task_status"), nullable=True
+    )
+    to_status: Mapped[TaskStatus] = mapped_column(
+        Enum(TaskStatus, name="task_status"), nullable=False
+    )
+    actor_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    automatic: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+        index=True,
+    )
+
+    task: Mapped["Task"] = relationship()
+    actor: Mapped["User"] = relationship()  # noqa: F821
+
+
+class TaskWorkDuration(Base):
+    """Derived per-task rollup of TaskStageEvent, recomputed from the full
+    event log on every transition (see app.tasks.timelog._recompute). One row
+    per task.
+
+    `seconds_by_status` holds the full breakdown {status_value: seconds} of
+    time spent in each stage (closed intervals only); `total_working_seconds`
+    is the sum of the active stages (in_progress + in_review) - "how long the
+    task was actually worked on". `total_lead_seconds` is wall-clock from the
+    first event (creation) to DONE and is only meaningful once `is_complete`.
+    """
+
+    __tablename__ = "task_work_durations"
+
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    first_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    total_working_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_lead_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    seconds_by_status: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    is_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+    task: Mapped["Task"] = relationship()
