@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'a7f3c1e9d204'
@@ -24,8 +25,10 @@ def upgrade() -> None:
     # side effect by app.tasks.timelog.
     #
     # Reuse the existing PG enum type created in the init migration; do NOT
-    # recreate or drop it, it is shared with tasks.status.
-    task_status = sa.Enum(
+    # recreate or drop it, it is shared with tasks.status. create_type=False is
+    # a PostgreSQL-dialect option, so the enum must be postgresql.ENUM - the
+    # generic sa.Enum silently ignores the flag and re-emits CREATE TYPE.
+    task_status = postgresql.ENUM(
         'NOT_READY', 'READY', 'IN_PROGRESS', 'IN_REVIEW', 'DONE',
         name='task_status', create_type=False,
     )
