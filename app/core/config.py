@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
+    # Local checkout of DUROV-OS/vault_backups. Empty = pack without notes.
+    vault_root: str = ""
+
     # --- AI assistant (app/ai) ---
     anthropic_api_key: str = ""
     ai_model: str = "claude-sonnet-5"
