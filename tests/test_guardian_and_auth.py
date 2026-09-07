@@ -119,3 +119,41 @@ def test_missing_ai_key_does_not_create_an_abandoned_chat(db, api, make_user):
     response = api(make_user(Module.AI)).post("/api/ai/chat/ask", json={"message": "Привет"})
     assert response.status_code == 503
     assert db.query(Chat).count() == 0
+
+
+def test_mcp_token_accepts_naive_sqlite_expiry(db):
+    from datetime import datetime, timedelta
+
+    from app.ai import mcp_auth
+    from app.ai.models import McpCredential
+
+    db.add(
+        McpCredential(
+            id=1,
+            access_token="still-good",
+            refresh_token=None,
+            expires_at=datetime.now() + timedelta(hours=1),
+        )
+    )
+    db.commit()
+    assert mcp_auth.get_access_token(db) == "still-good"
+
+
+def test_cache_accepts_naive_generated_at(db):
+    from datetime import datetime
+
+    from app.ai import cache
+    from app.ai.models import AiCacheEntry
+
+    db.add(AiCacheEntry(key="clients:1", payload={"ok": True}, generated_at=datetime.now()))
+    db.commit()
+    assert cache.get(db, "clients:1") == {"ok": True}
+
+
+def test_storage_falls_back_off_read_only_app(monkeypatch):
+    from app.common import files as files_mod
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "storage_dir", "/app/storage")
+    path = files_mod._writable_storage_dir()
+    assert path == "/tmp/soborum-storage"

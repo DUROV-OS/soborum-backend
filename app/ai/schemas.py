@@ -70,6 +70,10 @@ class AskResponse(BaseModel):
     pending_actions: list[PendingActionOut] = []
 
 
+class ConsultAskResponse(AskResponse):
+    topic_reset: bool = False
+
+
 SectionStatus = Literal["red", "yellow", "green"]
 
 

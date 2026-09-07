@@ -25,6 +25,12 @@ ALWAYS_PATHS: tuple[str, ...] = (
 )
 
 SKIP_DIR_NAMES = {".git", "_trash", "04_Archive", "01_Inbox", "raw", ".obsidian", "_scripts"}
+# Process notes for people, not citations for a daily question.
+SKIP_REL_PATHS = {
+    "00_Agent/Company_Shift.md",
+    "00_Agent/Changelog.md",
+    "00_Agent/MOC_Agent.md",
+}
 STOPWORDS = {
     "какой",
     "какая",
@@ -95,7 +101,7 @@ class LocalVaultAdapter:
             if any(part in SKIP_DIR_NAMES for part in path.parts):
                 continue
             rel = path.relative_to(self.root).as_posix()
-            if rel in {"README.md", "CLAUDE.md", "CONTRIBUTING.md"}:
+            if rel in {"README.md", "CLAUDE.md", "CONTRIBUTING.md"} or rel in SKIP_REL_PATHS:
                 continue
             if prefixes and not any(rel.startswith(prefix) or prefix in ("", ".") for prefix in prefixes):
                 continue

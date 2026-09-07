@@ -7,7 +7,8 @@ from app.ai import engine
 from app.ai import mcp_auth
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
-from app.ai.models import ChatDomain, McpCredential, PendingAction, PendingActionStatus
+from app.ai import topic as ai_topic
+from app.ai.models import Chat, ChatDomain, ChatMode, McpCredential, PendingAction, PendingActionStatus
 from app.ai.tools import TOOLS
 from app.ai.schemas import (
     AskRequest,
@@ -16,6 +17,7 @@ from app.ai.schemas import (
     ChatModeUpdate,
     ChatOut,
     ChatTitleUpdate,
+    ConsultAskResponse,
     PendingActionOut,
     SectionAnalyticsOut,
     TaskPrioritiesOut,
@@ -23,7 +25,7 @@ from app.ai.schemas import (
 from app.common.files import FileAssetOut
 from app.common.module_access import Module
 from app.core.config import settings
-from app.core.deps import require_admin, require_module
+from app.core.deps import get_current_user, require_admin, require_module
 from app.db.session import get_db
 from app.users.models import User
 
@@ -112,6 +114,68 @@ def ask_tasks(payload: AskRequest, db: Session = Depends(get_db), user: User = D
 @app.post("/chat/ask", response_model=AskResponse)
 def ask_general(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(require_ai)):
     return _ask(db, user, ChatDomain.GENERAL, payload)
+
+
+@app.post("/consult/ask", response_model=ConsultAskResponse)
+def ask_consult(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if not settings.anthropic_api_key:
+        raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
+    previous: list[str] = []
+    chat = None
+    if payload.chat_id is not None:
+        found = db.get(Chat, payload.chat_id)
+        if found is not None and found.owner_id == user.id:
+            chat = found
+            previous = ai_service.user_texts(chat)
+    reset = ai_topic.topic_shifted(previous, payload.message)
+    if reset and chat is not None:
+        ai_service.wipe_chat(db, chat)
+        chat = None
+    if chat is None:
+        chat = ai_service.get_or_create_chat(
+            db, user, ChatDomain.GENERAL, None, payload.mode or ChatMode.REQUIRE_APPROVAL
+        )
+    result = engine.run_turn(db, chat, user, payload.message, payload.file_ids)
+    return ConsultAskResponse(
+        chat_id=chat.id,
+        status=result.status,
+        reply=result.reply,
+        pending_actions=[_to_pending_out(pa) for pa in result.pending_actions],
+        topic_reset=reset,
+    )
+
+
+@app.delete("/consult", status_code=status.HTTP_204_NO_CONTENT)
+def clear_consult(chat_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if chat_id is None:
+        return
+    chat = db.get(Chat, chat_id)
+    if chat is not None and chat.owner_id == user.id:
+        ai_service.wipe_chat(db, chat)
+
+
+@app.post("/consult/pending-actions/{pending_action_id}/approve", response_model=AskResponse)
+def consult_approve(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    pa = ai_service.get_own_pending_action_or_404(db, user, pending_action_id)
+    result = engine.resolve_pending_action(db, pa, approve=True, decided_by=user)
+    return AskResponse(
+        chat_id=pa.chat_id,
+        status=result.status,
+        reply=result.reply,
+        pending_actions=[_to_pending_out(p) for p in result.pending_actions],
+    )
+
+
+@app.post("/consult/pending-actions/{pending_action_id}/reject", response_model=AskResponse)
+def consult_reject(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    pa = ai_service.get_own_pending_action_or_404(db, user, pending_action_id)
+    result = engine.resolve_pending_action(db, pa, approve=False, decided_by=user)
+    return AskResponse(
+        chat_id=pa.chat_id,
+        status=result.status,
+        reply=result.reply,
+        pending_actions=[_to_pending_out(p) for p in result.pending_actions],
+    )
 
 
 @app.get("/clients/analytics", response_model=SectionAnalyticsOut)

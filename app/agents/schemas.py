@@ -70,3 +70,67 @@ class AgentsStatsOut(BaseModel):
     routing: list[RouteShareOut]
     traces: list[TraceOut]
     totals: TotalsOut
+    shifts: int = 0
+    pending_approvals: int = 0
+
+
+class ShiftReviewOut(BaseModel):
+    reviewer: str
+    reviewer_title: str
+    text: str
+    escalate: bool
+    kind: str
+
+
+class ShiftItemOut(BaseModel):
+    id: int
+    agent_id: str
+    agent_title: str
+    daily_question: str
+    stance: str
+    citations: list[str]
+    legal_verdict: LegalVerdictName
+    reviews: list[ShiftReviewOut]
+
+
+class ApprovalOut(BaseModel):
+    id: int
+    shift_id: int
+    kind: str
+    title: str
+    detail: str
+    status: str
+    created_at: datetime
+
+
+class ChartBarOut(BaseModel):
+    label: str
+    value: float
+
+
+class ShiftChartOut(BaseModel):
+    id: str
+    title: str
+    unit: str
+    bars: list[ChartBarOut]
+    agents: list[str] = Field(default_factory=list)
+    lead: str = ""
+    tone: str = "brand"
+
+
+class ShiftOut(BaseModel):
+    id: int
+    verdict: LegalVerdictName
+    summary: str
+    claude_used: bool
+    created_at: datetime
+    items: list[ShiftItemOut]
+    approvals: list[ApprovalOut]
+    charts: list[ShiftChartOut] = Field(default_factory=list)
+    autorun: bool = True
+    interval_seconds: int = 3600
+    next_tick_at: datetime | None = None
+
+
+class ApprovalDecisionRequest(BaseModel):
+    status: Literal["approved", "rejected"]

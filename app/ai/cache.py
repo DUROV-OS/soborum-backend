@@ -19,11 +19,17 @@ from app.ai.models import AiCacheEntry
 TTL = timedelta(hours=4)
 
 
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def get(db: Session, key: str, force: bool = False) -> dict | None:
     if force:
         return None
     entry = db.get(AiCacheEntry, key)
-    if entry is None or datetime.now(timezone.utc) - entry.generated_at > TTL:
+    if entry is None or datetime.now(timezone.utc) - _aware(entry.generated_at) > TTL:
         return None
     return entry.payload
 

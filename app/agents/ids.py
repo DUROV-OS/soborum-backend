@@ -34,6 +34,40 @@ VAULT_PATHS: dict[AgentId, tuple[str, ...]] = {
     AgentId.ENGINEER: ("02_Business/01_Production",),
 }
 
+DAILY_QUESTIONS: dict[AgentId, str] = {
+    AgentId.COORDINATOR: "Что сейчас самое важное для компании и какой специалист это закрывает?",
+    AgentId.SALES: "Какие сделки зависли и что мешает закрыть ближайшую оплату?",
+    AgentId.MARKETER: "Какой следующий контакт с рынком опирается на проверенный факт, а не на домысел?",
+    AgentId.PRODUCTION: "Что сегодня тормозит ближайший дом и какой материал или этап в узком месте?",
+    AgentId.WAREHOUSE: "Чего не хватит ближайшему дому и что уже едет?",
+    AgentId.FINANCE: "Где сейчас утекает маржа — в скидке, сроке, комплектации или неоплате?",
+    AgentId.LAWYER: "Какое сегодняшнее действие создаёт юридический риск, если его выпустить как есть?",
+    AgentId.ENGINEER: "Какое сегодняшнее отклонение от техкарты создаёт риск на площадке?",
+}
+
+# Who must read whose draft. Lawyer sees everyone.
+CROSS_REVIEWERS: dict[AgentId, tuple[AgentId, ...]] = {
+    AgentId.COORDINATOR: (AgentId.LAWYER,),
+    AgentId.SALES: (AgentId.FINANCE, AgentId.PRODUCTION, AgentId.LAWYER),
+    AgentId.MARKETER: (AgentId.LAWYER, AgentId.SALES),
+    AgentId.PRODUCTION: (AgentId.WAREHOUSE, AgentId.ENGINEER, AgentId.LAWYER),
+    AgentId.WAREHOUSE: (AgentId.PRODUCTION, AgentId.FINANCE),
+    AgentId.FINANCE: (AgentId.SALES, AgentId.LAWYER),
+    AgentId.LAWYER: (AgentId.COORDINATOR,),
+    AgentId.ENGINEER: (AgentId.PRODUCTION, AgentId.LAWYER),
+}
+
+WATCHES: dict[AgentId, str] = {
+    AgentId.COORDINATOR: "Сводит картину: что сейчас главное и кого будить",
+    AgentId.SALES: "Смотрит, какие сделки зависли и что мешает оплате",
+    AgentId.MARKETER: "Ищет следующий контакт с рынком только на проверенном факте",
+    AgentId.PRODUCTION: "Смотрит, что тормозит ближайший дом в цехе",
+    AgentId.WAREHOUSE: "Смотрит, чего не хватит ближайшему дому и что уже едет",
+    AgentId.FINANCE: "Ищет, где утекает маржа — скидка, срок, комплектация, неоплата",
+    AgentId.LAWYER: "Проверяет, можно ли выпускать сегодняшние действия без человека",
+    AgentId.ENGINEER: "Сверяет отклонение от техкарты с риском на площадке",
+}
+
 DOES_NOT_OWN: dict[AgentId, str] = {
     AgentId.SALES: "окончательная цена и скидка сверх 5%",
     AgentId.MARKETER: "ворованные данные конкурентов и публикация без человека",

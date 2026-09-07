@@ -72,10 +72,34 @@ def _speak(agent_id: AgentId, text: str, legal: LegalDecision, context: SharedCo
 
 
 def _rank_hits(agent_id: AgentId, hits: list[ContextHit]) -> list[ContextHit]:
-    profile = [hit for hit in hits if _profile_hit(agent_id, hit)]
-    always = [hit for hit in hits if hit.path in ALWAYS_PATHS and hit not in profile]
-    other = [hit for hit in hits if _useful(agent_id, hit) and hit not in profile and hit not in always]
-    return profile + other + always
+    live = [hit for hit in hits if _live_hit(agent_id, hit)]
+    profile = [hit for hit in hits if _profile_hit(agent_id, hit) and hit not in live]
+    always = [hit for hit in hits if hit.path in ALWAYS_PATHS and hit not in profile and hit not in live]
+    other = [
+        hit
+        for hit in hits
+        if _useful(agent_id, hit) and hit not in live and hit not in profile and hit not in always
+    ]
+    return live + profile + other + always
+
+
+def _live_hit(agent_id: AgentId, hit: ContextHit) -> bool:
+    path = hit.path or ""
+    if hit.source == "crm" and path.startswith("amocrm/") and agent_id in {
+        AgentId.COORDINATOR,
+        AgentId.SALES,
+        AgentId.MARKETER,
+        AgentId.FINANCE,
+    }:
+        return True
+    if hit.source == "warehouse" and path.startswith("moysklad/") and agent_id in {
+        AgentId.COORDINATOR,
+        AgentId.WAREHOUSE,
+        AgentId.PRODUCTION,
+        AgentId.FINANCE,
+    }:
+        return True
+    return False
 
 
 def _profile_hit(agent_id: AgentId, hit: ContextHit) -> bool:
@@ -84,9 +108,7 @@ def _profile_hit(agent_id: AgentId, hit: ContextHit) -> bool:
 
 
 def _useful(agent_id: AgentId, hit: ContextHit) -> bool:
-    if hit.source == "crm" and agent_id in {AgentId.SALES, AgentId.MARKETER, AgentId.FINANCE}:
-        return True
-    if hit.source == "warehouse" and agent_id in {AgentId.WAREHOUSE, AgentId.PRODUCTION, AgentId.FINANCE}:
+    if _live_hit(agent_id, hit):
         return True
     path = hit.path
     if not path:

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.ai import attachments as ai_attachments
 from app.ai import mcp_auth
 from app.ai.guardian import authorize_tool, decision_record
-from app.ai.models import Chat, ChatMode, Message, PendingAction, PendingActionStatus
+from app.ai.models import Chat, ChatDomain, ChatMode, Message, PendingAction, PendingActionStatus
 from app.ai.prompts import SYSTEM_PROMPTS
 from app.ai.tools import DOMAIN_TOOLS, TOOLS
 from app.common.files import FileAsset
@@ -46,7 +46,28 @@ def _get_client() -> anthropic.Anthropic:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Марина пока не подключена. Обратитесь к администратору.",
         )
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=60.0, max_retries=1)
+    from app.core.llm import anthropic_client
+
+    return anthropic_client(timeout=60.0, max_retries=1)
+
+
+def _system_for(chat: Chat) -> str:
+    text = SYSTEM_PROMPTS[chat.domain]
+    if chat.domain != ChatDomain.GENERAL:
+        return text
+    try:
+        from app.agents.connectors import live_briefing_text
+
+        extra = live_briefing_text()
+        if extra:
+            text += "\n\n" + extra
+    except Exception as error:
+        logger.warning("живой срез для консультации: %s", error)
+        text += (
+            "\n\nЖивой срез amoCRM/МойСклад не собрался. "
+            "Не утверждай, что на складе всё в достаточном количестве."
+        )
+    return text
 
 
 def _available_tools(chat: Chat, user: User) -> list[dict]:
@@ -163,8 +184,9 @@ def run_turn(db: Session, chat: Chat, user: User, user_text: str, file_ids: list
 
 
 def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
+    # Build system once: live CRM/stock briefing must not re-fetch on every tool round.
+    system = _system_for(chat)
     for _ in range(MAX_ITERATIONS):
-        system = SYSTEM_PROMPTS[chat.domain]
         history = _build_history(db, chat)
         tools = _available_tools(chat, user)
         try:
