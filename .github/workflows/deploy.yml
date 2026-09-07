@@ -49,5 +49,5 @@ jobs:
 
           scp -i ~/.ssh/deploy_key /tmp/soborbum-mcp.env "$SSH_USER@$SSH_HOST:/tmp/soborbum-mcp.env"
           ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
-            'cd /srv/soborbum-backend && git pull && python3 scripts/merge_env.py /tmp/soborbum-mcp.env && rm -f /tmp/soborbum-mcp.env && docker compose up -d --build'
+            'cd /srv/soborbum-backend && git pull && python3 scripts/merge_env.py /tmp/soborbum-mcp.env && rm -f /tmp/soborbum-mcp.env && docker compose --env-file .env.mcp up -d --build'
           rm -f /tmp/soborbum-mcp.env
