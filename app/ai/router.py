@@ -1,4 +1,5 @@
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.ai import analytics as ai_analytics
@@ -8,6 +9,7 @@ from app.ai import mcp_auth
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
 from app.ai import topic as ai_topic
+from app.ai import tts as ai_tts
 from app.ai.models import Chat, ChatDomain, ChatMode, McpCredential, PendingAction, PendingActionStatus
 from app.ai.tools import TOOLS
 from app.ai.schemas import (
@@ -20,6 +22,7 @@ from app.ai.schemas import (
     ConsultAskResponse,
     PendingActionOut,
     SectionAnalyticsOut,
+    SpeakRequest,
     TaskPrioritiesOut,
 )
 from app.common.files import FileAssetOut
@@ -152,6 +155,22 @@ def clear_consult(chat_id: int | None = None, db: Session = Depends(get_db), use
     chat = db.get(Chat, chat_id)
     if chat is not None and chat.owner_id == user.id:
         ai_service.wipe_chat(db, chat)
+
+
+@app.post("/tts/speak")
+async def speak_text(payload: SpeakRequest, user: User = Depends(get_current_user)):
+    """Neural female Russian voice for consult résumé. Free Edge TTS, no paid key."""
+    _ = user
+    try:
+        audio = await ai_tts.synthesize_mp3(payload.text)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Голос временно недоступен. Попробуйте ещё раз.",
+        ) from exc
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 @app.post("/consult/pending-actions/{pending_action_id}/approve", response_model=AskResponse)
