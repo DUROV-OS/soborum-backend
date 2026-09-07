@@ -65,15 +65,16 @@ def run_shift(vault_root: str | None = None) -> ShiftDraft:
         relevant = _rank_hits(agent_id, context.hits)
         live = [hit for hit in relevant if _live_hit(agent_id, hit)]
         citations = [hit.title for hit in (live or relevant)[:3] if hit.title]
+        stance: str | None = None
         if live:
-            stance = live_stance_for(agent_id) or _plain_stance(agent_id, relevant)
-        else:
+            stance = live_stance_for(agent_id)
+        if not stance:
             claude_stance = _claude_stance(agent_id, question, context)
             if claude_stance:
                 claude_used = True
                 stance = claude_stance
-            else:
-                stance = _plain_stance(agent_id, relevant)
+        if not stance:
+            stance = _plain_stance(agent_id, relevant)
         items.append(
             ShiftItemDraft(
                 agent=agent_id,
@@ -274,11 +275,13 @@ def _claude_stance(agent_id: AgentId, question: str, context: SharedContext) -> 
     ranked = _rank_hits(agent_id, context.hits)
     pack = [f"- {hit.title} ({hit.path}): {hit.excerpt}" for hit in ranked if hit.excerpt][:8]
     if not pack:
-        return None
+        pack = [
+            "- (цитат vault/CRM/склада нет: живых фактов в контексте нет — не выдумывай цифры)"
+        ]
     try:
         from app.core.llm import anthropic_client
 
-        client = anthropic_client(timeout=30.0, max_retries=0)
+        client = anthropic_client(timeout=45.0, max_retries=0)
         response = client.messages.create(
             model=settings.ai_model,
             max_tokens=160,
