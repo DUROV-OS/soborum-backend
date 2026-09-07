@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge KEY=value lines from a file into ./.env without wiping other secrets."""
+"""Write KEY=value lines into .env.mcp (deploy-user writable overlay)."""
 
 from __future__ import annotations
 
@@ -24,44 +24,16 @@ def main() -> int:
     if len(sys.argv) != 2:
         print("usage: merge_env.py /path/to/incoming.env", file=sys.stderr)
         return 2
-    root = Path.cwd()
-    env_path = root / ".env"
+    target = Path.cwd() / ".env.mcp"
     incoming = load_kv(Path(sys.argv[1]))
     if not incoming:
         print("no incoming keys")
         return 0
-
-    existing: dict[str, str] = {}
-    order: list[str] = []
-    if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if "=" in line and not line.strip().startswith("#"):
-                key, val = line.split("=", 1)
-                key = key.strip()
-                existing[key] = val.strip()
-                order.append(key)
-            else:
-                order.append(line)
-
-    for key, val in incoming.items():
-        if key not in existing:
-            order.append(key)
-        existing[key] = val
-
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in order:
-        if item in existing and item not in seen:
-            out.append(f"{item}={existing[item]}")
-            seen.add(item)
-        elif item not in existing:
-            out.append(item)
-    for key, val in existing.items():
-        if key not in seen:
-            out.append(f"{key}={val}")
-
-    env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
-    print("updated", env_path, "keys", ", ".join(sorted(incoming)))
+    existing = load_kv(target)
+    existing.update(incoming)
+    lines = [f"{key}={existing[key]}" for key in sorted(existing)]
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("updated", target, "keys", ", ".join(sorted(incoming)))
     return 0
 
 
