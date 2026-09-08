@@ -32,6 +32,7 @@ jobs:
           DASHBOARD_MCP_URL: ${{ secrets.DASHBOARD_MCP_URL }}
           DASHBOARD_MCP_CLIENT_ID: ${{ secrets.DASHBOARD_MCP_CLIENT_ID }}
           DASHBOARD_MCP_CLIENT_SECRET: ${{ secrets.DASHBOARD_MCP_CLIENT_SECRET }}
+          MAX_TOKEN: ${{ secrets.MAX_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -47,6 +48,7 @@ jobs:
             "MCP_SERVER_URL", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_CLIENT_SECRET", "MCP_REDIRECT_URI",
             "MOYSKLAD_MCP_URL", "MOYSKLAD_MCP_CLIENT_ID", "MOYSKLAD_MCP_CLIENT_SECRET",
             "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
+            "MAX_TOKEN",
           ]
           lines = [f"{key}={os.environ[key].strip()}" for key in keys if os.environ.get(key, "").strip()]
           pathlib.Path("/tmp/soborbum-mcp.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
