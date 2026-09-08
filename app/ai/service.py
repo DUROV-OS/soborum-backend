@@ -57,6 +57,27 @@ def delete_chat(db: Session, chat: Chat) -> None:
     db.commit()
 
 
+def wipe_chat(db: Session, chat: Chat) -> None:
+    """Drop a consult thread so it cannot later land in the knowledge base."""
+    db.query(PendingAction).filter(PendingAction.chat_id == chat.id).delete(synchronize_session=False)
+    db.delete(chat)
+    db.commit()
+
+
+def user_texts(chat: Chat) -> list[str]:
+    texts: list[str] = []
+    for message in chat.messages:
+        if message.role != "user":
+            continue
+        for block in message.content or []:
+            if not isinstance(block, dict) or block.get("type") == "tool_result":
+                continue
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text.strip())
+    return texts
+
+
 def get_own_pending_action_or_404(db: Session, owner: User, pending_action_id: int) -> PendingAction:
     pa = db.get(PendingAction, pending_action_id)
     if not pa or pa.chat.owner_id != owner.id:

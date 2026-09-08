@@ -65,12 +65,23 @@ class FileAssetOut(BaseModel):
     created_at: datetime
 
 
+def _writable_storage_dir() -> str:
+    path = settings.storage_dir
+    try:
+        os.makedirs(path, exist_ok=True)
+        return path
+    except OSError:
+        fallback = "/tmp/soborum-storage"
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+
 def save_text_file(db: Session, filename: str, content: str, purpose: FilePurpose, user) -> FileAsset:
     """Persist AI-generated (or otherwise in-memory) text content as a FileAsset,
     for cases with no incoming UploadFile - see save_upload_file for that case."""
-    os.makedirs(settings.storage_dir, exist_ok=True)
+    storage = _writable_storage_dir()
     disk_name = f"{uuid.uuid4().hex}_{filename}"
-    path_on_disk = os.path.join(settings.storage_dir, disk_name)
+    path_on_disk = os.path.join(storage, disk_name)
     with open(path_on_disk, "w", encoding="utf-8") as f:
         f.write(content)
 
@@ -87,9 +98,9 @@ def save_text_file(db: Session, filename: str, content: str, purpose: FilePurpos
 
 
 def save_upload_file(db: Session, upload_file: UploadFile, purpose: FilePurpose, user) -> FileAsset:
-    os.makedirs(settings.storage_dir, exist_ok=True)
+    storage = _writable_storage_dir()
     disk_name = f"{uuid.uuid4().hex}_{upload_file.filename}"
-    path_on_disk = os.path.join(settings.storage_dir, disk_name)
+    path_on_disk = os.path.join(storage, disk_name)
     with open(path_on_disk, "wb") as f:
         f.write(upload_file.file.read())
 

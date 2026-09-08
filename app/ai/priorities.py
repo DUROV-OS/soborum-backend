@@ -66,7 +66,9 @@ def _get_client() -> anthropic.Anthropic:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="ИИ не настроен: не задан ANTHROPIC_API_KEY (см. backend/.env)",
         )
-    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    from app.core.llm import anthropic_client
+
+    return anthropic_client()
 
 
 def _load_candidate_tasks(db: Session, user: User) -> list[Task]:

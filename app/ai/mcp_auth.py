@@ -47,6 +47,12 @@ _pending_pkce: dict[str, str] = {}
 _cached_metadata: dict | None = None
 
 
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _require_configured() -> None:
     if not settings.mcp_configured:
         raise HTTPException(
@@ -99,6 +105,7 @@ def _authorize_url(challenge: str, state: str) -> str:
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
+        "resource": settings.mcp_server_url,
     }
     return f"{_discover_metadata()['authorization_endpoint']}?{urlencode(params)}"
 
@@ -114,6 +121,7 @@ def _request_tokens(grant: dict) -> dict:
                 **grant,
                 "client_id": settings.mcp_oauth_client_id,
                 "client_secret": settings.mcp_oauth_client_secret,
+                "resource": settings.mcp_server_url,
             },
             timeout=10.0,
         )
@@ -231,7 +239,7 @@ def get_access_token(db: Session) -> str:
     """A token that is valid right now, obtaining or renewing one as needed.
     Requires no human intervention as long as the headless grant works."""
     credential = db.get(McpCredential, 1)
-    if credential is not None and credential.expires_at > datetime.now(timezone.utc) + timedelta(seconds=30):
+    if credential is not None and _aware(credential.expires_at) > datetime.now(timezone.utc) + timedelta(seconds=30):
         return credential.access_token
 
     if credential is not None and credential.refresh_token:

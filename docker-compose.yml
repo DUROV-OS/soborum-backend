@@ -20,6 +20,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.mcp
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg2://soborbum:soborbum@db:5432/soborbum
       JWT_SECRET: change-me-in-production
@@ -28,11 +33,22 @@ services:
       ADMIN_PASSWORD: admin123
       UVICORN_RELOAD: "1"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       AI_MODEL: ${AI_MODEL:-claude-sonnet-5}
       MCP_SERVER_URL: ${MCP_SERVER_URL:-}
       MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-}
       MCP_OAUTH_CLIENT_SECRET: ${MCP_OAUTH_CLIENT_SECRET:-}
-      MCP_REDIRECT_URI: ${MCP_REDIRECT_URI:-http://127.0.0.1:8005/callback}
+      MCP_REDIRECT_URI: ${MCP_REDIRECT_URI:-https://claude.ai/api/mcp/auth_callback}
+      AMOCRM_MCP_URL: ${AMOCRM_MCP_URL:-}
+      AMOCRM_MCP_CLIENT_ID: ${AMOCRM_MCP_CLIENT_ID:-}
+      AMOCRM_MCP_CLIENT_SECRET: ${AMOCRM_MCP_CLIENT_SECRET:-}
+      MOYSKLAD_MCP_URL: ${MOYSKLAD_MCP_URL:-}
+      MOYSKLAD_MCP_CLIENT_ID: ${MOYSKLAD_MCP_CLIENT_ID:-}
+      MOYSKLAD_MCP_CLIENT_SECRET: ${MOYSKLAD_MCP_CLIENT_SECRET:-}
+      AMOCRM_LONG_LIVED_TOKEN: ${AMOCRM_LONG_LIVED_TOKEN:-}
+      AMOCRM_SUBDOMAIN: ${AMOCRM_SUBDOMAIN:-}
+      MOYSKLAD_TOKEN: ${MOYSKLAD_TOKEN:-}
+      VAULT_ROOT: ${VAULT_ROOT:-}
     volumes:
       - ./app:/app/app
       - ./alembic:/app/alembic

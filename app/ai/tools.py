@@ -23,7 +23,8 @@ from app.clients.schemas import (
     ClientPaymentUpdate,
     ClientProjectUpdate,
 )
-from app.common.files import FilePurpose, save_text_file
+from app.common.file_text import extract_asset_text, file_card
+from app.common.files import FileAsset, FilePurpose, save_text_file
 from app.common.module_access import Module
 from app.cycle.models import Cycle
 from app.marketing import service as marketing_service
@@ -89,6 +90,28 @@ def _iso(value) -> str | None:
 
 # ---------------------------------------------------------------- clients --
 
+def _attached_specs(client: Client) -> dict:
+    """Project/contract PDFs are the source of truth — not wishes/layout junk fields."""
+    project = extract_asset_text(client.house_project_file) if client.house_project_file else None
+    contract = extract_asset_text(client.contract_file) if client.contract_file else None
+    model = (project or {}).get("model_hint") or (contract or {}).get("model_hint")
+    return {
+        "house_project_file": file_card(client.house_project_file),
+        "contract_file": file_card(client.contract_file),
+        "project_spec": project,
+        "contract_spec": contract,
+        "project_model": model,
+        "must_use_attached_files": bool(client.house_project_file_id or client.contract_file_id),
+        "field_warning": (
+            "Поля wishes_description / layout_notes / house_area часто тестовый мусор. "
+            "Если project_spec или contract_spec есть — строй модули и задачи по ним. "
+            "Не говори, что спецификации нет."
+            if (client.house_project_file_id or client.contract_file_id)
+            else "Прикреплённых файлов проекта нет."
+        ),
+    }
+
+
 def _serialize_client(c: Client) -> dict:
     return {
         "id": c.id,
@@ -111,12 +134,31 @@ def _serialize_client(c: Client) -> dict:
         "installation_address": c.installation_address,
         "contract_file_id": c.contract_file_id,
         "house_project_file_id": c.house_project_file_id,
+        **_attached_specs(c),
         "documents_locked": c.documents_locked_at is not None,
         "is_paid": c.is_paid,
         "payment_locked": c.payment_locked_at is not None,
         "balance_paid": c.balance_paid,
         "notes": [{"id": n.id, "text": n.text, "created_at": _iso(n.created_at)} for n in c.notes],
     }
+
+
+@register(
+    "read_attached_file",
+    "Прочитать прикреплённый файл клиента (проект дома или договор) и вернуть текст. "
+    "ОБЯЗАТЕЛЬНО вызови, если у клиента есть house_project_file или contract_file, "
+    "прежде чем говорить, что спецификации нет, или создавать модули и задачи.",
+    {"file_id": {"type": "integer"}},
+    ["file_id"],
+    required_module=Module.AI,
+    read_only=True,
+    domains=[ChatDomain.CLIENTS, ChatDomain.PRODUCTION, ChatDomain.CYCLE],
+)
+def _read_attached_file(db: Session, user: User, file_id: int) -> dict:
+    asset = db.get(FileAsset, file_id)
+    if asset is None:
+        return {"error": "Файл не найден"}
+    return extract_asset_text(asset)
 
 
 @register(
@@ -319,10 +361,17 @@ def _get_client_context(db: Session, user: User, cycle_id: int) -> dict:
         return {"error": "У этого цикла нет данных клиента"}
     # Production staff need the approved specification, not identity or payment data.
     client = cycle.client
-    return {"cycle_id": cycle.id, "house_area": client.house_area,
-            "wishes_description": client.wishes_description, "layout_notes": client.layout_notes,
-            "project_locked": client.project_locked_at is not None,
-            "house_project_file_id": client.house_project_file_id}
+    specs = _attached_specs(client)
+    return {
+        "cycle_id": cycle.id,
+        "client_id": client.id,
+        "house_area": client.house_area,
+        "wishes_description": client.wishes_description,
+        "layout_notes": client.layout_notes,
+        "project_locked": client.project_locked_at is not None,
+        "house_project_file_id": client.house_project_file_id,
+        **specs,
+    }
 
 
 @register(
@@ -746,3 +795,6 @@ def _accept_task(db: Session, user: User, task_id: int) -> dict:
     task = task_service.get_task_or_404(db, task_id)
     task = task_service.set_status(db, task, TaskStatus.IN_PROGRESS, actor=user)
     return _serialize_task(task)
+
+
+from app.ai import live_tools as _live_tools  # noqa: E402,F401

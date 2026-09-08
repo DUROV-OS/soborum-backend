@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
+from app.agents.loop import start_shift_loop
+from app.agents.router import app as agents_app
 from app.ai import mcp_auth
 from app.ai.router import app as ai_app
 from app.board.router import app as board_app
@@ -53,6 +55,7 @@ def on_startup() -> None:
         ensure_seed(db)
     finally:
         db.close()
+    start_shift_loop()
 
 
 @app.get("/health")
@@ -84,3 +87,4 @@ app.mount("/api/tasks", tasks_app)
 app.mount("/api/ai", ai_app)
 app.mount("/api/dashboard", dashboard_app)
 app.mount("/api/board", board_app)
+app.mount("/api/agents", agents_app)

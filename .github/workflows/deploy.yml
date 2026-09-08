@@ -3,6 +3,7 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -13,13 +14,44 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          MCP_SERVER_URL: ${{ secrets.MCP_SERVER_URL }}
+          MCP_OAUTH_CLIENT_ID: ${{ secrets.MCP_OAUTH_CLIENT_ID }}
+          MCP_OAUTH_CLIENT_SECRET: ${{ secrets.MCP_OAUTH_CLIENT_SECRET }}
+          MCP_REDIRECT_URI: ${{ secrets.MCP_REDIRECT_URI }}
+          AMOCRM_MCP_URL: ${{ secrets.AMOCRM_MCP_URL }}
+          AMOCRM_MCP_CLIENT_ID: ${{ secrets.AMOCRM_MCP_CLIENT_ID }}
+          AMOCRM_MCP_CLIENT_SECRET: ${{ secrets.AMOCRM_MCP_CLIENT_SECRET }}
+          MOYSKLAD_MCP_URL: ${{ secrets.MOYSKLAD_MCP_URL }}
+          MOYSKLAD_MCP_CLIENT_ID: ${{ secrets.MOYSKLAD_MCP_CLIENT_ID }}
+          MOYSKLAD_MCP_CLIENT_SECRET: ${{ secrets.MOYSKLAD_MCP_CLIENT_SECRET }}
+          DASHBOARD_MCP_URL: ${{ secrets.DASHBOARD_MCP_URL }}
+          DASHBOARD_MCP_CLIENT_ID: ${{ secrets.DASHBOARD_MCP_CLIENT_ID }}
+          DASHBOARD_MCP_CLIENT_SECRET: ${{ secrets.DASHBOARD_MCP_CLIENT_SECRET }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
-          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" '
-            cd /srv/soborbum-backend &&
-            git pull &&
-            docker compose up -d --build
-          '
+
+          python3 - <<'PY'
+          import os, pathlib
+          keys = [
+            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AI_MODEL",
+            "MCP_SERVER_URL", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_CLIENT_SECRET", "MCP_REDIRECT_URI",
+            "AMOCRM_MCP_URL", "AMOCRM_MCP_CLIENT_ID", "AMOCRM_MCP_CLIENT_SECRET",
+            "MOYSKLAD_MCP_URL", "MOYSKLAD_MCP_CLIENT_ID", "MOYSKLAD_MCP_CLIENT_SECRET",
+            "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
+          ]
+          lines = [f"{key}={os.environ[key].strip()}" for key in keys if os.environ.get(key, "").strip()]
+          pathlib.Path("/tmp/soborbum-mcp.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(f"prepared {len(lines)} env keys")
+          PY
+
+          scp -i ~/.ssh/deploy_key /tmp/soborbum-mcp.env "$SSH_USER@$SSH_HOST:/tmp/soborbum-mcp.env"
+          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
+            'cd /srv/soborbum-backend && git pull && python3 scripts/merge_env.py /tmp/soborbum-mcp.env && rm -f /tmp/soborbum-mcp.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build)'
+          rm -f /tmp/soborbum-mcp.env

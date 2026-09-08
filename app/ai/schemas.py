@@ -70,6 +70,14 @@ class AskResponse(BaseModel):
     pending_actions: list[PendingActionOut] = []
 
 
+class ConsultAskResponse(AskResponse):
+    topic_reset: bool = False
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500)
+
+
 SectionStatus = Literal["red", "yellow", "green"]
 
 
