@@ -27,11 +27,13 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+psycopg2://soborbum:soborbum@db:5432/soborbum
-      JWT_SECRET: change-me-in-production
       STORAGE_DIR: /app/storage
-      ADMIN_EMAIL: admin@soborbum.local
-      ADMIN_PASSWORD: admin123
-      UVICORN_RELOAD: "1"
+      # Required. Set these in .env — no insecure defaults, prod boot fails without them.
+      APP_ENV: ${APP_ENV:-prod}
+      JWT_SECRET: ${JWT_SECRET:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@soborbum.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       AI_MODEL: ${AI_MODEL:-claude-sonnet-5}
@@ -39,14 +41,9 @@ services:
       MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-}
       MCP_OAUTH_CLIENT_SECRET: ${MCP_OAUTH_CLIENT_SECRET:-}
       MCP_REDIRECT_URI: ${MCP_REDIRECT_URI:-https://claude.ai/api/mcp/auth_callback}
-      AMOCRM_MCP_URL: ${AMOCRM_MCP_URL:-}
-      AMOCRM_MCP_CLIENT_ID: ${AMOCRM_MCP_CLIENT_ID:-}
-      AMOCRM_MCP_CLIENT_SECRET: ${AMOCRM_MCP_CLIENT_SECRET:-}
       MOYSKLAD_MCP_URL: ${MOYSKLAD_MCP_URL:-}
       MOYSKLAD_MCP_CLIENT_ID: ${MOYSKLAD_MCP_CLIENT_ID:-}
       MOYSKLAD_MCP_CLIENT_SECRET: ${MOYSKLAD_MCP_CLIENT_SECRET:-}
-      AMOCRM_LONG_LIVED_TOKEN: ${AMOCRM_LONG_LIVED_TOKEN:-}
-      AMOCRM_SUBDOMAIN: ${AMOCRM_SUBDOMAIN:-}
       MOYSKLAD_TOKEN: ${MOYSKLAD_TOKEN:-}
       VAULT_ROOT: ${VAULT_ROOT:-}
     volumes:

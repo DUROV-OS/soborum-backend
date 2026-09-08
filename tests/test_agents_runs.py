@@ -128,30 +128,30 @@ def test_run_cites_local_vault_checkout(tmp_path):
     assert any(hit.path and hit.path.endswith("Stock.md") for hit in result.context.hits)
 
 
-def test_gather_without_tokens_does_not_invent_deals(tmp_path):
+def test_gather_without_tokens_does_not_invent_orders(tmp_path):
     _write_vault(tmp_path)
-    pack = context.gather("какие сделки зависли", [AgentId.SALES], str(tmp_path))
-    crm = [hit for hit in pack.hits if hit.source == "crm"]
-    assert crm
-    assert "не выдумываем" in crm[0].excerpt.lower()
+    pack = context.gather("что с оплатами по заказам", [AgentId.FINANCE], str(tmp_path))
+    live = [hit for hit in pack.hits if hit.source == "warehouse" and (hit.path or "").startswith("moysklad")]
+    assert live
+    assert "не выдумываем" in live[0].excerpt.lower()
 
 
-def test_gather_reads_via_mcp(monkeypatch, tmp_path):
+def test_gather_ignores_amocrm_entirely(tmp_path):
     _write_vault(tmp_path)
-    monkeypatch.setattr(settings, "amocrm_mcp_url", "https://amocrm.example/mcp")
-    monkeypatch.setattr(settings, "amocrm_mcp_client_id", "id")
-    monkeypatch.setattr(settings, "amocrm_mcp_client_secret", "secret")
+    pack = context.gather("какие сделки зависли в amoCRM", [AgentId.SALES], str(tmp_path))
+    assert not any(hit.source == "crm" for hit in pack.hits)
+    assert not any("amocrm" in (hit.path or "").lower() for hit in pack.hits)
+
+
+def test_gather_reads_orders_via_mcp(monkeypatch, tmp_path):
+    _write_vault(tmp_path)
     monkeypatch.setattr(settings, "moysklad_mcp_url", "https://moysklad.example/mcp")
     monkeypatch.setattr(settings, "moysklad_mcp_client_id", "id")
     monkeypatch.setattr(settings, "moysklad_mcp_client_secret", "secret")
 
     def fake_call(name, arguments=None, timeout=30.0):
-        if name == "get_all_deals":
-            return [{"id": 22, "name": "Невзоровы", "price": 450000, "status_id": 10, "updated_at": "2026-09-07"}]
-        if name == "get_stock_all":
-            return {"rows": [{"name": "брус 50х150", "quantity": 4, "code": "BRUS"}]}
         if name == "list_customer_orders":
-            return {"rows": [{"id": "o1", "name": "Заказ 12", "sum": 120000, "moment": "2026-09-07"}]}
+            return {"rows": [{"id": "o1", "name": "Заказ 12", "sum": 120000, "payedSum": 0, "moment": "2026-09-07"}]}
         raise AssertionError(name)
 
     class FakeRemote:
@@ -160,176 +160,96 @@ def test_gather_reads_via_mcp(monkeypatch, tmp_path):
 
     monkeypatch.setattr(connectors, "client_for", lambda target: FakeRemote())
     connectors.clear_cache()
-    pack = context.gather(
-        "какие сделки зависли и каких материалов не хватает",
-        [AgentId.SALES, AgentId.WAREHOUSE],
-        str(tmp_path),
-    )
-    assert any((hit.path or "").startswith("amocrm/leads/") for hit in pack.hits)
-    assert any((hit.path or "").startswith("moysklad/stock/") for hit in pack.hits)
-    assert any("Невзоровы" in hit.excerpt for hit in pack.hits)
-    assert any("брус" in hit.excerpt.lower() for hit in pack.hits)
+    pack = context.gather("что с оплатами по заказам", [AgentId.FINANCE], str(tmp_path))
+    assert any((hit.path or "").startswith("moysklad/customerorder/") for hit in pack.hits)
+    assert any("Заказ 12" in hit.excerpt for hit in pack.hits)
 
 
-def test_gather_reads_live_amocrm_and_moysklad(monkeypatch, tmp_path):
+def test_gather_reads_live_moysklad_orders(monkeypatch, tmp_path):
     _write_vault(tmp_path)
-    monkeypatch.setattr(settings, "amocrm_subdomain", "durov")
-    monkeypatch.setattr(settings, "amocrm_long_lived_token", "token")
     monkeypatch.setattr(settings, "moysklad_token", "token")
     monkeypatch.setattr(
         connectors,
-        "_amocrm_snapshot",
-        lambda: ([{"id": 11, "name": "Невзоровы", "price": 450000, "status_id": 10}], {10: "переговор"}),
+        "_moysklad_snapshot",
+        lambda: [{"id": "o1", "name": "Заказ 12", "sum": 12000000, "payedSum": 0, "moment": "2026-09-07"}],
     )
+    connectors.clear_cache()
+    pack = context.gather("что с оплатами по заказам", [AgentId.FINANCE], str(tmp_path))
+    assert any((hit.path or "").startswith("moysklad/customerorder/") for hit in pack.hits)
+    assert any("Заказ 12" in hit.excerpt for hit in pack.hits)
+
+
+def test_finance_stance_uses_live_orders(monkeypatch, tmp_path):
+    _write_vault(tmp_path)
+    monkeypatch.setattr(settings, "moysklad_token", "token")
     monkeypatch.setattr(
         connectors,
         "_moysklad_snapshot",
-        lambda: (
-            [{"name": "брус 50х150", "quantity": 4, "code": "BRUS", "uom": {"name": "шт"}}],
-            [{"id": "o1", "name": "Заказ 12", "sum": 12000000, "moment": "2026-09-07"}],
-        ),
-    )
-    connectors.clear_cache()
-    pack = context.gather(
-        "какие сделки зависли и каких материалов не хватает",
-        [AgentId.SALES, AgentId.WAREHOUSE],
-        str(tmp_path),
-    )
-    assert any((hit.path or "").startswith("amocrm/leads/") for hit in pack.hits)
-    assert any((hit.path or "").startswith("moysklad/stock/") for hit in pack.hits)
-    assert any("Невзоровы" in hit.excerpt for hit in pack.hits)
-    assert any("брус" in hit.excerpt.lower() for hit in pack.hits)
-
-
-def test_sales_stance_uses_live_crm_not_vault_story(monkeypatch, tmp_path):
-    _write_vault(tmp_path)
-    monkeypatch.setattr(settings, "amocrm_mcp_url", "https://amocrm.example/mcp")
-    monkeypatch.setattr(settings, "amocrm_mcp_client_id", "id")
-    monkeypatch.setattr(settings, "amocrm_mcp_client_secret", "secret")
-    monkeypatch.setattr(
-        connectors,
-        "_amocrm_snapshot",
-        lambda: ([{"id": 11, "name": "Невзоровы", "price": 450000, "status_id": 10, "updated_at": "2026-09-07"}], {}),
-    )
-    monkeypatch.setattr(settings, "anthropic_api_key", "sk-test")
-    monkeypatch.setattr(
-        "app.agents.shift._claude_stance",
-        lambda *args, **kwargs: "В пакете нет данных о текущих сделках в amoCRM.",
+        lambda: [{"id": "o1", "name": "Заказ 12", "sum": 12000000, "payedSum": 0, "moment": "2026-09-07"}],
     )
     connectors.clear_cache()
     draft = run_shift(vault_root=str(tmp_path))
+    finance = next(item for item in draft.items if item.agent == AgentId.FINANCE)
+    assert finance.has_live_data is True
+    assert "оплач" in finance.stance.lower()
+    assert "нет данных" not in finance.stance.lower()
+
+
+def test_role_without_live_source_is_marked_no_data(tmp_path):
+    _write_vault(tmp_path)
+    draft = run_shift(vault_root=str(tmp_path))
     sales = next(item for item in draft.items if item.agent == AgentId.SALES)
-    assert "Невзоровы" in sales.stance
-    assert "нет данных" not in sales.stance.lower()
+    assert sales.has_live_data is False
+    assert "нет данных" in sales.stance.lower()
 
 
-def test_rank_puts_live_crm_before_vault():
+def test_rank_puts_live_orders_before_vault():
     hits = [
         ContextHit(source="vault", title="Конституция", excerpt="правило", path="00_Agent/Constitution.md"),
-        ContextHit(source="crm", title="amoCRM: Невзоровы", excerpt="открыта", path="amocrm/leads/11"),
+        ContextHit(source="warehouse", title="МойСклад заказ: Заказ 12", excerpt="без оплаты", path="moysklad/customerorder/1"),
     ]
-    assert _rank_hits(AgentId.SALES, hits)[0].source == "crm"
+    assert _rank_hits(AgentId.FINANCE, hits)[0].source == "warehouse"
 
 
-def test_live_charts_are_role_specific(monkeypatch):
-    from datetime import datetime, timedelta
-
-    old = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%S")
-    monkeypatch.setattr(settings, "amocrm_mcp_url", "https://amocrm.example/mcp")
-    monkeypatch.setattr(settings, "amocrm_mcp_client_id", "id")
-    monkeypatch.setattr(settings, "amocrm_mcp_client_secret", "secret")
+def test_live_charts_are_orders_only(monkeypatch):
     monkeypatch.setattr(settings, "moysklad_mcp_url", "https://moysklad.example/mcp")
     monkeypatch.setattr(settings, "moysklad_mcp_client_id", "id")
     monkeypatch.setattr(settings, "moysklad_mcp_client_secret", "secret")
     monkeypatch.setattr(
         connectors,
-        "_amocrm_snapshot",
-        lambda: (
-            [{"id": 11, "name": "Невзоровы", "price": 0, "status_id": 10, "updated_at": old}],
-            {},
-        ),
-    )
-    monkeypatch.setattr(
-        connectors,
         "_moysklad_snapshot",
-        lambda: (
-            [{"name": "брус 50х150", "quantity": -2, "code": "BRUS", "inTransit": 3}],
-            [{"name": "Заказ 12", "sum": 120000, "payedSum": 0, "shippedSum": 0}],
-        ),
-    )
-    monkeypatch.setattr(
-        connectors,
-        "_production_tasks",
-        lambda: [{"id": "t1", "name": "012/DH-64", "moment": old}],
+        lambda: [{"name": "Заказ 12", "sum": 120000, "payedSum": 0, "shippedSum": 0}],
     )
     connectors.clear_cache()
     charts = {chart["id"]: chart for chart in connectors.live_charts(wait=True)}
-    assert charts["sales_stuck"]["agents"] == ["sales"]
-    assert charts["sales_stuck"]["bars"][0]["label"] == "Невзоровы"
     assert charts["finance_money"]["agents"] == ["finance"]
     assert charts["finance_money"]["unit"] == "₽"
-    assert charts["warehouse_gap"]["agents"] == ["warehouse"]
-    assert charts["warehouse_gap"]["bars"][0]["value"] == -2
-    assert charts["production_tasks"]["agents"] == ["production"]
     assert charts["coordinator_pulse"]["agents"] == ["coordinator"]
-    assert "marketer" not in {agent for chart in charts.values() for agent in chart["agents"]}
-    assert "deals" not in charts
-    assert "stock" not in charts
+    agents_seen = {agent for chart in charts.values() for agent in chart["agents"]}
+    assert agents_seen == {"finance", "coordinator"}
+    assert "warehouse_gap" not in charts
+    assert "sales_stuck" not in charts
+    assert "production_tasks" not in charts
 
 
-def test_live_briefing_uses_moysklad_not_empty_module(monkeypatch):
+def test_live_briefing_orders_only(monkeypatch):
     monkeypatch.setattr(settings, "moysklad_mcp_url", "https://moysklad.example/mcp")
     monkeypatch.setattr(settings, "moysklad_mcp_client_id", "id")
     monkeypatch.setattr(settings, "moysklad_mcp_client_secret", "secret")
     monkeypatch.setattr(
         connectors,
         "_chart_sources",
-        lambda: (
-            [],
-            [{"name": "саморезы", "quantity": -999.6}, {"name": "вентилятор", "quantity": -2}],
-            [{"name": "00002", "sum": 100, "payedSum": 0, "shippedSum": 100}],
-            [{"name": "0001/DH-21", "moment": "2026-01-26T20:47:00"}],
-        ),
+        lambda **kwargs: [
+            {"name": "00002", "sum": 100, "payedSum": 0, "shippedSum": 100},
+            {"name": "00003", "sum": 200, "payedSum": 200, "shippedSum": 0},
+        ],
     )
     connectors.clear_cache()
     text = connectors.live_briefing_text()
-    assert "минусе 2" in text
-    assert "саморезы" in text
-    assert "не пустой Soborbum" in text or "МойСклад" in text
-    assert "достаточ" not in text
-
-
-def test_stock_charts_count_every_page(monkeypatch):
-    monkeypatch.setattr(settings, "moysklad_mcp_url", "https://moysklad.example/mcp")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_id", "id")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_secret", "secret")
-
-    def fake_call(name, arguments=None, timeout=30.0):
-        offset = (arguments or {}).get("offset", 0)
-        if name == "get_stock_all":
-            if offset == 0:
-                return {"rows": [{"name": "вентилятор", "quantity": -2}] + [{"name": f"ок{i}", "quantity": 1} for i in range(99)]}
-            if offset == 100:
-                return {"rows": [{"name": "саморезы", "quantity": -999.6}]}
-            return {"rows": []}
-        if name == "list_customer_orders":
-            return {"rows": []}
-        if name == "list_production_tasks":
-            return {"rows": []}
-        raise AssertionError(name)
-
-    class FakeRemote:
-        def call_tool(self, name, arguments=None, timeout=30.0):
-            return fake_call(name, arguments, timeout)
-
-    monkeypatch.setattr(connectors, "client_for", lambda target: FakeRemote())
-    connectors.clear_cache()
-    connectors._charts_ready = []
-    charts = {chart["id"]: chart for chart in connectors.live_charts(wait=True)}
-    pulse = {bar["label"]: bar["value"] for bar in charts["coordinator_pulse"]["bars"]}
-    assert pulse["Позиции в минусе"] == 2
-    assert charts["warehouse_gap"]["bars"][0]["label"].startswith("саморезы")
-    assert charts["warehouse_gap"]["bars"][0]["value"] == -999.6
+    assert "без оплаты 1" in text
+    assert "заказы покупателей" in text.lower()
+    assert "в минусе" not in text.lower()
+    assert "цех" not in text.lower()
 
 
 def test_proxy_base_url_drops_v1_suffix():

@@ -1,28 +1,64 @@
+import logging
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger("app.core.config")
+
+_INSECURE_JWT_SECRETS = {"", "change-me-in-production", "changeme", "secret"}
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # "prod" (default) hard-fails on insecure secrets; "dev" downgrades to a warning
+    # so a local checkout still boots without a real .env.
+    app_env: str = "prod"
+
     database_url: str = "postgresql+psycopg2://soborbum:soborbum@db:5432/soborbum"
 
-    jwt_secret: str = "change-me-in-production"
+    jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 12
 
     storage_dir: str = "/tmp/soborum-storage"
 
     admin_email: str = "admin@soborbum.local"
-    admin_password: str = "admin123"
+    # No default. Empty or a well-known value => bootstrap_admin refuses to create an admin.
+    admin_password: str = ""
     admin_full_name: str = "Administrator"
 
     # Comma-separated list of origins the frontend is served from, e.g.
-    # "http://localhost:5173,http://localhost:3000". "*" allows any origin.
-    cors_allowed_origins: str = "*"
+    # "http://localhost:5173,http://localhost:3000". "*" is rejected — set real origins.
+    cors_allowed_origins: str = ""
 
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
+
+    @property
+    def is_prod(self) -> bool:
+        return self.app_env.strip().lower() not in {"dev", "development", "local", "test"}
+
+    @model_validator(mode="after")
+    def _reject_insecure_defaults(self) -> "Settings":
+        problems: list[str] = []
+        secret = self.jwt_secret.strip()
+        if secret in _INSECURE_JWT_SECRETS:
+            problems.append("JWT_SECRET не задан или равен небезопасному значению по умолчанию")
+        elif len(secret) < 16:
+            problems.append("JWT_SECRET слишком короткий (нужно ≥ 16 символов)")
+        if self.cors_allowed_origins.strip() == "*":
+            problems.append("CORS_ALLOWED_ORIGINS='*' запрещён — укажите явные origin фронтенда")
+        if not problems:
+            return self
+        message = "Небезопасная конфигурация: " + "; ".join(problems)
+        if self.is_prod:
+            raise RuntimeError(
+                message + ". Задайте значения в .env или выставьте APP_ENV=dev для локальной разработки."
+            )
+        log.warning("%s (APP_ENV=%s — продолжаю)", message, self.app_env)
+        return self
 
     # Local checkout of DUROV-OS/vault_backups. Empty = pack without notes.
     vault_root: str = ""
@@ -36,10 +72,7 @@ class Settings(BaseSettings):
     anthropic_base_url: str = ""
     ai_model: str = "claude-sonnet-5"
 
-    # Read-only freshness. Never write deals or stock from the shift.
-    amocrm_subdomain: str = ""
-    amocrm_base_domain: str = "amocrm.ru"
-    amocrm_long_lived_token: str = ""
+    # Read-only freshness for the shift: МойСклад customer orders only (bookkeeping).
     moysklad_token: str = ""
 
     # Remote MCP connector to the knowledge base. The provider advertises
@@ -55,10 +88,6 @@ class Settings(BaseSettings):
     mcp_redirect_uri: str = "https://claude.ai/api/mcp/auth_callback"
 
     # Same OAuth shape as the knowledge-base MCP. Shift calls read tools only.
-    amocrm_mcp_url: str = ""
-    amocrm_mcp_client_id: str = ""
-    amocrm_mcp_client_secret: str = ""
-    amocrm_mcp_scope: str = "amocrm offline_access"
     moysklad_mcp_url: str = ""
     moysklad_mcp_client_id: str = ""
     moysklad_mcp_client_secret: str = ""
@@ -71,10 +100,6 @@ class Settings(BaseSettings):
     @property
     def mcp_configured(self) -> bool:
         return bool(self.mcp_server_url and self.mcp_oauth_client_id and self.mcp_oauth_client_secret)
-
-    @property
-    def amocrm_mcp_configured(self) -> bool:
-        return bool(self.amocrm_mcp_url and self.amocrm_mcp_client_id and self.amocrm_mcp_client_secret)
 
     @property
     def moysklad_mcp_configured(self) -> bool:

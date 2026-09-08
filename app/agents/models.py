@@ -61,6 +61,8 @@ class AgentShiftItem(Base):
     stance: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     legal_verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    # False = no live source and no Claude; stance is an honest "нет данных", not analysis.
+    has_live_data: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     reviews: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
 
     shift: Mapped[AgentShift] = relationship(back_populates="items")

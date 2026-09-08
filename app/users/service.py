@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
@@ -5,10 +7,23 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.users.models import User, UserModuleAccess, UserRole
 
+log = logging.getLogger("app.users.service")
+
+_INSECURE_ADMIN_PASSWORDS = {"", "admin123", "admin", "password"}
+
 
 def bootstrap_admin(db: Session) -> None:
     has_admin = db.query(User).filter(User.role == UserRole.ADMIN).first()
     if has_admin:
+        return
+    if settings.admin_password.strip() in _INSECURE_ADMIN_PASSWORDS:
+        message = (
+            "ADMIN_PASSWORD не задан или небезопасен — администратор не создан. "
+            "Задайте ADMIN_PASSWORD в .env и перезапустите."
+        )
+        if settings.is_prod:
+            raise RuntimeError(message)
+        log.warning("%s (APP_ENV=%s)", message, settings.app_env)
         return
     admin = User(
         email=settings.admin_email,

@@ -60,7 +60,12 @@ def _speak(agent_id: AgentId, text: str, legal: LegalDecision, context: SharedCo
     relevant = _rank_hits(agent_id, context.hits)
     citations = [f"{hit.title} ({hit.path})" if hit.path else hit.title for hit in relevant[:3]]
     if not citations:
-        citations = ["общий контекст компании не дал профильного факта"]
+        stance = (
+            f"{RU_LABELS[agent_id].capitalize()}. По запросу «{_one_line(text)}» "
+            "живых данных по роли нет — вывод не делаю. "
+            f"Не моё: {DOES_NOT_OWN[agent_id]}."
+        )
+        return Opinion(agent=agent_id, stance=stance, citations=[])
     excerpt = next((hit.excerpt for hit in relevant if hit.excerpt), "")
     stance = (
         f"{RU_LABELS[agent_id].capitalize()}. По запросу «{_one_line(text)}». "
@@ -85,17 +90,8 @@ def _rank_hits(agent_id: AgentId, hits: list[ContextHit]) -> list[ContextHit]:
 
 def _live_hit(agent_id: AgentId, hit: ContextHit) -> bool:
     path = hit.path or ""
-    if hit.source == "crm" and path.startswith("amocrm/") and agent_id in {
-        AgentId.COORDINATOR,
-        AgentId.SALES,
-        AgentId.MARKETER,
-        AgentId.FINANCE,
-    }:
-        return True
     if hit.source == "warehouse" and path.startswith("moysklad/") and agent_id in {
         AgentId.COORDINATOR,
-        AgentId.WAREHOUSE,
-        AgentId.PRODUCTION,
         AgentId.FINANCE,
     }:
         return True
