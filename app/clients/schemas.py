@@ -18,6 +18,14 @@ class ClientCreate(BaseModel):
     phone: str
     email: str
     contacts: list[ClientContact] = []
+    max_chat_id: int | None = None
+
+
+class ClientMaxChatUpdate(BaseModel):
+    """Привязка переписки с клиентом к чату в мессенджере MAX. `null`
+    отвязывает; `0` — «Избранное»."""
+
+    max_chat_id: int | None = None
 
 
 class ClientProjectUpdate(BaseModel):
@@ -74,6 +82,7 @@ class ClientOut(BaseModel):
     phone: str
     email: str
     contacts: list[ClientContact] = []
+    max_chat_id: int | None
 
     order_type: OrderType | None
     wishes_description: str | None

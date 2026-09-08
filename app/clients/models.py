@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -71,6 +71,11 @@ class Client(Base):
     # Паспорт/ИНН/дата рождения больше не собираются — для работы с клиентом
     # достаточно знать, где и как с ним связаться.
     contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # ID чата в мессенджере MAX (app/max), к которому привязана переписка с
+    # клиентом. Редактируется в любой момент, ни к одной стадии не привязан.
+    # 0 — «Избранное» (чат с самим собой); id групп/каналов бывают
+    # отрицательными и большими, поэтому BigInteger.
+    max_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     # --- Project info: appears at DISCUSSION, required before APPROVAL, then locked ---
     order_type: Mapped[OrderType | None] = mapped_column(Enum(OrderType, name="order_type"), nullable=True)

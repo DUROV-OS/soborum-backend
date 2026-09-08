@@ -8,6 +8,7 @@ from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
+    ClientMaxChatUpdate,
     ClientPaymentUpdate,
     ClientProjectUpdate,
 )
@@ -51,6 +52,7 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
         phone=payload.phone,
         email=payload.email,
         contacts=[c.model_dump() for c in payload.contacts],
+        max_chat_id=payload.max_chat_id,
     )
     db.add(client)
     db.flush()
@@ -138,6 +140,14 @@ def set_house_project_file(db: Session, client: Client, file_id: int) -> Client:
     if client.documents_locked_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
     client.house_project_file_id = file_id
+    db.flush()
+    return client
+
+
+def set_max_chat_id(db: Session, client: Client, payload: ClientMaxChatUpdate) -> Client:
+    """Привязать/отвязать чат MAX. Доступно на любой стадии — это не
+    документные данные, а служебная ссылка на переписку."""
+    client.max_chat_id = payload.max_chat_id
     db.flush()
     return client
 
