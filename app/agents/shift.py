@@ -35,6 +35,7 @@ class ShiftItemDraft:
     stance: str
     citations: list[str]
     legal_verdict: str
+    has_live_data: bool = False
     reviews: list[ShiftReview] = field(default_factory=list)
 
 
@@ -66,15 +67,21 @@ def run_shift(vault_root: str | None = None) -> ShiftDraft:
         live = [hit for hit in relevant if _live_hit(agent_id, hit)]
         citations = [hit.title for hit in (live or relevant)[:3] if hit.title]
         stance: str | None = None
+        has_live_data = False
         if live:
             stance = live_stance_for(agent_id)
+            if stance:
+                has_live_data = True
         if not stance:
             claude_stance = _claude_stance(agent_id, question, context)
             if claude_stance:
                 claude_used = True
+                has_live_data = True
                 stance = claude_stance
         if not stance:
-            stance = _plain_stance(agent_id, relevant)
+            # No live source, no Claude — do not fabricate. Mark honestly.
+            stance = _no_data_stance(agent_id)
+            has_live_data = False
         items.append(
             ShiftItemDraft(
                 agent=agent_id,
@@ -82,6 +89,7 @@ def run_shift(vault_root: str | None = None) -> ShiftDraft:
                 stance=stance,
                 citations=citations or [],
                 legal_verdict=legal.verdict.value,
+                has_live_data=has_live_data,
             )
         )
 
@@ -238,27 +246,10 @@ def _approval_title(kind: str) -> str:
     return "Нужно ваше решение"
 
 
-def _plain_stance(agent_id: AgentId, hits) -> str:
-    crm = [
-        hit.title.removeprefix("amoCRM: ")
-        for hit in hits
-        if hit.source == "crm" and (hit.path or "").startswith("amocrm/leads/")
-    ]
-    stock = [
-        hit.title.removeprefix("МойСклад: ").removeprefix("МойСклад заказ: ")
-        for hit in hits
-        if hit.source == "warehouse" and (hit.path or "").startswith("moysklad/")
-    ]
+def _no_data_stance(agent_id: AgentId) -> str:
     if agent_id == AgentId.LAWYER:
         return "Ворованную базу конкурента нельзя. Договор и обещание от имени владельца — вам."
-    bits: list[str] = []
-    if crm and agent_id in {AgentId.COORDINATOR, AgentId.SALES, AgentId.MARKETER, AgentId.FINANCE}:
-        bits.append(f"В amoCRM открыты: {', '.join(crm[:2])}.")
-    if stock and agent_id in {AgentId.COORDINATOR, AgentId.WAREHOUSE, AgentId.PRODUCTION, AgentId.FINANCE}:
-        bits.append(f"В МойСкладе: {', '.join(stock[:2])}.")
-    if not bits:
-        return "Живого факта нет — сделки и остатки не выдумываю."
-    return " ".join(bits[:2])
+    return "Нет данных: живого факта по роли нет и Claude недоступен — ничего не выдумываю."
 
 
 def _stance_for_legal(stance: str) -> str:
@@ -289,7 +280,7 @@ def _claude_stance(agent_id: AgentId, question: str, context: SharedContext) -> 
                 f"Ты {RU_LABELS[agent_id]} Durov.House. Не чат-бот. "
                 f"Не твоё: {DOES_NOT_OWN[agent_id]}. "
                 "Ответь ровно 1–2 короткими предложениями. Без списков и без просьб прислать ещё данные. "
-                "Если в цитатах есть amoCRM или МойСклад — назови 1–2 живых факта оттуда. "
+                "Если в цитатах есть заказы МойСклад — назови 1–2 живых факта оттуда. "
                 "Нет живого факта — одно предложение: факта нет, цифры не выдумываю. "
                 "Не обещай цену, срок, договор, найм."
             ),

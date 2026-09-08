@@ -14,6 +14,11 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
+          APP_ENV: ${{ secrets.APP_ENV }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.CORS_ALLOWED_ORIGINS }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
@@ -21,9 +26,6 @@ jobs:
           MCP_OAUTH_CLIENT_ID: ${{ secrets.MCP_OAUTH_CLIENT_ID }}
           MCP_OAUTH_CLIENT_SECRET: ${{ secrets.MCP_OAUTH_CLIENT_SECRET }}
           MCP_REDIRECT_URI: ${{ secrets.MCP_REDIRECT_URI }}
-          AMOCRM_MCP_URL: ${{ secrets.AMOCRM_MCP_URL }}
-          AMOCRM_MCP_CLIENT_ID: ${{ secrets.AMOCRM_MCP_CLIENT_ID }}
-          AMOCRM_MCP_CLIENT_SECRET: ${{ secrets.AMOCRM_MCP_CLIENT_SECRET }}
           MOYSKLAD_MCP_URL: ${{ secrets.MOYSKLAD_MCP_URL }}
           MOYSKLAD_MCP_CLIENT_ID: ${{ secrets.MOYSKLAD_MCP_CLIENT_ID }}
           MOYSKLAD_MCP_CLIENT_SECRET: ${{ secrets.MOYSKLAD_MCP_CLIENT_SECRET }}
@@ -40,9 +42,9 @@ jobs:
           python3 - <<'PY'
           import os, pathlib
           keys = [
+            "APP_ENV", "JWT_SECRET", "ADMIN_EMAIL", "ADMIN_PASSWORD", "CORS_ALLOWED_ORIGINS",
             "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AI_MODEL",
             "MCP_SERVER_URL", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_CLIENT_SECRET", "MCP_REDIRECT_URI",
-            "AMOCRM_MCP_URL", "AMOCRM_MCP_CLIENT_ID", "AMOCRM_MCP_CLIENT_SECRET",
             "MOYSKLAD_MCP_URL", "MOYSKLAD_MCP_CLIENT_ID", "MOYSKLAD_MCP_CLIENT_SECRET",
             "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
           ]

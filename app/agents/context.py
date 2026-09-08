@@ -12,7 +12,7 @@ POLICY = {
     "discount_autonomy_pct": "5",
     "final_price": "human_approval",
     "competitor_intel": "open_sources_only",
-    "crm_role": "primary_collection_then_vault",
+    "live_source": "moysklad_customer_orders_only",
     "source_of_truth": "vault_backups",
 }
 

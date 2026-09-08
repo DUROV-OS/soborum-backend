@@ -1,24 +1,22 @@
 import os
 
 os.environ["DATABASE_URL"] = "sqlite://"
+os.environ["APP_ENV"] = "dev"
 os.environ["JWT_SECRET"] = "isolated-regression-test-secret-never-use-in-production"
+os.environ["ADMIN_PASSWORD"] = ""
+os.environ["CORS_ALLOWED_ORIGINS"] = "http://localhost:5173"
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["STORAGE_DIR"] = "/tmp/durov-os-tests"
 os.environ["AGENT_SHIFT_AUTORUN"] = "false"
 os.environ["MCP_SERVER_URL"] = ""
 os.environ["MCP_OAUTH_CLIENT_ID"] = ""
 os.environ["MCP_OAUTH_CLIENT_SECRET"] = ""
-os.environ["AMOCRM_MCP_URL"] = ""
-os.environ["AMOCRM_MCP_CLIENT_ID"] = ""
-os.environ["AMOCRM_MCP_CLIENT_SECRET"] = ""
 os.environ["MOYSKLAD_MCP_URL"] = ""
 os.environ["MOYSKLAD_MCP_CLIENT_ID"] = ""
 os.environ["MOYSKLAD_MCP_CLIENT_SECRET"] = ""
 os.environ["DASHBOARD_MCP_URL"] = ""
 os.environ["DASHBOARD_MCP_CLIENT_ID"] = ""
 os.environ["DASHBOARD_MCP_CLIENT_SECRET"] = ""
-os.environ["AMOCRM_SUBDOMAIN"] = ""
-os.environ["AMOCRM_LONG_LIVED_TOKEN"] = ""
 os.environ["MOYSKLAD_TOKEN"] = ""
 
 import pytest

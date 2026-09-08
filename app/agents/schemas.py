@@ -90,6 +90,7 @@ class ShiftItemOut(BaseModel):
     stance: str
     citations: list[str]
     legal_verdict: LegalVerdictName
+    has_live_data: bool = False
     reviews: list[ShiftReviewOut]
 
 
