@@ -33,6 +33,12 @@ UA = (
 )
 
 
+class MediaError(RuntimeError):
+    """MAX отклонил запрос воспроизводимой ссылки на медиа (нет доступа,
+    вложение удалено, неверный id). Фронт по такой ошибке показывает
+    заглушку вместо плеера."""
+
+
 class MaxSession:
     """Одно websocket-соединение; HELLO + AUTH выполняются в open()."""
 
@@ -162,6 +168,34 @@ class MaxSession:
             if p.get("url"):
                 return p["url"]
         raise TimeoutError("сервер не вернул ссылку на вложение")
+
+    def media_url(self, media_id, chat_id, message_id) -> dict:
+        """Воспроизводимые ссылки на VIDEO и AUDIO (голосовые) вложения.
+
+        Opcode 83 (GET_VIDEO_URL) понимает только поле ``videoId``; для
+        голосовых сообщений (в ленте они приходят как ``_type=UNSUPPORTED``
+        с ``audioId``) тот же id передаётся в ``videoId``. Токен вложения
+        не требуется. Ответ: ``{ "MP4_360"|"MP4_480"|"MP4_720": <url>,
+        "EXTERNAL": <url>, "cache": <bool> }`` — набор ключей плавающий.
+        """
+        self._send(83, {
+            "videoId": int(media_id),
+            "chatId": chat_id,
+            "messageId": message_id,
+        })
+        for _ in range(80):
+            frame = self._wait(83)
+            # cmd=3 -> сервер отклонил запрос (нет доступа, id не найден, ...)
+            if frame.get("cmd") == 3:
+                p = frame.get("payload") or {}
+                raise MediaError(
+                    p.get("message") or p.get("localizedMessage")
+                    or "MAX отклонил запрос медиа"
+                )
+            p = frame.get("payload") or {}
+            if p.get("EXTERNAL") or any(k.startswith("MP4_") for k in p):
+                return p
+        raise TimeoutError("сервер не вернул ссылку на медиа")
 
 
 @contextlib.contextmanager
