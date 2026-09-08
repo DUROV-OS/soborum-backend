@@ -14,3 +14,4 @@ email-validator==2.2.0
 anthropic==1.3.0
 httpx==0.28.1
 trendspy==0.1.6
+websocket-client==1.6.1

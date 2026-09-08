@@ -44,5 +44,10 @@ class Settings(BaseSettings):
     def mcp_configured(self) -> bool:
         return bool(self.mcp_server_url and self.mcp_oauth_client_id and self.mcp_oauth_client_secret)
 
+    # --- Мессенджер MAX (app/max) ---
+    # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
+    # web.max.ru. Без него раздел /api/max отдаёт 503.
+    max_token: str = ""
+
 
 settings = Settings()

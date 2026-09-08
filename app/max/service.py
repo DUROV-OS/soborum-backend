@@ -1,0 +1,138 @@
+"""Приведение ответов MAX к простым JSON-структурам для фронта.
+
+Перенос функций-«шейперов» из Desktop/max_idi_nahuy/api.py. Всё read-only.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import HTTPException, status
+
+from app.max.client import session
+
+
+def _fmt_attach(a: dict) -> dict:
+    d = {
+        "type": a.get("_type"),
+        "name": a.get("name"),
+        "fileId": a.get("fileId"),
+        "photoId": a.get("photoId"),
+        "videoId": a.get("videoId"),
+        "audioId": a.get("audioId"),
+        "size": a.get("size"),
+        "baseUrl": a.get("baseUrl"),
+        "url": a.get("url"),
+        "title": a.get("title"),
+    }
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def _fmt_msg(m: dict | None) -> dict | None:
+    if not m:
+        return None
+    return {
+        "id": m.get("id"),
+        "time": m.get("time"),
+        "sender": m.get("sender"),
+        "type": m.get("type"),
+        "status": m.get("status"),
+        "text": m.get("text", ""),
+        "elements": m.get("elements", []),
+        "attaches": [_fmt_attach(a) for a in m.get("attaches", [])],
+    }
+
+
+def _contact_name(ct: dict | None) -> str | None:
+    if not ct:
+        return None
+    names = ct.get("names")
+    if isinstance(names, list) and names:
+        n = names[0]
+        cand = n.get("name") or " ".join(
+            x for x in (n.get("firstName"), n.get("lastName")) if x
+        )
+        if cand:
+            return cand
+    return ct.get("name") or ct.get("firstName") or ct.get("phone")
+
+
+def _chat_title(c: dict | None, contacts: dict, viewer_id: str = "") -> str | None:
+    if not c:
+        return None
+    if c.get("title"):
+        return c["title"]
+    # диалог: имя собеседника
+    peers = [p for p in (c.get("participants") or {}) if str(p) != viewer_id]
+    for pid in (peers or list(c.get("participants") or {})):
+        name = _contact_name(contacts.get(str(pid)))
+        if name:
+            return name
+    return str(c.get("id"))
+
+
+def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> dict:
+    cid = c.get("id")
+    msgs = last_map.get(str(cid)) or last_map.get(cid) or []
+    last = c.get("lastMessage") or (msgs[-1] if msgs else None)
+    return {
+        "id": cid,
+        "type": c.get("type"),
+        "title": _chat_title(c, contacts, viewer_id),
+        "unread": c.get("newMessages", c.get("unreadCount", 0)),
+        "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
+        "lastMessage": _fmt_msg(last),
+    }
+
+
+def list_chats(limit: int | None = None) -> dict[str, Any]:
+    with session() as s:
+        contacts = s.contacts_by_id()
+        last_map = s.last_messages()
+        vid = s.viewer_id()
+        items = [_fmt_chat(c, last_map, contacts, vid) for c in s.chats()]
+    items.sort(key=lambda x: x.get("lastEventTime") or 0, reverse=True)
+    if limit:
+        items = items[:limit]
+    return {"count": len(items), "chats": items}
+
+
+def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
+    with session() as s:
+        contacts = s.contacts_by_id()
+        vid = s.viewer_id()
+        meta = next((c for c in s.chats() if c.get("id") == chat_id), None)
+        msgs = s.history(chat_id, forward=limit, backward=backward)
+    return {
+        "chatId": chat_id,
+        "title": _chat_title(meta, contacts, vid),
+        "count": len(msgs),
+        "messages": [_fmt_msg(m) for m in msgs],
+    }
+
+
+def send_message(chat_id, text: str, notify: bool = True) -> dict[str, Any]:
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой текст")
+    with session() as s:
+        try:
+            payload = s.send_message(chat_id, text, notify=notify)
+        except (TimeoutError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+    return {
+        "chatId": payload.get("chatId", chat_id),
+        "message": _fmt_msg(payload.get("message")),
+    }
+
+
+def get_attachment_url(chat_id, message_id, file_id) -> str:
+    with session() as s:
+        try:
+            return s.attach_url(file_id, chat_id, message_id)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
