@@ -80,5 +80,10 @@ class Settings(BaseSettings):
     def moysklad_mcp_configured(self) -> bool:
         return bool(self.moysklad_mcp_url and self.moysklad_mcp_client_id and self.moysklad_mcp_client_secret)
 
+    # --- Мессенджер MAX (app/max) ---
+    # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
+    # web.max.ru. Без него раздел /api/max отдаёт 503.
+    max_token: str = ""
+
 
 settings = Settings()

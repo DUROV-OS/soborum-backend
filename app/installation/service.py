@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.clients.models import PaymentPlan
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import INSTALLATION_STAGE_ORDER, Installation, InstallationStage
 from app.installation.schemas import InstallationUpdate
@@ -58,6 +59,14 @@ def complete_installation(db: Session, installation: Installation) -> Installati
     if installation.stage != InstallationStage.FOLLOWUP:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Завершить можно только монтаж на стадии «проработка»"
+        )
+    # Для планов с оплатой после получения дома цикл нельзя закрыть, пока
+    # клиент не погасил остаток (см. app.clients.models.PaymentPlan).
+    client = installation.cycle.client
+    if client and client.payment_plan != PaymentPlan.FULL_PREPAYMENT and not client.balance_paid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Клиент ещё не внёс оплату после получения — цикл нельзя завершить",
         )
     installation.cycle.status = CycleStatus.COMPLETED
     db.flush()

@@ -19,6 +19,7 @@ from app.db.base import Base
 from app.db.session import engine, get_db, SessionLocal
 from app.installation.router import app as installation_app
 from app.marketing.router import app as marketing_app
+from app.max.router import app as max_app
 from app.production.router import app as production_app
 from app.tasks.router import app as tasks_app
 from app.users.router import app as auth_app
@@ -81,6 +82,7 @@ app.mount("/api/installation", installation_app)
 app.mount("/api/cycles", cycle_app)
 app.mount("/api/warehouse", warehouse_app)
 app.mount("/api/marketing", marketing_app)
+app.mount("/api/max", max_app)
 app.mount("/api/tasks", tasks_app)
 app.mount("/api/ai", ai_app)
 app.mount("/api/dashboard", dashboard_app)

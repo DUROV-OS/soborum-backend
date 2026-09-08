@@ -41,6 +41,7 @@ python -m venv .venv
 | Задачи | http://localhost:8005/api/tasks/docs |
 | ИИ-ассистент | http://localhost:8005/api/ai/docs |
 | Совет директоров | http://localhost:8005/api/board/docs |
+| Мессенджер MAX | http://localhost:8005/api/max/docs |
 
 Авторизация — JWT: `POST /api/auth/login` (форма `username`/`password`), затем
 `Authorize` в любом Swagger UI с полученным токеном (действует на все разделы,

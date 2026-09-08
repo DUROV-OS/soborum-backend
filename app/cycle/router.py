@@ -11,7 +11,7 @@ from app.users.models import User
 app = FastAPI(
     title="Soborbum — Цикл клиента",
     description="Сквозной, обобщающий взгляд на цикл: клиент + производство + монтаж + текущий статус.",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 require_cycle = require_module(AccessModule.CYCLE)

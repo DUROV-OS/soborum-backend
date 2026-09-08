@@ -14,6 +14,7 @@ from app.users.models import User
 METRICS = [
     ("clients", "Клиентов", "total_clients", False),
     ("clients", "Ожидают подтверждения оплаты", "awaiting_payment_confirmation", True),
+    ("clients", "Ожидают оплаты после получения", "awaiting_balance_payment", True),
     ("production", "Производственных заказов", "total_productions", False),
     ("production", "Модули ждут материалы", "modules_with_material_shortfall", True),
     ("installation", "Монтажей на 7 дней", "scheduled_next_7_days", False),
@@ -36,6 +37,7 @@ ATTENTION = [
     ("production", "pending_material_requests", "Проверить заявки на материалы", "Заявки ожидают решения склада.", "/production", "warning"),
     ("warehouse", "materials_needing_supply", "Проверить пополнение склада", "Остатки и текущая потребность требуют внимания.", "/warehouse", "warning"),
     ("clients", "awaiting_payment_confirmation", "Проверить поступление оплаты", "Клиенты на этапе оплаты без подтверждённого поступления.", "/clients", "warning"),
+    ("clients", "awaiting_balance_payment", "Принять оплату после получения", "Клиенты на постоплате с непогашенным остатком по договору.", "/clients", "warning"),
     ("clients", "leads_stuck_over_14_days", "Вернуться к зависшим обращениям", "Обращения остаются на этапе лида больше 14 дней.", "/clients", "warning"),
     ("marketing", "release_overdue", "Проверить план публикаций", "Плановая дата прошла, материалы ещё не выпущены.", "/marketing", "warning"),
     ("users", "workers_without_module_access", "Назначить доступ сотрудникам", "Активным сотрудникам не выдан доступ к рабочим разделам.", "/admin", "warning"),
