@@ -12,14 +12,21 @@ from fastapi import HTTPException, status
 from app.max.client import session
 
 
+def _sid(v: Any) -> str | None:
+    """ID-снежинки MAX (message id, fileId, ...) не влезают в JS Number
+    (> 2**53), поэтому отдаём их строкой — иначе фронт округлит и не
+    сможет вернуть точное значение в /attachment."""
+    return None if v is None else str(v)
+
+
 def _fmt_attach(a: dict) -> dict:
     d = {
         "type": a.get("_type"),
         "name": a.get("name"),
-        "fileId": a.get("fileId"),
-        "photoId": a.get("photoId"),
-        "videoId": a.get("videoId"),
-        "audioId": a.get("audioId"),
+        "fileId": _sid(a.get("fileId")),
+        "photoId": _sid(a.get("photoId")),
+        "videoId": _sid(a.get("videoId")),
+        "audioId": _sid(a.get("audioId")),
         "size": a.get("size"),
         "baseUrl": a.get("baseUrl"),
         "url": a.get("url"),
@@ -28,13 +35,15 @@ def _fmt_attach(a: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _fmt_msg(m: dict | None) -> dict | None:
+def _fmt_msg(m: dict | None, viewer_id: str = "") -> dict | None:
     if not m:
         return None
+    sender = m.get("sender")
     return {
-        "id": m.get("id"),
+        "id": _sid(m.get("id")),
         "time": m.get("time"),
-        "sender": m.get("sender"),
+        "sender": _sid(sender),
+        "outgoing": viewer_id != "" and str(sender) == str(viewer_id),
         "type": m.get("type"),
         "status": m.get("status"),
         "text": m.get("text", ""),
@@ -81,7 +90,7 @@ def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> d
         "title": _chat_title(c, contacts, viewer_id),
         "unread": c.get("newMessages", c.get("unreadCount", 0)),
         "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
-        "lastMessage": _fmt_msg(last),
+        "lastMessage": _fmt_msg(last, viewer_id),
     }
 
 
@@ -106,8 +115,9 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
     return {
         "chatId": chat_id,
         "title": _chat_title(meta, contacts, vid),
+        "viewerId": vid,
         "count": len(msgs),
-        "messages": [_fmt_msg(m) for m in msgs],
+        "messages": [_fmt_msg(m, vid) for m in msgs],
     }
 
 
@@ -122,9 +132,10 @@ def send_message(chat_id, text: str, notify: bool = True) -> dict[str, Any]:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
+        vid = s.viewer_id()
     return {
         "chatId": payload.get("chatId", chat_id),
-        "message": _fmt_msg(payload.get("message")),
+        "message": _fmt_msg(payload.get("message"), vid),
     }
 
 
