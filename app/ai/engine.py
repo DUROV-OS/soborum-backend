@@ -48,7 +48,10 @@ def _get_client() -> anthropic.Anthropic:
         )
     from app.core.llm import anthropic_client
 
-    return anthropic_client(timeout=60.0, max_retries=1)
+    # The KZ egress to api.anthropic.com blips; the SDK backs off exponentially
+    # between retries, so a couple extra attempts keep a transient
+    # APIConnectionError from surfacing as "Марина временно недоступна".
+    return anthropic_client(timeout=60.0, max_retries=4)
 
 
 def _system_for(chat: Chat, db: Session | None = None) -> str:
