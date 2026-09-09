@@ -9,12 +9,13 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from app.agents.connectors import live_stance_for
+from sqlalchemy.orm import Session
+
 from app.agents.context import gather
 from app.agents.ids import CROSS_REVIEWERS, DAILY_QUESTIONS, DOES_NOT_OWN, RU_LABELS, AgentId
 from app.agents.legal import scan
 from app.agents.runtime import _live_hit, _rank_hits
-from app.agents.types import LegalVerdict, SharedContext
+from app.agents.types import LegalDecision, LegalVerdict, SharedContext
 from app.core.config import settings
 
 log = logging.getLogger("app.agents.shift")
@@ -56,20 +57,20 @@ class ShiftDraft:
     claude_used: bool
 
 
-def run_shift(vault_root: str | None = None) -> ShiftDraft:
+def run_shift(db: Session | None = None, vault_root: str | None = None) -> ShiftDraft:
     claude_used = False
     items: list[ShiftItemDraft] = []
     for agent_id in AgentId:
         question = DAILY_QUESTIONS[agent_id]
         legal = scan(question)
-        context = gather(question, [agent_id], vault_root)
+        context = gather(question, [agent_id], vault_root, db)
         relevant = _rank_hits(agent_id, context.hits)
         live = [hit for hit in relevant if _live_hit(agent_id, hit)]
         citations = [hit.title for hit in (live or relevant)[:3] if hit.title]
         stance: str | None = None
         has_live_data = False
         if live:
-            stance = live_stance_for(agent_id)
+            stance = " ".join(hit.excerpt for hit in live[:2] if hit.excerpt).strip() or None
             if stance:
                 has_live_data = True
         if not stance:
@@ -111,41 +112,6 @@ def run_shift(vault_root: str | None = None) -> ShiftDraft:
 
 
 def _review(reviewer: AgentId, item: ShiftItemDraft, by_id: dict[AgentId, ShiftItemDraft]) -> ShiftReview:
-    if reviewer == AgentId.FINANCE and item.agent == AgentId.SALES:
-        return ShiftReview(
-            reviewer=reviewer,
-            kind="pricing",
-            escalate=True,
-            text="Нельзя самому ставить окончательную цену или скидку больше 5%. Это решает человек.",
-        )
-    if reviewer == AgentId.PRODUCTION and item.agent == AgentId.SALES:
-        return ShiftReview(
-            reviewer=reviewer,
-            kind="ops",
-            escalate=False,
-            text="Срок клиенту не обещать, пока цех не подтвердил загрузку и материал.",
-        )
-    if reviewer == AgentId.SALES and item.agent == AgentId.FINANCE:
-        return ShiftReview(
-            reviewer=reviewer,
-            kind="ops",
-            escalate=False,
-            text="Цену и срок из CRM в договор сам не переписываю.",
-        )
-    if reviewer == AgentId.WAREHOUSE and item.agent == AgentId.PRODUCTION:
-        return ShiftReview(
-            reviewer=reviewer,
-            kind="ops",
-            escalate=False,
-            text="Заявка цеха без остатка в МойСкладе — не обещание поставки.",
-        )
-    if reviewer == AgentId.ENGINEER and item.agent == AgentId.PRODUCTION:
-        return ShiftReview(
-            reviewer=reviewer,
-            kind="ops",
-            escalate=False,
-            text="Отклонение от техкарты на площадку не выпускать. Нестандарт — не типовой узел.",
-        )
     if reviewer == AgentId.LAWYER:
         legal = scan(item.daily_question + "\n" + _stance_for_legal(item.stance))
         escalate = legal.verdict != LegalVerdict.ALLOW
@@ -154,17 +120,26 @@ def _review(reviewer: AgentId, item: ShiftItemDraft, by_id: dict[AgentId, ShiftI
             kind="legal",
             escalate=escalate,
             text=(
-                "В очередь: без вашего «да» не выпускаем."
+                _legal_reviewer_line(legal)
                 if escalate
-                else "Стоп-факторов нет. Ворованную базу конкурента нельзя."
+                else "Юрист черновик посмотрел: детерминированный фильтр стоп-факторов не нашёл."
             ),
         )
     return ShiftReview(
         reviewer=reviewer,
         kind="ops",
         escalate=False,
-        text=f"{RU_LABELS[reviewer].capitalize()} видел черновик и своего стоп-фактора не нашёл.",
+        text=(
+            f"{RU_LABELS[reviewer].capitalize()} видел черновик "
+            f"{RU_LABELS[item.agent]}а и своего стоп-фактора не нашёл."
+        ),
     )
+
+
+def _legal_reviewer_line(legal: LegalDecision) -> str:
+    lines = list(dict.fromkeys(finding.human_line for finding in legal.findings))
+    tail = " " + " ".join(lines) if lines else ""
+    return "В очередь: без вашего «да» не выпускаем." + tail
 
 
 def _approvals(items: list[ShiftItemDraft]) -> list[ApprovalDraft]:
@@ -247,9 +222,10 @@ def _approval_title(kind: str) -> str:
 
 
 def _no_data_stance(agent_id: AgentId) -> str:
-    if agent_id == AgentId.LAWYER:
-        return "Ворованную базу конкурента нельзя. Договор и обещание от имени владельца — вам."
-    return "Нет данных: живого факта по роли нет и Claude недоступен — ничего не выдумываю."
+    return (
+        "Нет данных: в базе DurovOS живого факта по роли нет и Claude недоступен — "
+        "ничего не выдумываю."
+    )
 
 
 def _stance_for_legal(stance: str) -> str:
@@ -267,7 +243,7 @@ def _claude_stance(agent_id: AgentId, question: str, context: SharedContext) -> 
     pack = [f"- {hit.title} ({hit.path}): {hit.excerpt}" for hit in ranked if hit.excerpt][:8]
     if not pack:
         pack = [
-            "- (цитат vault/CRM/склада нет: живых фактов в контексте нет — не выдумывай цифры)"
+            "- (фактов из базы DurovOS и vault в контексте нет — не выдумывай цифры)"
         ]
     try:
         from app.core.llm import anthropic_client
@@ -280,7 +256,7 @@ def _claude_stance(agent_id: AgentId, question: str, context: SharedContext) -> 
                 f"Ты {RU_LABELS[agent_id]} Durov.House. Не чат-бот. "
                 f"Не твоё: {DOES_NOT_OWN[agent_id]}. "
                 "Ответь ровно 1–2 короткими предложениями. Без списков и без просьб прислать ещё данные. "
-                "Если в цитатах есть заказы МойСклад — назови 1–2 живых факта оттуда. "
+                "Если в цитатах есть срез базы DurovOS — назови 1–2 живых числа оттуда. "
                 "Нет живого факта — одно предложение: факта нет, цифры не выдумываю. "
                 "Не обещай цену, срок, договор, найм."
             ),

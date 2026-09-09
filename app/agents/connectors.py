@@ -1,297 +1,431 @@
-"""Read-only МойСклад snapshot for gather().
+"""Read-only DurovOS-database snapshot for the agent shift and Marina consult.
 
-Only customer orders (bookkeeping: sums, paid, shipped). No CRM, no stock
-levels, no production tasks. Live numbers are freshness, weaker than a later
-vault `kind: fact`. This client only GETs. A missing token stays an honest stub.
+Agents read the company's own database — clients, cycle, production, warehouse,
+tasks, marketing — through :mod:`app.dashboard.service` snapshots plus a couple
+of finance/legal/engineer aggregates built here. No CRM, no МойСклад, no external
+sync. Everything here only reads; a missing row is an honest "нет данных", never
+a guess.
 """
 
 from __future__ import annotations
 
 import logging
-import re
-import threading
 import time
-from datetime import datetime, timezone
 
-import httpx
+from sqlalchemy.orm import Session
 
 from app.agents.ids import AgentId
 from app.agents.types import ContextHit
-from app.core.config import settings
-from app.core.mcp_remote import McpTarget, as_rows, client_for
+from app.clients.models import Client, ClientStage
+from app.dashboard import service as dashboard
+from app.db.session import SessionLocal
+from app.production.models import ProductionModule
 
 log = logging.getLogger("app.agents.connectors")
 
 _CACHE_TTL = 60.0
 _cache: dict[str, tuple[float, object]] = {}
-_charts_ready: list[dict] = []
-_charts_lock = threading.Lock()
-_charts_refreshing = False
 
-# Roles that see money/orders. No stock or CRM roles anymore.
-_ORDER_ROLES = {AgentId.COORDINATOR, AgentId.FINANCE}
+# Which snapshot sections each role reads from the DurovOS database.
+_ROLE_SECTIONS: dict[AgentId, tuple[str, ...]] = {
+    AgentId.COORDINATOR: ("cycle", "clients", "tasks"),
+    AgentId.SALES: ("clients",),
+    AgentId.MARKETER: ("marketing",),
+    AgentId.PRODUCTION: ("production", "tasks"),
+    AgentId.WAREHOUSE: ("warehouse",),
+    AgentId.FINANCE: ("finance", "clients"),
+    AgentId.LAWYER: ("legal",),
+    AgentId.ENGINEER: ("engineer", "production"),
+}
 
 
 def clear_cache() -> None:
     _cache.clear()
 
 
-def live_charts(*, wait: bool = False) -> list[dict]:
-    fresh = _cached("charts_ready")
-    if isinstance(fresh, list):
-        return list(fresh)
-    if _charts_ready and not wait:
-        _kick_chart_refresh()
-        return list(_charts_ready)
-    if wait:
-        return _build_and_store_charts()
-    _kick_chart_refresh()
-    return list(_charts_ready)
+# ------------------------------------------------------------- snapshot --
+
+def _build_snapshot(db: Session) -> dict:
+    snap: dict[str, dict] = {}
+    for key, (_module, builder) in dashboard.SECTION_BUILDERS.items():
+        try:
+            snap[key] = builder(db)
+        except Exception as error:  # pragma: no cover - defensive
+            log.warning("снимок раздела %s не собрался: %s", key, error)
+    for key, builder in (
+        ("finance", _finance_facts),
+        ("legal", _legal_facts),
+        ("engineer", _engineer_facts),
+    ):
+        try:
+            snap[key] = builder(db)
+        except Exception as error:  # pragma: no cover - defensive
+            log.warning("снимок раздела %s не собрался: %s", key, error)
+    return snap
 
 
-def live_briefing(*, wait: bool = True) -> dict:
-    """Compact live snapshot for Marina consult. Same source as the shift:
-    МойСклад customer orders only.
+def _snapshot(db: Session | None = None) -> dict:
+    if db is not None:
+        return _build_snapshot(db)
+    cached = _cached("snapshot")
+    if isinstance(cached, dict):
+        return cached
+    session = SessionLocal()
+    try:
+        snap = _build_snapshot(session)
+    except Exception as error:  # pragma: no cover - defensive
+        log.warning("снимок базы DurovOS не собрался: %s", error)
+        snap = {}
+    finally:
+        session.close()
+    _store("snapshot", snap)
+    return snap
 
-    wait=False: only cached orders (kick background refresh). Use this in the
-    consult system prompt so a cold МойСклад dump cannot block Claude for ~30s.
-    """
-    orders = _chart_sources(wait=wait)
-    unpaid = [
-        order
-        for order in orders
-        if _as_float(_order_sum(order)) - _as_float(order.get("payedSum")) > 1
+
+def _finance_facts(db: Session) -> dict:
+    rows = db.query(Client).all()
+    priced = [c for c in rows if c.final_price or c.estimated_price]
+    pipeline = sum(float(c.final_price or c.estimated_price or 0) for c in rows)
+    discounts = [
+        (float(c.estimated_price) - float(c.final_price)) / float(c.estimated_price) * 100
+        for c in rows
+        if c.estimated_price and c.final_price and float(c.final_price) < float(c.estimated_price)
     ]
+    unpaid_pipeline = sum(
+        float(c.final_price or c.estimated_price or 0)
+        for c in rows
+        if c.stage == ClientStage.PAYMENT and c.is_paid is not True
+    )
     return {
-        "orders_connected": _moysklad_configured(),
-        "orders": [
-            {
-                "name": order.get("name"),
-                "sum": _as_float(_order_sum(order)),
-                "payed": _as_float(order.get("payedSum")),
-                "shipped": _as_float(order.get("shippedSum")),
-            }
-            for order in orders
-        ],
-        "unpaid_orders": len(unpaid),
+        "clients_with_price": len(priced),
+        "pipeline_value": pipeline,
+        "unpaid_pipeline": unpaid_pipeline,
+        "discounts_over_5pct": sum(1 for pct in discounts if pct > 5),
+        "max_discount_pct": round(max(discounts), 1) if discounts else 0.0,
     }
 
 
-def live_briefing_text(*, wait: bool = False) -> str:
-    data = live_briefing(wait=wait)
-    if not data["orders_connected"]:
-        return (
-            "Живой срез: МойСклад не подключён. "
-            "Не выдумывай заказы, суммы и оплаты."
-        )
-    if not data["orders"]:
-        return (
-            "Живой срез МойСклад сейчас пуст или ещё собирается. "
-            "Не утверждай про оплаты и отгрузки — данных нет."
-        )
-    unpaid_money = sum(max(order["sum"] - order["payed"], 0) for order in data["orders"])
-    return (
-        "Живой срез компании — заказы покупателей МойСклад (бухгалтерия). "
-        "Слабее позднего факта в vault.\n"
-        f"Заказы: {len(data['orders'])}, без оплаты {data['unpaid_orders']}, "
-        f"не оплачено {_money(unpaid_money)}.\n"
-        "Пиши по этим числам. Складских остатков и сделок CRM здесь нет — не выдумывай их."
-    )
+def _legal_facts(db: Session) -> dict:
+    rows = db.query(Client).all()
+    return {
+        "approval_without_contract": sum(
+            1 for c in rows if c.stage == ClientStage.APPROVAL and not c.contract_file_id
+        ),
+        "past_approval_without_locked_docs": sum(
+            1
+            for c in rows
+            if c.stage in (ClientStage.PAYMENT, ClientStage.POSTPAYMENT)
+            and c.documents_locked_at is None
+        ),
+    }
 
 
-def live_stance_for(agent_id: AgentId) -> str | None:
-    lines = [
-        chart["lead"]
-        for chart in live_charts(wait=True)
-        if agent_id.value in chart.get("agents", []) and chart.get("lead")
-    ]
-    return " ".join(lines[:2]) or None
+def _engineer_facts(db: Session) -> dict:
+    mods = db.query(ProductionModule).all()
+    return {
+        "modules_total": len(mods),
+        "modules_without_description": sum(1 for m in mods if not (m.description or "").strip()),
+    }
 
 
-def _kick_chart_refresh() -> None:
-    global _charts_refreshing
-    with _charts_lock:
-        if _charts_refreshing:
-            return
-        _charts_refreshing = True
-    thread = threading.Thread(target=_refresh_charts_quiet, daemon=True)
-    thread.start()
+# ------------------------------------------------------------- hits --
 
-
-def _refresh_charts_quiet() -> None:
-    global _charts_refreshing
-    try:
-        _build_and_store_charts()
-    except Exception as error:
-        log.warning("фоновые графики не собрались: %s", error)
-    finally:
-        with _charts_lock:
-            _charts_refreshing = False
-
-
-def _build_and_store_charts() -> list[dict]:
-    global _charts_ready
-    orders = _chart_sources()
-    charts = [
-        *_coordinator_charts(orders),
-        *_finance_charts(orders),
-    ]
-    charts = [chart for chart in charts if chart.get("bars")]
-    _charts_ready = charts
-    _store("charts_ready", charts)
-    return charts
-
-
-def live_hits(query: str, agents: list[AgentId]) -> list[ContextHit]:
-    if not any(agent in _ORDER_ROLES for agent in agents):
+def live_hits(query: str, agents: list[AgentId], db: Session | None = None) -> list[ContextHit]:
+    snap = _snapshot(db)
+    if not snap:
         return []
-    return _moysklad_hits(query)
-
-
-def _moysklad_configured() -> bool:
-    return settings.moysklad_mcp_configured or bool(settings.moysklad_token)
-
-
-def _moysklad_target() -> McpTarget:
-    return McpTarget(
-        name="moysklad",
-        url=settings.moysklad_mcp_url,
-        client_id=settings.moysklad_mcp_client_id,
-        client_secret=settings.moysklad_mcp_client_secret,
-        scope=settings.moysklad_mcp_scope,
-        redirect_uri=settings.mcp_redirect_uri,
-    )
-
-
-def _moysklad_hits(query: str) -> list[ContextHit]:
-    if not _moysklad_configured():
-        return [_stub("warehouse", "МойСклад", "moysklad", "МойСклад не задан. Заказы и оплаты не выдумываем.")]
-    try:
-        orders = _moysklad_snapshot()
-    except Exception as error:
-        log.warning("МойСклад не прочитался: %s", error)
-        return [_stub("warehouse", "МойСклад", "moysklad", f"МойСклад не ответил: {error}. Заказы не выдумываем.")]
-
-    now = _now()
     hits: list[ContextHit] = []
-    picked_orders = _pick(query, orders, keys=("name",)) or orders[:5]
-    for order in picked_orders[:5]:
-        name = str(order.get("name") or "заказ")
-        total = _as_float(_order_sum(order))
-        payed = _as_float(order.get("payedSum"))
-        hits.append(
-            ContextHit(
-                source="warehouse",
-                title=f"МойСклад заказ: {name}",
-                excerpt=(
-                    f"{name}, сумма {_money(total)}, оплачено {_money(payed)}, "
-                    f"дата {order.get('moment') or '—'}. Снимок {now}."
-                ),
-                kind="record",
-                path=f"moysklad/customerorder/{order.get('id')}",
-            )
-        )
-    if not hits:
-        hits.append(_stub("warehouse", "МойСклад", "moysklad/empty", f"Заказов в отчёте нет. Снимок {now}."))
+    seen: set[str] = set()
+    for agent_id in agents:
+        for section in _ROLE_SECTIONS.get(agent_id, ()):
+            if section in seen or section not in snap:
+                continue
+            seen.add(section)
+            hit = _section_hit(section, snap[section])
+            if hit is not None:
+                hits.append(hit)
     return hits
 
 
-def _moysklad_snapshot() -> list[dict]:
-    """Customer orders only. Returns a list of order dicts."""
-    cached = _cached("moysklad")
-    if cached is not None:
-        return cached  # type: ignore[return-value]
-    if settings.moysklad_mcp_configured:
-        orders = _mcp_pages(_moysklad_target(), "list_customer_orders", limit=50, max_rows=200, timeout=30.0)
-        _store("moysklad", orders)
-        return orders
-    headers = {"Authorization": f"Bearer {settings.moysklad_token}", "Accept-Encoding": "gzip"}
-    base = "https://api.moysklad.ru/api/remap/1.2"
-    orders = _rest_pages(
-        f"{base}/entity/customerorder", headers, limit=50, max_rows=200, extra={"order": "moment,desc"}
+def _section_hit(section: str, data: dict) -> ContextHit | None:
+    render = _SECTION_RENDER.get(section)
+    if render is None:
+        return None
+    title, line = render(data)
+    return ContextHit(
+        source="db",
+        title=title,
+        excerpt=line + f" Снимок базы {_now()}.",
+        kind="record",
+        path=f"durovos/{section}",
     )
-    _store("moysklad", orders)
-    return orders
 
 
-def _mcp_pages(target: McpTarget, tool: str, *, limit: int, max_rows: int, timeout: float) -> list[dict]:
-    remote = client_for(target)
-    rows: list[dict] = []
-    offset = 0
-    while len(rows) < max_rows:
-        page = min(limit, max_rows - len(rows))
-        chunk = as_rows(remote.call_tool(tool, {"limit": page, "offset": offset}, timeout=timeout))
-        if not chunk:
-            break
-        rows.extend(chunk)
-        if len(chunk) < page:
-            break
-        offset += page
-    return rows
+def _clients_line(d: dict) -> tuple[str, str]:
+    s = d.get("stage_counts", {})
+    return (
+        "База DurovOS · Клиенты",
+        (
+            f"Клиентов в базе {d.get('total_clients', 0)} "
+            f"(лид {s.get('lead', 0)}, обсуждение {s.get('discussion', 0)}, "
+            f"согласование {s.get('approval', 0)}, оплата {s.get('payment', 0)}, "
+            f"постоплата {s.get('postpayment', 0)}). "
+            f"Ждут подтверждения оплаты {d.get('awaiting_payment_confirmation', 0)}, "
+            f"ждут остаток {d.get('awaiting_balance_payment', 0)}. "
+            f"Лидов зависло дольше 14 дней {d.get('leads_stuck_over_14_days', 0)}."
+        ),
+    )
 
 
-def _rest_pages(
-    url: str,
-    headers: dict[str, str],
-    *,
-    limit: int,
-    max_rows: int,
-    extra: dict | None = None,
-) -> list[dict]:
-    rows: list[dict] = []
-    offset = 0
-    while len(rows) < max_rows:
-        page = min(limit, max_rows - len(rows))
-        params = {"limit": page, "offset": offset, **(extra or {})}
-        payload = _get(url, headers, params)
-        chunk = (payload or {}).get("rows", []) or []
-        if not chunk:
-            break
-        rows.extend(chunk)
-        if len(chunk) < page:
-            break
-        offset += page
-    return rows
+def _cycle_line(d: dict) -> tuple[str, str]:
+    s = d.get("status_counts", {})
+    return (
+        "База DurovOS · Цикл клиента",
+        (
+            f"Циклов всего {d.get('total_cycles', 0)}: у клиента {s.get('client', 0)}, "
+            f"в производстве {s.get('production', 0)}, на монтаже {s.get('installation', 0)}, "
+            f"завершено {s.get('completed', 0)}."
+        ),
+    )
 
 
-def _get(url: str, headers: dict[str, str], params: dict | None) -> dict:
-    with httpx.Client(timeout=8.0) as client:
-        response = client.get(url, headers=headers, params=params)
-        if response.status_code == 429:
-            response = client.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        return response.json() if response.content else {}
+def _tasks_line(d: dict) -> tuple[str, str]:
+    s = d.get("status_counts", {})
+    return (
+        "База DurovOS · Задачи",
+        (
+            f"Открытых задач {d.get('open_tasks', 0)}, просрочено {d.get('overdue_tasks', 0)}, "
+            f"на сегодня {d.get('due_today', 0)}. В работе {s.get('in_progress', 0)}, "
+            f"на проверке {s.get('in_review', 0)}, не готово {s.get('not_ready', 0)}."
+        ),
+    )
 
 
-def _pick(query: str, rows: list[dict], keys: tuple[str, ...]) -> list[dict]:
-    tokens = re.findall(r"[а-яёa-z0-9]{4,}", (query or "").lower())
-    if not tokens or not rows:
-        return list(rows)
-    matched = []
-    for row in rows:
-        hay = " ".join(str(row.get(key) or "") for key in keys).lower()
-        if any(token in hay for token in tokens):
-            matched.append(row)
-    return matched or list(rows)
+def _production_line(d: dict) -> tuple[str, str]:
+    return (
+        "База DurovOS · Производство",
+        (
+            f"Проектов {d.get('total_productions', 0)}, модулей {d.get('total_modules', 0)}. "
+            f"Модулей с нехваткой материала {d.get('modules_with_material_shortfall', 0)}, "
+            f"заявок на материалы в ожидании {d.get('pending_material_requests', 0)}."
+        ),
+    )
 
 
-def _chart_label(name: str, fallback: str) -> str:
-    text = re.sub(r"\+?\d[\d\s\-()]{8,}", " ", name)
-    text = " ".join(text.split())
-    if len(text) < 3:
-        return fallback[:28]
-    return text[:28]
+def _warehouse_line(d: dict) -> tuple[str, str]:
+    top = d.get("top_shortage_materials", []) or []
+    tail = ""
+    if top:
+        names = ", ".join(str(m.get("title") or "?") for m in top[:3])
+        tail = f" Сильнее всего просели: {names}."
+    return (
+        "База DurovOS · Склад",
+        (
+            f"Позиций на складе {d.get('total_materials', 0)}, ниже порога "
+            f"{d.get('materials_needing_supply', 0)}. Поставок за 7 дней "
+            f"{d.get('supplies_recorded_last_7_days', 0)}.{tail}"
+        ),
+    )
 
 
-def _order_sum(order: dict) -> object:
-    value = order.get("sum") or 0
-    if settings.moysklad_mcp_configured:
-        return value
-    try:
-        return float(value) / 100
-    except (TypeError, ValueError):
-        return 0
+def _marketing_line(d: dict) -> tuple[str, str]:
+    s = d.get("stage_counts", {})
+    return (
+        "База DurovOS · Маркетинг",
+        (
+            f"Единиц контента {d.get('total_content_items', 0)} "
+            f"(идея {s.get('idea', 0)}, сбор {s.get('gathering', 0)}, "
+            f"редактура {s.get('editing', 0)}, выпуск {s.get('release', 0)}, "
+            f"анализ {s.get('analysis', 0)}). Выпуск в ближайшие 7 дней "
+            f"{d.get('release_due_next_7_days', 0)}, просрочен {d.get('release_overdue', 0)}."
+        ),
+    )
 
+
+def _finance_line(d: dict) -> tuple[str, str]:
+    return (
+        "База DurovOS · Финансы",
+        (
+            f"Клиентов с ценой {d.get('clients_with_price', 0)}, портфель "
+            f"{_money(d.get('pipeline_value', 0))}, не оплачено на стадии оплаты "
+            f"{_money(d.get('unpaid_pipeline', 0))}. Скидок сверх 5% в базе "
+            f"{d.get('discounts_over_5pct', 0)}, максимальная {d.get('max_discount_pct', 0)}%."
+        ),
+    )
+
+
+def _legal_line(d: dict) -> tuple[str, str]:
+    return (
+        "База DurovOS · Право",
+        (
+            f"Клиентов на согласовании без договора в базе "
+            f"{d.get('approval_without_contract', 0)}. Прошли согласование, но документы "
+            f"не зафиксированы у {d.get('past_approval_without_locked_docs', 0)}."
+        ),
+    )
+
+
+def _engineer_line(d: dict) -> tuple[str, str]:
+    return (
+        "База DurovOS · Инженерия",
+        (
+            f"Модулей в производстве {d.get('modules_total', 0)}, из них без описания "
+            f"конструктива {d.get('modules_without_description', 0)}."
+        ),
+    )
+
+
+_SECTION_RENDER = {
+    "clients": _clients_line,
+    "cycle": _cycle_line,
+    "tasks": _tasks_line,
+    "production": _production_line,
+    "warehouse": _warehouse_line,
+    "marketing": _marketing_line,
+    "finance": _finance_line,
+    "legal": _legal_line,
+    "engineer": _engineer_line,
+}
+
+
+# ------------------------------------------------------------- stance --
+
+def live_stance_for(agent_id: AgentId, db: Session | None = None) -> str | None:
+    hits = live_hits("", [agent_id], db)
+    lines = [hit.excerpt for hit in hits if hit.excerpt][:2]
+    return " ".join(lines) or None
+
+
+# ------------------------------------------------------------- charts --
+
+def live_charts(db: Session | None = None, *, wait: bool = False) -> list[dict]:
+    snap = _snapshot(db)
+    if not snap:
+        return []
+    charts = [
+        *_coordinator_charts(snap),
+        *_finance_charts(snap),
+        *_warehouse_charts(snap),
+        *_production_charts(snap),
+    ]
+    return [chart for chart in charts if chart.get("bars")]
+
+
+def _coordinator_charts(snap: dict) -> list[dict]:
+    cycle = snap.get("cycle", {}).get("status_counts", {})
+    tasks = snap.get("tasks", {})
+    bars = [
+        {"label": "В производстве", "value": float(cycle.get("production", 0))},
+        {"label": "На монтаже", "value": float(cycle.get("installation", 0))},
+        {"label": "Просроченные задачи", "value": float(tasks.get("overdue_tasks", 0))},
+    ]
+    bars = [bar for bar in bars if bar["value"] > 0]
+    if not bars:
+        return []
+    return [
+        _chart(
+            "coordinator_pulse",
+            "Где горит",
+            "шт",
+            bars,
+            ["coordinator"],
+            f"В производстве {cycle.get('production', 0)}, просрочено задач {tasks.get('overdue_tasks', 0)}.",
+            "warning",
+        )
+    ]
+
+
+def _finance_charts(snap: dict) -> list[dict]:
+    fin = snap.get("finance", {})
+    bars = [
+        {"label": "Не оплачено на стадии оплаты", "value": float(fin.get("unpaid_pipeline", 0))},
+    ]
+    bars = [bar for bar in bars if bar["value"] > 0]
+    if not bars:
+        return []
+    return [
+        _chart(
+            "finance_money",
+            "Где висят деньги",
+            "₽",
+            bars,
+            ["finance"],
+            f"Не оплачено: {_money(fin.get('unpaid_pipeline', 0))}.",
+            "timber",
+        )
+    ]
+
+
+def _warehouse_charts(snap: dict) -> list[dict]:
+    wh = snap.get("warehouse", {})
+    bars = [{"label": "Позиций ниже порога", "value": float(wh.get("materials_needing_supply", 0))}]
+    bars = [bar for bar in bars if bar["value"] > 0]
+    if not bars:
+        return []
+    return [
+        _chart(
+            "warehouse_gap",
+            "Чего не хватает",
+            "шт",
+            bars,
+            ["warehouse"],
+            f"Ниже порога {wh.get('materials_needing_supply', 0)} позиций.",
+            "warning",
+        )
+    ]
+
+
+def _production_charts(snap: dict) -> list[dict]:
+    prod = snap.get("production", {})
+    tasks = snap.get("tasks", {}).get("status_counts", {})
+    bars = [
+        {"label": "Модули с нехваткой", "value": float(prod.get("modules_with_material_shortfall", 0))},
+        {"label": "Задачи в работе", "value": float(tasks.get("in_progress", 0))},
+    ]
+    bars = [bar for bar in bars if bar["value"] > 0]
+    if not bars:
+        return []
+    return [
+        _chart(
+            "production_tasks",
+            "Узкое место цеха",
+            "шт",
+            bars,
+            ["production"],
+            f"Модулей с нехваткой материала {prod.get('modules_with_material_shortfall', 0)}.",
+            "brand",
+        )
+    ]
+
+
+# ------------------------------------------------------------- briefing --
+
+def live_briefing(db: Session | None = None) -> dict:
+    return _snapshot(db)
+
+
+def live_briefing_text(db: Session | None = None) -> str:
+    snap = _snapshot(db)
+    if not snap:
+        return (
+            "Живой срез базы DurovOS сейчас недоступен. "
+            "Не утверждай числа по клиентам, складу, производству и задачам — данных нет."
+        )
+    lines = ["Живой срез базы DurovOS (собственная база системы, не CRM и не МойСклад):"]
+    for section in ("clients", "cycle", "production", "warehouse", "tasks", "marketing", "finance"):
+        data = snap.get(section)
+        render = _SECTION_RENDER.get(section)
+        if not data or render is None:
+            continue
+        _title, line = render(data)
+        lines.append(f"- {line}")
+    lines.append(
+        "Пиши по этим числам. Чего нет в срезе — не выдумывай и не ссылайся на CRM или МойСклад."
+    )
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------- helpers --
 
 def _money(value: object) -> str:
     try:
@@ -302,11 +436,9 @@ def _money(value: object) -> str:
 
 
 def _now() -> str:
+    from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).astimezone().strftime("%d.%m.%Y %H:%M")
-
-
-def _stub(source: str, title: str, path: str, excerpt: str) -> ContextHit:
-    return ContextHit(source=source, title=title, excerpt=excerpt, kind="record", path=path)
 
 
 def _cached(key: str):
@@ -321,36 +453,6 @@ def _cached(key: str):
 
 def _store(key: str, value: object) -> None:
     _cache[key] = (time.monotonic(), value)
-
-
-def _chart_sources(*, wait: bool = True) -> list[dict]:
-    if not wait:
-        return _chart_sources_cached()
-    orders: list[dict] = []
-    if _moysklad_configured():
-        try:
-            orders = _moysklad_snapshot()
-        except Exception as error:
-            log.warning("график МойСклада: %s", error)
-    return orders
-
-
-def _chart_sources_cached() -> list[dict]:
-    """Return whatever is already in TTL cache; never block on remote MCP/REST."""
-    if not _moysklad_configured():
-        return []
-    cached = _cached("moysklad")
-    if cached is None:
-        _kick_chart_refresh()
-        return []
-    return cached  # type: ignore[return-value]
-
-
-def _as_float(value: object) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _chart(
@@ -371,54 +473,3 @@ def _chart(
         "lead": lead,
         "tone": tone,
     }
-
-
-def _coordinator_charts(orders: list[dict]) -> list[dict]:
-    unpaid = sum(
-        1
-        for order in orders
-        if _as_float(_order_sum(order)) - _as_float(order.get("payedSum")) > 1
-    )
-    bars = [{"label": "Заказы без оплаты", "value": float(unpaid)}]
-    bars = [bar for bar in bars if bar["value"] > 0]
-    if not bars:
-        return []
-    return [
-        _chart(
-            "coordinator_pulse",
-            "Где горит",
-            "шт",
-            bars,
-            ["coordinator"],
-            f"Заказов без оплаты — {unpaid}.",
-            "warning",
-        )
-    ]
-
-
-def _finance_charts(orders: list[dict]) -> list[dict]:
-    unpaid = 0.0
-    unshipped = 0.0
-    for order in orders:
-        total = _as_float(_order_sum(order))
-        unpaid += max(total - _as_float(order.get("payedSum")), 0)
-        unshipped += max(total - _as_float(order.get("shippedSum")), 0)
-    money = [
-        {"label": "Не оплачено по заказам", "value": unpaid},
-        {"label": "Не отгружено", "value": unshipped},
-    ]
-    money = [bar for bar in money if bar["value"] > 0]
-    if not money:
-        return []
-    top = max(money, key=lambda bar: bar["value"])
-    return [
-        _chart(
-            "finance_money",
-            "Где висят деньги",
-            "₽",
-            money,
-            ["finance"],
-            f"{top['label']}: {_money(top['value'])}.",
-            "timber",
-        )
-    ]

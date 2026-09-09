@@ -51,21 +51,21 @@ def _get_client() -> anthropic.Anthropic:
     return anthropic_client(timeout=60.0, max_retries=1)
 
 
-def _system_for(chat: Chat) -> str:
+def _system_for(chat: Chat, db: Session | None = None) -> str:
     text = SYSTEM_PROMPTS[chat.domain]
     if chat.domain != ChatDomain.GENERAL:
         return text
     try:
         from app.agents.connectors import live_briefing_text
 
-        extra = live_briefing_text()
+        extra = live_briefing_text(db)
         if extra:
             text += "\n\n" + extra
     except Exception as error:
         logger.warning("живой срез для консультации: %s", error)
         text += (
-            "\n\nЖивой срез МойСклад (заказы) не собрался. "
-            "Не утверждай ничего про оплаты и отгрузки — данных нет."
+            "\n\nЖивой срез базы DurovOS не собрался. "
+            "Не утверждай числа по клиентам, складу, производству и задачам — данных нет."
         )
     return text
 
@@ -184,8 +184,8 @@ def run_turn(db: Session, chat: Chat, user: User, user_text: str, file_ids: list
 
 
 def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
-    # Build system once: live CRM/stock briefing must not re-fetch on every tool round.
-    system = _system_for(chat)
+    # Build system once: the DurovOS-database briefing must not re-fetch on every tool round.
+    system = _system_for(chat, db)
     for _ in range(MAX_ITERATIONS):
         history = _build_history(db, chat)
         tools = _available_tools(chat, user)
