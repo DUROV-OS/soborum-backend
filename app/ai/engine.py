@@ -130,8 +130,49 @@ def _resolve_content(db: Session, content: list) -> list:
     return resolved
 
 
+# A tool-call block is only replayable with its matching result block. If a turn
+# dies between the two (max_tokens mid-call, a crash, a provider-side MCP/web
+# tool that never returned), the half that was persisted poisons the thread:
+# every later request resends it and Anthropic 400s with "<x>_tool_use ... was
+# found without a corresponding <x>_tool_result block". Drop the unpaired halves
+# so a damaged history self-heals instead of bricking the chat.
+_TOOL_USE_TYPES = {"tool_use", "server_tool_use", "mcp_tool_use"}
+_TOOL_RESULT_TYPES = {"tool_result", "web_search_tool_result", "web_fetch_tool_result", "mcp_tool_result"}
+
+
+def _prune_dangling_tool_blocks(history: list[dict]) -> list[dict]:
+    result_ids = {
+        b["tool_use_id"]
+        for m in history
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") in _TOOL_RESULT_TYPES and b.get("tool_use_id")
+    }
+    use_ids = {
+        b["id"]
+        for m in history
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") in _TOOL_USE_TYPES and b.get("id")
+    }
+
+    pruned: list[dict] = []
+    for message in history:
+        kept = []
+        for block in message["content"]:
+            if isinstance(block, dict):
+                btype = block.get("type")
+                if btype in _TOOL_USE_TYPES and block.get("id") not in result_ids:
+                    continue
+                if btype in _TOOL_RESULT_TYPES and block.get("tool_use_id") not in use_ids:
+                    continue
+            kept.append(block)
+        if kept:
+            pruned.append({"role": message["role"], "content": kept})
+    return pruned
+
+
 def _build_history(db: Session, chat: Chat) -> list[dict]:
-    return [{"role": m.role, "content": _resolve_content(db, m.content)} for m in chat.messages]
+    history = [{"role": m.role, "content": _resolve_content(db, m.content)} for m in chat.messages]
+    return _prune_dangling_tool_blocks(history)
 
 
 def _build_request(db: Session, system: str, messages: list[dict], tools: list[dict], user: User):

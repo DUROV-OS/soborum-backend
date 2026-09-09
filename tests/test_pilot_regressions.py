@@ -271,3 +271,23 @@ def test_stream_resumes_after_pause_turn(db, make_user, monkeypatch):
     assert calls.call_count == 2
     assert out[-1]["type"] == "done"
     assert "".join(e["text"] for e in out if e["type"] == "text") == "30 м²"
+
+
+def test_dangling_mcp_tool_use_is_pruned_from_history(db, make_user):
+    """A turn that persisted an mcp_tool_use but never its result used to 400
+    every later request ('...tool_use ... without a corresponding ... result')."""
+    user = make_user(Module.AI)
+    chat = make_chat(db, user)
+    db.add(Message(chat_id=chat.id, role="user", content=[{"type": "text", "text": "спроси базу знаний"}]))
+    db.add(Message(chat_id=chat.id, role="assistant", content=[
+        {"type": "text", "text": "смотрю"},
+        {"type": "mcp_tool_use", "id": "mcptoolu_1", "name": "knowledge-base_search_notes", "input": {}},
+    ]))
+    db.commit()
+    db.refresh(chat)
+
+    history = engine._build_history(db, chat)
+
+    blocks = [b for m in history for b in m["content"] if isinstance(b, dict)]
+    assert all(b.get("type") != "mcp_tool_use" for b in blocks)
+    assert any(b.get("type") == "text" and b.get("text") == "смотрю" for b in blocks)
