@@ -166,3 +166,108 @@ def test_stale_second_approval_cannot_execute_twice(db, make_user, monkeypatch):
             engine.resolve_pending_action(second, stale_action, True, second_user)
         assert error.value.status_code == 409
     assert handler.call_count == 1
+
+
+# --- Streaming turn (SSE) --------------------------------------------------------
+
+class _FakeStream:
+    """Stand-in for client.messages.stream(...)'s context manager."""
+
+    def __init__(self, events, final):
+        self._events, self._final = events, final
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_message(self):
+        return self._final
+
+
+def _ev(type_, **kw):
+    return SimpleNamespace(type=type_, **kw)
+
+
+def _text_events(*chunks):
+    yield _ev("content_block_start", content_block=SimpleNamespace(type="text"))
+    for chunk in chunks:
+        yield _ev("content_block_delta", delta=SimpleNamespace(type="text_delta", text=chunk))
+    yield _ev("content_block_stop")
+
+
+def _final(stop_reason, blocks):
+    return SimpleNamespace(
+        stop_reason=stop_reason,
+        content=[SimpleNamespace(model_dump=lambda _b=b, **_: _b) for b in blocks],
+    )
+
+
+def test_stream_yields_tokens_then_done_and_persists(db, make_user, monkeypatch):
+    user = make_user(Module.AI)
+    chat = make_chat(db, user)
+    stream = _FakeStream(list(_text_events("40 ", "м²")), _final("end_turn", [{"type": "text", "text": "40 м²"}]))
+    monkeypatch.setattr(engine, "_stream_claude", Mock(return_value=stream))
+
+    events = list(engine._advance_stream(db, chat, user))
+
+    assert [e["type"] for e in events] == ["block_start", "text", "text", "block_end", "done"]
+    assert "".join(e["text"] for e in events if e["type"] == "text") == "40 м²"
+    db.refresh(chat)
+    assert [m.role for m in chat.messages] == ["assistant"]
+    assert chat.messages[0].content == [{"type": "text", "text": "40 м²"}]
+
+
+def test_stream_reports_web_search_as_status(db, make_user, monkeypatch):
+    user = make_user(Module.AI)
+    chat = make_chat(db, user)
+    events = [_ev("content_block_start", content_block=SimpleNamespace(type="server_tool_use", name="web_search"))]
+    events += list(_text_events("готово"))
+    stream = _FakeStream(events, _final("end_turn", [{"type": "text", "text": "готово"}]))
+    monkeypatch.setattr(engine, "_stream_claude", Mock(return_value=stream))
+
+    out = list(engine._advance_stream(db, chat, user))
+
+    assert {"type": "status", "text": "Ищу в интернете…"} in out
+    assert out[-1]["type"] == "done"
+
+
+def test_stream_stops_on_pending_approval(db, make_user, monkeypatch):
+    user = make_user(Module.AI, Module.CLIENTS)
+    chat = make_chat(db, user, ChatMode.REQUIRE_APPROVAL)
+    db.add(Message(chat_id=chat.id, role="user", content=[{"type": "text", "text": "добавь заметку клиенту 1"}]))
+    db.commit()
+    tool_call = {"type": "tool_use", "id": "call-1", "name": "add_client_note",
+                 "input": {"client_id": 1, "text": "Тест"}}
+    calls = Mock(side_effect=[_FakeStream([], _final("tool_use", [tool_call]))])
+    monkeypatch.setattr(engine, "_stream_claude", calls)
+    handler = Mock(return_value={"ok": True})
+    monkeypatch.setattr(TOOLS["add_client_note"], "handler", handler)
+
+    out = list(engine._advance_stream(db, chat, user))
+
+    handler.assert_not_called()
+    assert calls.call_count == 1
+    pending = next(e for e in out if e["type"] == "pending_approval")
+    assert pending["pending_actions"][0]["tool_name"] == "add_client_note"
+    assert pending["pending_actions"][0]["status"] == "pending"
+    assert out[-1]["type"] == "pending_approval"
+
+
+def test_stream_resumes_after_pause_turn(db, make_user, monkeypatch):
+    user = make_user(Module.AI)
+    chat = make_chat(db, user)
+    paused = _FakeStream([], _final("pause_turn", [{"type": "server_tool_use", "id": "s1"}]))
+    done = _FakeStream(list(_text_events("30 м²")), _final("end_turn", [{"type": "text", "text": "30 м²"}]))
+    calls = Mock(side_effect=[paused, done])
+    monkeypatch.setattr(engine, "_stream_claude", calls)
+
+    out = list(engine._advance_stream(db, chat, user))
+
+    assert calls.call_count == 2
+    assert out[-1]["type"] == "done"
+    assert "".join(e["text"] for e in out if e["type"] == "text") == "30 м²"

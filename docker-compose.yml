@@ -39,6 +39,7 @@ services:
       # reads it from the env directly, and an injected "" breaks every call.
       # It reaches the container via env_file (.env.mcp) only when actually set.
       AI_MODEL: ${AI_MODEL:-claude-sonnet-5}
+      AI_EFFORT: ${AI_EFFORT:-medium}
       MCP_SERVER_URL: ${MCP_SERVER_URL:-}
       MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-}
       MCP_OAUTH_CLIENT_SECRET: ${MCP_OAUTH_CLIENT_SECRET:-}
