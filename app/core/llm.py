@@ -22,7 +22,7 @@ def normalize_anthropic_base_url(raw: str) -> str | None:
     return url or None
 
 
-def anthropic_client(*, timeout: float = 60.0, max_retries: int = 1) -> anthropic.Anthropic:
+def anthropic_client(*, timeout: float = 60.0, max_retries: int = 3) -> anthropic.Anthropic:
     kwargs: dict = {
         "api_key": settings.anthropic_api_key,
         "timeout": timeout,
