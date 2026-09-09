@@ -50,9 +50,12 @@ jobs:
             "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
             "MAX_TOKEN",
           ]
-          lines = [f"{key}={os.environ[key].strip()}" for key in keys if os.environ.get(key, "").strip()]
+          # Emit every managed key, empty ones as `KEY=` so a cleared Secret
+          # removes the stale override on prod (see scripts/merge_env.py).
+          lines = [f"{key}={os.environ.get(key, '').strip()}" for key in keys]
           pathlib.Path("/tmp/soborbum-mcp.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
-          print(f"prepared {len(lines)} env keys")
+          filled = sum(1 for line in lines if not line.endswith("="))
+          print(f"prepared {len(lines)} env keys ({filled} set, {len(lines) - filled} cleared)")
           PY
 
           scp -i ~/.ssh/deploy_key /tmp/soborbum-mcp.env "$SSH_USER@$SSH_HOST:/tmp/soborbum-mcp.env"
