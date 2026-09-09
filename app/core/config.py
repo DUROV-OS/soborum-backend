@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     anthropic_base_url: str = ""
     ai_model: str = "claude-sonnet-5"
 
+    # Anthropic-hosted web tools for the assistant. web_search finds pages,
+    # web_fetch opens a URL already in the conversation. Both run on Anthropic's
+    # side (no egress from us) and are billed per use. Disable to remove them.
+    web_tools_enabled: bool = True
+    web_search_max_uses: int = 5
+    web_fetch_max_uses: int = 5
+
     # Read-only freshness for the shift: МойСклад customer orders only (bookkeeping).
     moysklad_token: str = ""
 

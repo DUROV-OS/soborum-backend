@@ -121,6 +121,37 @@ def test_approval_rechecks_revoked_module_permission(db, make_user, monkeypatch)
     assert action.status == PendingActionStatus.PENDING
 
 
+def test_web_tools_offered_when_enabled(monkeypatch):
+    monkeypatch.setattr(engine.settings, "web_tools_enabled", True)
+    monkeypatch.setattr(engine.settings, "web_search_max_uses", 3)
+    names = {t["name"] for t in engine._server_tools()}
+    assert names == {"web_search", "web_fetch"}
+    assert next(t for t in engine._server_tools() if t["name"] == "web_search")["max_uses"] == 3
+
+
+def test_web_tools_removed_by_flag(monkeypatch):
+    monkeypatch.setattr(engine.settings, "web_tools_enabled", False)
+    assert engine._server_tools() == []
+
+
+def test_pause_turn_resumes_without_ending_the_turn(db, make_user, monkeypatch):
+    user = make_user(Module.AI)
+    chat = make_chat(db, user)
+    paused = SimpleNamespace(stop_reason="pause_turn",
+                             content=[SimpleNamespace(model_dump=lambda **_: {"type": "server_tool_use", "id": "s1"})])
+    done = SimpleNamespace(stop_reason="end_turn",
+                           content=[SimpleNamespace(model_dump=lambda **_: {"type": "text", "text": "40 м², 3 млн ₽"})])
+    call = Mock(side_effect=[paused, done])
+    monkeypatch.setattr(engine, "_call_claude", call)
+    db.add(Message(chat_id=chat.id, role="user", content=[{"type": "text", "text": "площадь DH-64?"}]))
+    db.commit()
+    db.refresh(chat)
+    result = engine._advance(db, chat, user)
+    assert call.call_count == 2
+    assert result.status == "completed"
+    assert result.reply == "40 м², 3 млн ₽"
+
+
 def test_stale_second_approval_cannot_execute_twice(db, make_user, monkeypatch):
     user = make_user(Module.AI, Module.CLIENTS)
     action = make_pending(db, user)

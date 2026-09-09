@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 # Every mode therefore gets only this explicit read allowlist.
 MCP_READ_ONLY_TOOLS = ["read_index", "list_notes", "search_notes", "read_note", "get_unread_files"]
 
+# Anthropic-hosted web tools. The _20260209 variants (dynamic filtering) need
+# no beta header and run on Sonnet 5. They execute on Anthropic's side, so
+# there is no handler and no gateway hop - results come back inline as
+# web_search_tool_result / web_fetch_tool_result blocks.
+def _server_tools() -> list[dict]:
+    if not settings.web_tools_enabled:
+        return []
+    return [
+        {"type": "web_search_20260209", "name": "web_search", "max_uses": settings.web_search_max_uses},
+        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": settings.web_fetch_max_uses},
+    ]
+
 
 @dataclass
 class TurnResult:
@@ -116,6 +128,9 @@ def _call_claude(db: Session, system: str, messages: list[dict], tools: list[dic
         "system": system,
         "messages": messages,
     }
+    # Anthropic-hosted web tools are available to every assistant user; they run
+    # provider-side and never touch our data, so no role gate or approval hop.
+    tools = list(tools) + _server_tools()
     if tools:
         kwargs["tools"] = tools
 
@@ -216,6 +231,12 @@ def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
             assistant_message.content = [{"type": "text", "text": reply}]
             db.commit()
             return TurnResult(status="completed", reply=reply)
+
+        if response.stop_reason == "pause_turn":
+            # A provider-side tool (web_search / web_fetch) is mid-run. The
+            # assistant turn is already persisted with its partial content;
+            # resend the history unchanged so Anthropic resumes it.
+            continue
 
         if response.stop_reason != "tool_use":
             text = "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
