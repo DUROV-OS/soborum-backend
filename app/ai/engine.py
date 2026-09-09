@@ -68,6 +68,23 @@ def _get_client() -> anthropic.Anthropic:
     return anthropic_client(timeout=60.0, max_retries=4)
 
 
+def _describe_api_error(error: BaseException) -> str:
+    """The user only ever sees «Марина временно недоступна»; this puts the real
+    cause (HTTP status + Anthropic's error body, or the transport error) in the
+    logs so an outage is diagnosable instead of a guessing game."""
+    parts = [type(error).__name__]
+    status_code = getattr(error, "status_code", None)
+    if status_code is not None:
+        parts.append(f"HTTP {status_code}")
+    body = getattr(error, "body", None) or getattr(error, "message", None)
+    if body:
+        parts.append(str(body)[:500])
+    cause = error.__cause__ or error.__context__
+    if cause is not None and cause is not error:
+        parts.append(f"caused by {type(cause).__name__}: {cause}")
+    return " | ".join(parts)
+
+
 def _system_for(chat: Chat, db: Session | None = None) -> str:
     text = SYSTEM_PROMPTS[chat.domain]
     if chat.domain != ChatDomain.GENERAL:
@@ -129,11 +146,15 @@ def _build_request(db: Session, system: str, messages: list[dict], tools: list[d
         # model writes a generated document as a tool call argument - 2048
         # was getting exhausted mid-tool-call, silently truncating it.
         "max_tokens": 8192,
-        # The main latency lever - see settings.ai_effort.
-        "output_config": {"effort": settings.ai_effort},
         "system": system,
         "messages": messages,
     }
+    # The main latency lever (see settings.ai_effort). Guarded so a bad value or
+    # an API/model that rejects output_config can be switched off with AI_EFFORT=
+    # (empty) - an env change, no code deploy.
+    effort = (settings.ai_effort or "").strip().lower()
+    if effort in {"low", "medium", "high", "xhigh", "max"}:
+        kwargs["output_config"] = {"effort": effort}
     # Anthropic-hosted web tools are available to every assistant user; they run
     # provider-side and never touch our data, so no role gate or approval hop.
     tools = list(tools) + _server_tools()
@@ -299,8 +320,8 @@ def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
         tools = _available_tools(chat, user)
         try:
             response = _call_claude(db, system, history, tools, chat.mode, user)
-        except anthropic.APIError:
-            logger.warning("AI provider unavailable for chat %s", chat.id)
+        except anthropic.APIError as error:
+            logger.warning("AI provider call failed for chat %s: %s", chat.id, _describe_api_error(error))
             raise HTTPException(503, "Марина временно недоступна. Попробуйте позже.") from None
 
         content_blocks = [block.model_dump(mode="json") for block in response.content]
@@ -399,8 +420,8 @@ def stream_turn(chat_id: int, user_id: int) -> Iterator[dict]:
             yield {"type": "error", "detail": "Чат недоступен."}
             return
         yield from _advance_stream(db, chat, user)
-    except anthropic.APIError:
-        logger.warning("AI provider unavailable mid-stream for chat %s", chat_id)
+    except anthropic.APIError as error:
+        logger.warning("AI provider call failed mid-stream for chat %s: %s", chat_id, _describe_api_error(error))
         yield {"type": "error", "detail": "Марина временно недоступна. Попробуйте позже."}
     except Exception:
         logger.exception("streaming turn failed for chat %s", chat_id)
