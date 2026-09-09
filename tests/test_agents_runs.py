@@ -236,8 +236,8 @@ def test_proxy_base_url_drops_v1_suffix():
     from app.core.llm import normalize_anthropic_base_url
 
     assert (
-        normalize_anthropic_base_url("https://shprotoness-ai.jq9gfk.workers.dev/v1")
-        == "https://shprotoness-ai.jq9gfk.workers.dev"
+        normalize_anthropic_base_url("https://proxy.example.com/anthropic/v1")
+        == "https://proxy.example.com/anthropic"
     )
 
 

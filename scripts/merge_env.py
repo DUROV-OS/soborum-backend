@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Write KEY=value lines into .env.mcp (deploy-user writable overlay)."""
+"""Write KEY=value lines into .env.mcp (deploy-user writable overlay).
+
+The incoming file is the source of truth: a `KEY=` line with an empty value
+removes that key from .env.mcp, so clearing a GitHub Secret actually
+propagates to prod instead of leaving a stale override behind.
+"""
 
 from __future__ import annotations
 
@@ -30,10 +35,14 @@ def main() -> int:
         print("no incoming keys")
         return 0
     existing = load_kv(target)
-    existing.update(incoming)
+    removed = [key for key, val in incoming.items() if not val]
+    for key in removed:
+        existing.pop(key, None)
+    existing.update({key: val for key, val in incoming.items() if val})
     lines = [f"{key}={existing[key]}" for key in sorted(existing)]
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print("updated", target, "keys", ", ".join(sorted(incoming)))
+    set_keys = sorted(key for key, val in incoming.items() if val)
+    print("updated", target, "set", ", ".join(set_keys) or "-", "removed", ", ".join(sorted(removed)) or "-")
     return 0
 
 
