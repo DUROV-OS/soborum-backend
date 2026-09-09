@@ -72,6 +72,21 @@ class Settings(BaseSettings):
     anthropic_base_url: str = ""
     ai_model: str = "claude-sonnet-5"
 
+    # Reasoning depth / overall token spend per assistant turn: low | medium |
+    # high | xhigh | max. "medium" is the main latency lever - it noticeably
+    # shortens the model's thinking on routine work questions without hurting
+    # answer quality. Raise to "high" if answers get shallow.
+    ai_effort: str = "medium"
+
+    # Anthropic-hosted web tools for the assistant. web_search finds pages,
+    # web_fetch opens a URL already in the conversation. Both run on Anthropic's
+    # side (no egress from us) and are billed per use. Disable to remove them.
+    # Kept low (2) on purpose: every web_fetch round is 10-30s of wall clock and
+    # was the biggest driver of turns long enough for the proxy to drop.
+    web_tools_enabled: bool = True
+    web_search_max_uses: int = 2
+    web_fetch_max_uses: int = 2
+
     # Read-only freshness for the shift: МойСклад customer orders only (bookkeeping).
     moysklad_token: str = ""
 
