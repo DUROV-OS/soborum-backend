@@ -36,7 +36,7 @@ WEEK_DAYS = 7
 
 def create_run(db: Session, user: User, text: str) -> AgentRunOut:
     try:
-        result = run_task(text)
+        result = run_task(text, db=db)
     except ValueError as error:
         raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
@@ -123,7 +123,7 @@ def maybe_tick_shift(db: Session) -> ShiftOut | None:
 
 
 def create_shift(db: Session, user: User | None = None) -> ShiftOut:
-    draft = run_shift()
+    draft = run_shift(db)
     shift = AgentShift(
         verdict=draft.verdict,
         summary=draft.summary,
@@ -173,7 +173,7 @@ def create_shift(db: Session, user: User | None = None) -> ShiftOut:
             )
         )
     db.commit()
-    return _shift_out(_load_shift(db, shift.id))
+    return _shift_out(_load_shift(db, shift.id), db)
 
 
 def latest_shift(db: Session) -> ShiftOut | None:
@@ -183,7 +183,7 @@ def latest_shift(db: Session) -> ShiftOut | None:
         .order_by(AgentShift.created_at.desc())
         .limit(1)
     ).first()
-    return _shift_out(row) if row else None
+    return _shift_out(row, db) if row else None
 
 
 def _load_shift(db: Session, shift_id: int) -> AgentShift:
@@ -233,7 +233,7 @@ def _store_run(
     )
 
 
-def _shift_out(row: AgentShift) -> ShiftOut:
+def _shift_out(row: AgentShift, db: Session) -> ShiftOut:
     when = row.created_at
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
@@ -245,7 +245,7 @@ def _shift_out(row: AgentShift) -> ShiftOut:
         created_at=row.created_at,
         items=[_item_out(item) for item in row.items],
         approvals=[_approval_out(approval) for approval in row.approvals],
-        charts=[ShiftChartOut.model_validate(chart) for chart in live_charts(wait=False)],
+        charts=[ShiftChartOut.model_validate(chart) for chart in live_charts(db, wait=False)],
         autorun=settings.agent_shift_autorun,
         interval_seconds=settings.agent_shift_interval_seconds,
         next_tick_at=when + timedelta(seconds=settings.agent_shift_interval_seconds),

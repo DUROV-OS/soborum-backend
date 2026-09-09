@@ -1,5 +1,6 @@
-"""Read-only live МойСклад/vault tools for Marina consult. Same source as the shift:
-customer orders (bookkeeping) only — no CRM, no stock levels, no production tasks."""
+"""Read-only live tools for Marina consult. Same source as the agent shift:
+the DurovOS database itself (clients, cycle, production, warehouse, tasks,
+marketing) — no CRM, no МойСклад, no external sync."""
 
 from app.agents import connectors
 from app.agents.vault import LocalVaultAdapter
@@ -11,31 +12,32 @@ from app.core.config import settings
 
 @register(
     "live_company_pulse",
-    "Сводка живого среза: заказы покупателей МойСклад (суммы, оплаты, отгрузки), "
-    "тот же источник что у смены агентов. Вызывай, если нужно освежить числа по заказам и оплатам.",
+    "Живой срез базы DurovOS: клиенты по стадиям, цикл, производство, склад, задачи, "
+    "маркетинг, финансы — тот же источник, что у смены агентов. Вызывай, чтобы освежить числа.",
     {},
     required_module=Module.AI,
     read_only=True,
     domains=[ChatDomain.GENERAL],
 )
 def _live_company_pulse(db, user) -> dict:
-    return connectors.live_briefing()
+    return connectors.live_briefing(db)
 
 
 @register(
-    "live_shop_and_orders",
-    "Заказы покупателей из МойСклад: суммы, оплачено, отгружено, сколько без оплаты.",
+    "live_clients_and_money",
+    "Клиенты и деньги из базы DurovOS: сколько клиентов по стадиям, кто ждёт "
+    "подтверждения оплаты и остатка, портфель и скидки сверх 5%.",
     {},
     required_module=Module.AI,
     read_only=True,
     domains=[ChatDomain.GENERAL],
 )
-def _live_shop_and_orders(db, user) -> dict:
-    data = connectors.live_briefing()
+def _live_clients_and_money(db, user) -> dict:
+    data = connectors.live_briefing(db)
     return {
-        "source": "moysklad",
-        "orders": data["orders"],
-        "unpaid_orders": data["unpaid_orders"],
+        "source": "durovos_database",
+        "clients": data.get("clients", {}),
+        "finance": data.get("finance", {}),
     }
 
 

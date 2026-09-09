@@ -1,6 +1,8 @@
-"""Shared company context from a GitHub checkout of vault_backups."""
+"""Shared company context: the DurovOS database plus a GitHub checkout of vault_backups."""
 
 from __future__ import annotations
+
+from sqlalchemy.orm import Session
 
 from app.agents.connectors import live_hits
 from app.agents.ids import VAULT_PATHS, AgentId
@@ -12,17 +14,22 @@ POLICY = {
     "discount_autonomy_pct": "5",
     "final_price": "human_approval",
     "competitor_intel": "open_sources_only",
-    "live_source": "moysklad_customer_orders_only",
-    "source_of_truth": "vault_backups",
+    "live_source": "durovos_database",
+    "source_of_truth": "durovos_database_and_vault_backups",
 }
 
 
-def gather(text: str, agents: list[AgentId], vault_root: str | None = None) -> SharedContext:
+def gather(
+    text: str,
+    agents: list[AgentId],
+    vault_root: str | None = None,
+    db: Session | None = None,
+) -> SharedContext:
     root = vault_root or settings.vault_root or (str(path) if (path := vault_root_from_env()) else "")
     hits: list[ContextHit] = []
+    hits.extend(live_hits(text, agents, db))
     if root:
         hits.extend(LocalVaultAdapter(root).gather(text, _prefixes(agents)))
-    hits.extend(live_hits(text, agents))
     return SharedContext(hits=_dedup(hits), policy=dict(POLICY))
 
 

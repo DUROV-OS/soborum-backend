@@ -4,8 +4,37 @@ from app.agents.legal import scan
 from app.agents.runtime import _rank_hits, run_task
 from app.agents.shift import run_shift
 from app.agents.types import ContextHit, LegalCategory, LegalVerdict
+from app.clients.models import Client, ClientStage
 from app.common.module_access import Module
 from app.core.config import settings
+from app.cycle.models import Cycle
+
+
+def _seed_company(db):
+    """A few clients across stages so the DurovOS-database snapshot has real rows."""
+    specs = [
+        (ClientStage.LEAD, None, None),
+        (ClientStage.DISCUSSION, 5_000_000, None),
+        (ClientStage.APPROVAL, 6_000_000, 5_400_000),  # 10% скидка — сверх лимита
+        (ClientStage.PAYMENT, 4_000_000, 4_000_000),  # ещё не оплачено
+    ]
+    for i, (stage, estimated, final) in enumerate(specs):
+        cycle = Cycle()
+        db.add(cycle)
+        db.flush()
+        db.add(
+            Client(
+                cycle_id=cycle.id,
+                stage=stage,
+                full_name=f"Клиент {i}",
+                phone=f"+7000000{i:04d}",
+                email=f"client{i}@example.com",
+                contacts=[],
+                estimated_price=estimated,
+                final_price=final,
+            )
+        )
+    db.commit()
 
 
 def _write_vault(root):
@@ -128,128 +157,79 @@ def test_run_cites_local_vault_checkout(tmp_path):
     assert any(hit.path and hit.path.endswith("Stock.md") for hit in result.context.hits)
 
 
-def test_gather_without_tokens_does_not_invent_orders(tmp_path):
+def test_gather_reads_durovos_database(db, tmp_path):
     _write_vault(tmp_path)
-    pack = context.gather("что с оплатами по заказам", [AgentId.FINANCE], str(tmp_path))
-    live = [hit for hit in pack.hits if hit.source == "warehouse" and (hit.path or "").startswith("moysklad")]
+    _seed_company(db)
+    pack = context.gather("что с оплатами", [AgentId.FINANCE], str(tmp_path), db)
+    live = [hit for hit in pack.hits if hit.source == "db"]
     assert live
-    assert "не выдумываем" in live[0].excerpt.lower()
+    assert any((hit.path or "") == "durovos/finance" for hit in live)
+    assert any("портфель" in hit.excerpt.lower() or "не оплачено" in hit.excerpt.lower() for hit in live)
 
 
-def test_gather_ignores_amocrm_entirely(tmp_path):
+def test_gather_does_not_invent_crm_or_moysklad(db, tmp_path):
     _write_vault(tmp_path)
-    pack = context.gather("какие сделки зависли в amoCRM", [AgentId.SALES], str(tmp_path))
-    assert not any(hit.source == "crm" for hit in pack.hits)
-    assert not any("amocrm" in (hit.path or "").lower() for hit in pack.hits)
+    pack = context.gather("какие сделки зависли в CRM и МойСкладе", [AgentId.SALES], str(tmp_path), db)
+    assert not any(hit.source in {"crm", "warehouse"} for hit in pack.hits)
+    assert not any("moysklad" in (hit.path or "").lower() for hit in pack.hits)
+    # Пустая база — честные нули, а не выдуманные сделки.
+    db_hits = [hit for hit in pack.hits if hit.source == "db"]
+    assert db_hits
+    assert "клиентов в базе 0" in db_hits[0].excerpt.lower()
 
 
-def test_gather_reads_orders_via_mcp(monkeypatch, tmp_path):
+def test_finance_stance_uses_database(db, tmp_path):
     _write_vault(tmp_path)
-    monkeypatch.setattr(settings, "moysklad_mcp_url", "https://moysklad.example/mcp")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_id", "id")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_secret", "secret")
-
-    def fake_call(name, arguments=None, timeout=30.0):
-        if name == "list_customer_orders":
-            return {"rows": [{"id": "o1", "name": "Заказ 12", "sum": 120000, "payedSum": 0, "moment": "2026-09-07"}]}
-        raise AssertionError(name)
-
-    class FakeRemote:
-        def call_tool(self, name, arguments=None, timeout=30.0):
-            return fake_call(name, arguments, timeout)
-
-    monkeypatch.setattr(connectors, "client_for", lambda target: FakeRemote())
-    connectors.clear_cache()
-    pack = context.gather("что с оплатами по заказам", [AgentId.FINANCE], str(tmp_path))
-    assert any((hit.path or "").startswith("moysklad/customerorder/") for hit in pack.hits)
-    assert any("Заказ 12" in hit.excerpt for hit in pack.hits)
-
-
-def test_gather_reads_live_moysklad_orders(monkeypatch, tmp_path):
-    _write_vault(tmp_path)
-    monkeypatch.setattr(settings, "moysklad_token", "token")
-    monkeypatch.setattr(
-        connectors,
-        "_moysklad_snapshot",
-        lambda: [{"id": "o1", "name": "Заказ 12", "sum": 12000000, "payedSum": 0, "moment": "2026-09-07"}],
-    )
-    connectors.clear_cache()
-    pack = context.gather("что с оплатами по заказам", [AgentId.FINANCE], str(tmp_path))
-    assert any((hit.path or "").startswith("moysklad/customerorder/") for hit in pack.hits)
-    assert any("Заказ 12" in hit.excerpt for hit in pack.hits)
-
-
-def test_finance_stance_uses_live_orders(monkeypatch, tmp_path):
-    _write_vault(tmp_path)
-    monkeypatch.setattr(settings, "moysklad_token", "token")
-    monkeypatch.setattr(
-        connectors,
-        "_moysklad_snapshot",
-        lambda: [{"id": "o1", "name": "Заказ 12", "sum": 12000000, "payedSum": 0, "moment": "2026-09-07"}],
-    )
-    connectors.clear_cache()
-    draft = run_shift(vault_root=str(tmp_path))
+    _seed_company(db)
+    draft = run_shift(db, vault_root=str(tmp_path))
     finance = next(item for item in draft.items if item.agent == AgentId.FINANCE)
     assert finance.has_live_data is True
-    assert "оплач" in finance.stance.lower()
     assert "нет данных" not in finance.stance.lower()
+    assert "портфель" in finance.stance.lower() or "оплач" in finance.stance.lower()
 
 
-def test_role_without_live_source_is_marked_no_data(tmp_path):
+def test_role_reads_its_section_from_database(db, tmp_path):
     _write_vault(tmp_path)
-    draft = run_shift(vault_root=str(tmp_path))
+    _seed_company(db)
+    draft = run_shift(db, vault_root=str(tmp_path))
+    sales = next(item for item in draft.items if item.agent == AgentId.SALES)
+    assert sales.has_live_data is True
+    assert "нет данных" not in sales.stance.lower()
+    assert "клиент" in sales.stance.lower()
+
+
+def test_role_without_database_is_marked_no_data(tmp_path):
+    _write_vault(tmp_path)
+    draft = run_shift(vault_root=str(tmp_path))  # no db session → no live snapshot
     sales = next(item for item in draft.items if item.agent == AgentId.SALES)
     assert sales.has_live_data is False
     assert "нет данных" in sales.stance.lower()
 
 
-def test_rank_puts_live_orders_before_vault():
+def test_rank_puts_db_facts_before_vault():
     hits = [
         ContextHit(source="vault", title="Конституция", excerpt="правило", path="00_Agent/Constitution.md"),
-        ContextHit(source="warehouse", title="МойСклад заказ: Заказ 12", excerpt="без оплаты", path="moysklad/customerorder/1"),
+        ContextHit(source="db", title="База DurovOS · Финансы", excerpt="портфель 0 ₽", path="durovos/finance"),
     ]
-    assert _rank_hits(AgentId.FINANCE, hits)[0].source == "warehouse"
+    assert _rank_hits(AgentId.FINANCE, hits)[0].source == "db"
 
 
-def test_live_charts_are_orders_only(monkeypatch):
-    monkeypatch.setattr(settings, "moysklad_mcp_url", "https://moysklad.example/mcp")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_id", "id")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_secret", "secret")
-    monkeypatch.setattr(
-        connectors,
-        "_moysklad_snapshot",
-        lambda: [{"name": "Заказ 12", "sum": 120000, "payedSum": 0, "shippedSum": 0}],
-    )
-    connectors.clear_cache()
-    charts = {chart["id"]: chart for chart in connectors.live_charts(wait=True)}
+def test_live_charts_come_from_database(db):
+    _seed_company(db)
+    charts = {chart["id"]: chart for chart in connectors.live_charts(db)}
+    # Клиент на стадии оплаты без оплаты → денежный график финансиста.
+    assert "finance_money" in charts
     assert charts["finance_money"]["agents"] == ["finance"]
     assert charts["finance_money"]["unit"] == "₽"
-    assert charts["coordinator_pulse"]["agents"] == ["coordinator"]
-    agents_seen = {agent for chart in charts.values() for agent in chart["agents"]}
-    assert agents_seen == {"finance", "coordinator"}
-    assert "warehouse_gap" not in charts
-    assert "sales_stuck" not in charts
-    assert "production_tasks" not in charts
+    assert charts["finance_money"]["bars"][0]["value"] > 0
 
 
-def test_live_briefing_orders_only(monkeypatch):
-    monkeypatch.setattr(settings, "moysklad_mcp_url", "https://moysklad.example/mcp")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_id", "id")
-    monkeypatch.setattr(settings, "moysklad_mcp_client_secret", "secret")
-    monkeypatch.setattr(
-        connectors,
-        "_chart_sources",
-        lambda **kwargs: [
-            {"name": "00002", "sum": 100, "payedSum": 0, "shippedSum": 100},
-            {"name": "00003", "sum": 200, "payedSum": 200, "shippedSum": 0},
-        ],
-    )
-    connectors.clear_cache()
-    text = connectors.live_briefing_text()
-    assert "без оплаты 1" in text
-    assert "заказы покупателей" in text.lower()
-    assert "в минусе" not in text.lower()
-    assert "цех" not in text.lower()
+def test_live_briefing_text_from_database(db):
+    _seed_company(db)
+    text = connectors.live_briefing_text(db)
+    assert "Живой срез базы DurovOS" in text
+    assert "клиентов в базе" in text.lower()
+    assert "заказы покупателей" not in text.lower()
 
 
 def test_proxy_base_url_drops_v1_suffix():
@@ -292,13 +272,15 @@ def test_admin_shift_has_eight_roles_cross_review_and_approval_queue(api, make_u
     }
     sales = next(item for item in body["items"] if item["agent_id"] == "sales")
     assert sales["reviews"]
-    assert any(review["reviewer"] == "finance" and review["escalate"] for review in sales["reviews"])
-    assert body["approvals"]
-    assert any("цен" in item["title"].lower() for item in body["approvals"])
-    assert not any("вопрос смены не allow" in item["title"] for item in body["approvals"])
-    assert body["verdict"] == "escalate_human"
+    # Финансист по-прежнему смотрит черновик продажника, но больше не выдумывает
+    # эскалацию по цене/скидке — это не мок, а реальный кросс-обзор.
+    assert any(review["reviewer"] == "finance" for review in sales["reviews"])
+    assert not any(review["escalate"] for review in sales["reviews"])
+    # Дежурные вопросы не создают юридического риска → очередь «что решить вам» пуста.
+    assert body["approvals"] == []
+    assert body["verdict"] == "allow"
     assert body["claude_used"] is False
-    assert "решить" in body["summary"] or "ничего не нужно" in body["summary"]
+    assert "ничего не нужно" in body["summary"]
     assert "charts" in body
     assert body["next_tick_at"]
 
@@ -306,13 +288,39 @@ def test_admin_shift_has_eight_roles_cross_review_and_approval_queue(api, make_u
     assert latest.status_code == 200
     assert latest.json()["id"] == body["id"]
 
-    approval_id = body["approvals"][0]["id"]
-    decided = client.post(f"/api/agents/approvals/{approval_id}/decision", json={"status": "approved"})
-    assert decided.status_code == 200
-    assert decided.json()["status"] == "approved"
-
     stats = client.get("/api/agents/stats").json()
     assert stats["shifts"] == 1
+
+
+def test_no_mock_pricing_or_lawyer_lines_in_shift(api, make_user):
+    client = api(make_user(admin=True))
+    body = client.post("/api/agents/shifts").json()
+    blob = repr(body)
+    assert "скидку больше 5%" not in blob
+    assert "Ворованную базу конкурента нельзя" not in blob
+    assert "МойСклад" not in blob
+    assert "из CRM в договор" not in blob
+
+
+def test_approval_decision_flow(api, make_user, db):
+    from app.agents.models import AgentApproval, AgentShift
+
+    client = api(make_user(admin=True))
+    client.post("/api/agents/shifts")
+    shift = db.query(AgentShift).order_by(AgentShift.id.desc()).first()
+    approval = AgentApproval(
+        shift_id=shift.id,
+        kind="legal",
+        title="Юрист просит вас посмотреть",
+        detail="Реальная эскалация от детерминированного фильтра.",
+        status="pending",
+    )
+    db.add(approval)
+    db.commit()
+
+    decided = client.post(f"/api/agents/approvals/{approval.id}/decision", json={"status": "approved"})
+    assert decided.status_code == 200
+    assert decided.json()["status"] == "approved"
 
 
 def test_auto_tick_skips_a_fresh_shift(api, make_user, db):

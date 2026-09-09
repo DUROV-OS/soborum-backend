@@ -59,5 +59,25 @@ def get_attachment(
     file_id: int,
     _: User = Depends(get_current_user),
 ):
-    """Прямая ссылка на вложение сообщения (фото / файл / видео)."""
+    """Одноразовая ссылка на скачивание вложения типа FILE (``fileId``).
+
+    Домен ``fd.oneme.ru``, без CORS — годится только для навигации/скачивания
+    (``window.open`` / ``<a download>``), не для ``fetch``. Для фото берите
+    ``attach.baseUrl`` напрямую, для видео/аудио — ``GET /media``."""
     return {"url": max_service.get_attachment_url(chat_id, message_id, file_id)}
+
+
+@app.get("/media")
+def get_media(
+    chat_id: int,
+    message_id: str,
+    media_id: str,
+    _: User = Depends(get_current_user),
+):
+    """Воспроизводимая ссылка на вложение VIDEO или AUDIO (голосовое).
+
+    ``media_id`` — ``videoId`` либо ``audioId`` из attach (строка). Ответ:
+    ``{ "url": <прямой MP4 или null>, "external": <веб-плеер ok.ru или null> }``.
+    Вложение недоступно/удалено → 422 с текстом причины (фронт показывает
+    заглушку), таймаут/сбой MAX → 502."""
+    return max_service.get_media_url(chat_id, message_id, media_id)

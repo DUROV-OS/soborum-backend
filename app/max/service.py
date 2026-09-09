@@ -9,32 +9,47 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from app.max.client import session
+from app.max.client import MediaError, session
+
+
+def _sid(v: Any) -> str | None:
+    """ID-снежинки MAX (message id, fileId, ...) не влезают в JS Number
+    (> 2**53), поэтому отдаём их строкой — иначе фронт округлит и не
+    сможет вернуть точное значение в /attachment."""
+    return None if v is None else str(v)
 
 
 def _fmt_attach(a: dict) -> dict:
     d = {
         "type": a.get("_type"),
         "name": a.get("name"),
-        "fileId": a.get("fileId"),
-        "photoId": a.get("photoId"),
-        "videoId": a.get("videoId"),
-        "audioId": a.get("audioId"),
+        "fileId": _sid(a.get("fileId")),
+        "photoId": _sid(a.get("photoId")),
+        "videoId": _sid(a.get("videoId")),
+        "audioId": _sid(a.get("audioId")),
         "size": a.get("size"),
         "baseUrl": a.get("baseUrl"),
         "url": a.get("url"),
         "title": a.get("title"),
+        # VIDEO: длительность (мс), кадр-постер (data:image/webp) и его URL;
+        # AUDIO (голосовое): длительность и картинка-волна (data:image/webp).
+        "duration": a.get("duration"),
+        "previewData": a.get("previewData"),
+        "thumbnail": a.get("thumbnail"),
+        "wave": a.get("wave"),
     }
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _fmt_msg(m: dict | None) -> dict | None:
+def _fmt_msg(m: dict | None, viewer_id: str = "") -> dict | None:
     if not m:
         return None
+    sender = m.get("sender")
     return {
-        "id": m.get("id"),
+        "id": _sid(m.get("id")),
         "time": m.get("time"),
-        "sender": m.get("sender"),
+        "sender": _sid(sender),
+        "outgoing": viewer_id != "" and str(sender) == str(viewer_id),
         "type": m.get("type"),
         "status": m.get("status"),
         "text": m.get("text", ""),
@@ -81,7 +96,7 @@ def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> d
         "title": _chat_title(c, contacts, viewer_id),
         "unread": c.get("newMessages", c.get("unreadCount", 0)),
         "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
-        "lastMessage": _fmt_msg(last),
+        "lastMessage": _fmt_msg(last, viewer_id),
     }
 
 
@@ -106,8 +121,9 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
     return {
         "chatId": chat_id,
         "title": _chat_title(meta, contacts, vid),
+        "viewerId": vid,
         "count": len(msgs),
-        "messages": [_fmt_msg(m) for m in msgs],
+        "messages": [_fmt_msg(m, vid) for m in msgs],
     }
 
 
@@ -122,9 +138,10 @@ def send_message(chat_id, text: str, notify: bool = True) -> dict[str, Any]:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
+        vid = s.viewer_id()
     return {
         "chatId": payload.get("chatId", chat_id),
-        "message": _fmt_msg(payload.get("message")),
+        "message": _fmt_msg(payload.get("message"), vid),
     }
 
 
@@ -136,3 +153,42 @@ def get_attachment_url(chat_id, message_id, file_id) -> str:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
+
+
+def _best_mp4(payload: dict) -> str | None:
+    """Из ответа opcode 83 выбираем самый качественный прямой MP4."""
+    def _res(key: str) -> int:
+        tail = key.split("_", 1)[1]
+        return int(tail) if tail.isdigit() else 0
+
+    keys = sorted((k for k in payload if k.startswith("MP4_")), key=_res, reverse=True)
+    return payload[keys[0]] if keys else None
+
+
+def get_media_url(chat_id, message_id, media_id) -> dict[str, Any]:
+    """Воспроизводимая ссылка на VIDEO или AUDIO (голосовое) вложение.
+
+    ``media_id`` — ``videoId`` либо ``audioId`` из attach (строка-снежинка).
+    Возвращает ``{ "url": <прямой MP4 | None>, "external": <веб-плеер | None> }``.
+    """
+    with session() as s:
+        try:
+            payload = s.media_url(media_id, chat_id, message_id)
+        except MediaError as exc:
+            # вложение недоступно/удалено — фронт покажет заглушку, не крутилку
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+
+    url = _best_mp4(payload)
+    external = payload.get("EXTERNAL")
+    if not url and not external:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="MAX не вернул воспроизводимую ссылку",
+        )
+    return {"url": url, "external": external}

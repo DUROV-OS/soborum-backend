@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy.orm import Session
+
 from app.agents.context import gather
 from app.agents.ids import DOES_NOT_OWN, RU_LABELS, VAULT_PATHS, AgentId
 from app.agents.legal import lawyer_reply, scan
@@ -12,13 +14,13 @@ from app.agents.types import ContextHit, LegalDecision, LegalVerdict, Opinion, R
 from app.agents.vault import ALWAYS_PATHS
 
 
-def run_task(text: str, vault_root: str | None = None) -> RunResult:
+def run_task(text: str, vault_root: str | None = None, db: Session | None = None) -> RunResult:
     if not text or not text.strip():
         raise ValueError("Пустой запрос")
 
     legal = scan(text)
     planned = route(text, legal)
-    context = gather(text, planned.specialists, vault_root)
+    context = gather(text, planned.specialists, vault_root, db)
     opinions: list[Opinion] = []
 
     if legal.verdict == LegalVerdict.BLOCK:
@@ -89,13 +91,7 @@ def _rank_hits(agent_id: AgentId, hits: list[ContextHit]) -> list[ContextHit]:
 
 
 def _live_hit(agent_id: AgentId, hit: ContextHit) -> bool:
-    path = hit.path or ""
-    if hit.source == "warehouse" and path.startswith("moysklad/") and agent_id in {
-        AgentId.COORDINATOR,
-        AgentId.FINANCE,
-    }:
-        return True
-    return False
+    return hit.source == "db" and (hit.path or "").startswith("durovos/")
 
 
 def _profile_hit(agent_id: AgentId, hit: ContextHit) -> bool:
@@ -154,12 +150,13 @@ def _synthesize(
 
 
 def _sources(context: SharedContext) -> list[str]:
+    db_hits = [hit for hit in context.hits if hit.source == "db" and hit.path]
     vault_hits = [hit for hit in context.hits if hit.source == "vault" and hit.path]
-    if not vault_hits:
-        return ["Источники: vault не подключён (задайте VAULT_ROOT на checkout vault_backups)."]
+    if not db_hits and not vault_hits:
+        return ["Источники: база DurovOS пуста и vault не подключён (задайте VAULT_ROOT на checkout vault_backups)."]
     profile = [hit for hit in vault_hits if hit.path not in ALWAYS_PATHS]
     always = [hit for hit in vault_hits if hit.path in ALWAYS_PATHS]
-    ordered = profile + always
+    ordered = db_hits + profile + always
     lines = ["Источники:"]
     for hit in ordered[:10]:
         lines.append(f"- {hit.title} · {hit.path}")
