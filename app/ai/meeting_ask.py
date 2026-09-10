@@ -35,7 +35,7 @@ SYSTEM_PROMPT = (
 
 
 def _transcript_block(db: Session, meeting: Meeting) -> str:
-    lines = transcript_lines(db, meeting)
+    lines = [ln for ln in transcript_lines(db, meeting) if not ln.is_assistant_query]
     if not lines:
         return "(транскрипт совещания пуст)"
     return "\n".join(f"[{line.speaker}] {line.text}" for line in lines)

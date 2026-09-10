@@ -68,6 +68,11 @@ def _clean_list(value) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _content_lines(lines):
+    """Обычные реплики — без обращений к Марине по слову-триггеру."""
+    return [line for line in lines if not line.is_assistant_query]
+
+
 def _transcript_text(lines) -> str:
     return "\n".join(f"[{line.speaker}] {line.text}" for line in lines)
 
@@ -116,7 +121,7 @@ def refresh_notes(db: Session, meeting: Meeting, *, force: bool = False) -> tupl
         )
 
     with _locks[meeting.id]:
-        lines = transcript_lines(db, meeting)
+        lines = _content_lines(transcript_lines(db, meeting))
         count = len(lines)
         existing = db.get(MeetingNotes, meeting.id)
 

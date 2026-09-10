@@ -223,3 +223,25 @@ def test_meeting_document_private_to_owner(api, make_user):
     mid = owner.post("/api/ai/meetings", json={}).json()["id"]
     stranger = api(make_user(Module.AI))
     assert stranger.get(f"/api/ai/meetings/{mid}/document").status_code == 404
+
+
+# --- 0004-d: реплика-обращение к Марине ------------------------------------
+
+
+def test_assistant_query_line_flagged_and_kept_in_transcript(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    created = client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [
+            {"speaker": "Спикер 1", "text": "Обсуждаем монтаж", "at_ms": 1000},
+            {"speaker": "Спикер 1", "text": "Марина, какие риски?", "at_ms": 4000,
+             "is_assistant_query": True},
+        ]},
+    ).json()
+    assert created[0]["is_assistant_query"] is False
+    assert created[1]["is_assistant_query"] is True
+
+    detail = client.get(f"/api/ai/meetings/{mid}").json()
+    # обе строки в транскрипте, флаг сохранён
+    assert [l["is_assistant_query"] for l in detail["transcript"]] == [False, True]

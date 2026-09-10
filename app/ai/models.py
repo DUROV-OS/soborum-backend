@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -168,6 +168,9 @@ class MeetingTranscriptLine(Base):
     speaker: Mapped[str] = mapped_column(String(32), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     at_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Реплика-обращение к Марине по слову-триггеру: показывается в транскрипте
+    # с пометкой, но не учитывается как обычная реплика в ИИ-заметках.
+    is_assistant_query: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     meeting: Mapped["Meeting"] = relationship(back_populates="transcript_lines")

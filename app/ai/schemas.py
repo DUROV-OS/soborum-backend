@@ -117,12 +117,14 @@ class TranscriptLineOut(BaseModel):
     speaker: str
     text: str
     at_ms: int
+    is_assistant_query: bool = False
 
 
 class TranscriptLineIn(BaseModel):
     speaker: str = Field(default="Спикер 1", max_length=32)
     text: str = Field(min_length=1)
     at_ms: int = Field(default=0, ge=0)
+    is_assistant_query: bool = False
 
 
 class TranscriptAppendIn(BaseModel):

@@ -494,7 +494,9 @@ def append_meeting_transcript(
 ):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     created = ai_meetings.append_transcript_lines(
-        db, meeting, [(line.speaker, line.text, line.at_ms) for line in payload.lines]
+        db,
+        meeting,
+        [(line.speaker, line.text, line.at_ms, line.is_assistant_query) for line in payload.lines],
     )
     return [TranscriptLineOut.model_validate(line) for line in created]
 

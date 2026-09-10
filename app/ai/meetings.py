@@ -78,17 +78,17 @@ _SPEAKER_MAX = 32
 
 
 def append_transcript_lines(
-    db: Session, meeting: Meeting, lines: list[tuple[str, str, int]]
+    db: Session, meeting: Meeting, lines: list[tuple[str, str, int, bool]]
 ) -> list[MeetingTranscriptLine]:
-    """lines — список (speaker, text, at_ms). Дописывать можно только пока
-    совещание идёт: у завершённого транскрипт заморожен."""
+    """lines — список (speaker, text, at_ms, is_assistant_query). Дописывать
+    можно только пока совещание идёт: у завершённого транскрипт заморожен."""
     if meeting.status == MeetingStatus.FINISHED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Совещание завершено — транскрипт больше не принимается",
         )
     created: list[MeetingTranscriptLine] = []
-    for speaker, text, at_ms in lines:
+    for speaker, text, at_ms, is_assistant_query in lines:
         clean_text = (text or "").strip()
         if not clean_text:
             continue
@@ -97,6 +97,7 @@ def append_transcript_lines(
             speaker=(speaker or "Спикер 1").strip()[:_SPEAKER_MAX] or "Спикер 1",
             text=clean_text,
             at_ms=max(0, int(at_ms or 0)),
+            is_assistant_query=bool(is_assistant_query),
         )
         db.add(row)
         created.append(row)
