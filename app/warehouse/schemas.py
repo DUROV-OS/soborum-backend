@@ -171,3 +171,20 @@ class SupplierOut(BaseModel):
 
 class LinkMaxChatIn(BaseModel):
     chat_id: int
+
+
+class PriceListImportResult(BaseModel):
+    """Итог `POST /suppliers/{id}/price-items/import`."""
+
+    supplier: SupplierOut
+    imported: int
+    skipped: int
+    # разметку колонок сделал ИИ (True) или словарь-эвристика (False)
+    ai_used: bool
+    note: str = ""
+    # {"material": "<заголовок>", "price": ..., "category": None, ...}
+    column_mapping: dict
+    # необязательные поля, для которых в файле не нашлось колонки
+    missing_fields: list[str]
+    # id созданной задачи «дозаполнить прайс», если она понадобилась
+    task_id: int | None = None

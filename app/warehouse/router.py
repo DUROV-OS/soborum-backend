@@ -7,10 +7,11 @@ from app.core.deps import require_module
 from app.db.session import get_db
 from app.production.schemas import MaterialRequestOut
 from app.users.models import User
-from app.warehouse import excel, service as warehouse_service
+from app.warehouse import excel, price_import, service as warehouse_service
 from app.warehouse.models import MaterialCategory, StockMovementReason, Supply, Warehouse
 from app.warehouse.schemas import (
     LinkMaxChatIn,
+    PriceListImportResult,
     StockMovementOut,
     SupplierCreate,
     SupplierOut,
@@ -193,6 +194,42 @@ def delete_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = D
     db.delete(warehouse_service.get_supplier_or_404(db, supplier_id))
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/suppliers/{supplier_id}/price-items/import", response_model=PriceListImportResult)
+def import_price_list(
+    supplier_id: int,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_warehouse),
+):
+    """Импорт прайс-листа таблицей (.xlsx/.csv). Колонки размечает ИИ (при
+    наличии `ANTHROPIC_API_KEY`), иначе — словарь синонимов. Строки добавляются
+    к существующему прайсу; недостающие поля остаются пустыми и порождают задачу
+    «дозаполнить». Без опознанных колонок материала и цены — отказ 400."""
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    headers, data = price_import.read_table(file)
+    mapping = price_import.resolve_mapping(headers, data)
+
+    if not mapping.material or (not mapping.price and not mapping.qty_breaks):
+        which = "с названием материала" if not mapping.material else "с ценой"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Не удалось определить колонку {which}. Заголовки файла: {headers}",
+        )
+
+    imported, skipped, task_id = warehouse_service.import_price_list(db, supplier, headers, data, mapping, user)
+    db.commit()
+    return PriceListImportResult(
+        supplier=warehouse_service.supplier_out(supplier),
+        imported=imported,
+        skipped=skipped,
+        ai_used=mapping.ai_used,
+        note=mapping.note,
+        column_mapping=mapping.as_dict(),
+        missing_fields=mapping.missing_fields(),
+        task_id=task_id,
+    )
 
 
 @app.post("/suppliers/{supplier_id}/price-items", response_model=SupplierOut, status_code=201)
