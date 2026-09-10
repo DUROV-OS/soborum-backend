@@ -171,3 +171,26 @@ class MeetingTranscriptLine(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     meeting: Mapped["Meeting"] = relationship(back_populates="transcript_lines")
+
+
+class MeetingNotes(Base):
+    """Marina's structured notes for one meeting (1:1). Recomputed from the
+    full transcript — резюме / решения / задачи / открытые вопросы —
+    incrementally as the transcript grows and once more on finish.
+    `source_line_count` is how many transcript lines the current notes reflect."""
+
+    __tablename__ = "ai_meeting_notes"
+
+    meeting_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_meetings.id", ondelete="CASCADE"), primary_key=True
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    decisions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    tasks: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    questions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_line_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    meeting: Mapped["Meeting"] = relationship()
