@@ -137,8 +137,13 @@ def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> d
         "title": _chat_title(c, contacts, viewer_id),
         "unread": c.get("newMessages", c.get("unreadCount", 0)),
         "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
-        "lastMessage": _fmt_msg(last, viewer_id),
+        "lastMessage": _fmt_msg(last, viewer_id, contacts),
     }
+
+
+def _is_group_chat(meta: dict | None) -> bool:
+    """Групповой чат MAX — всё, что не диалог 1:1 (тип ``DIALOG``)."""
+    return bool(meta) and meta.get("type") != "DIALOG"
 
 
 def list_chats(limit: int | None = None) -> dict[str, Any]:
@@ -163,8 +168,9 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
         "chatId": chat_id,
         "title": _chat_title(meta, contacts, vid),
         "viewerId": vid,
+        "isGroup": _is_group_chat(meta),
         "count": len(msgs),
-        "messages": [_fmt_msg(m, vid) for m in msgs],
+        "messages": [_fmt_msg(m, vid, contacts) for m in msgs],
     }
 
 
@@ -180,9 +186,10 @@ def send_message(chat_id, text: str, notify: bool = True) -> dict[str, Any]:
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
         vid = s.viewer_id()
+        contacts = s.contacts_by_id()
     return {
         "chatId": payload.get("chatId", chat_id),
-        "message": _fmt_msg(payload.get("message"), vid),
+        "message": _fmt_msg(payload.get("message"), vid, contacts),
     }
 
 
