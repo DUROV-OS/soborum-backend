@@ -186,5 +186,35 @@ class PriceListImportResult(BaseModel):
     column_mapping: dict
     # необязательные поля, для которых в файле не нашлось колонки
     missing_fields: list[str]
-    # id созданной задачи «дозаполнить прайс», если она понадобилась
-    task_id: int | None = None
+    # есть смысл предложить задачу «дозаполнить» (не хватает полей или есть пропуски)
+    backfill_suggested: bool = False
+
+
+class AiFillCategoryResult(BaseModel):
+    supplier: SupplierOut
+    filled: int
+    skipped: int
+
+
+class LeadTimeQuestionDraft(BaseModel):
+    message: str
+    materials: list[str]
+    chat_id: int
+
+
+class LeadTimeQuestionSend(BaseModel):
+    message: str
+
+
+class LeadTimeQuestionSent(BaseModel):
+    sent: bool
+    chat_id: int
+
+
+class BackfillTaskRequest(BaseModel):
+    missing_fields: list[str] = []
+
+
+class BackfillTaskResult(BaseModel):
+    task_id: int
+    supplier: SupplierOut

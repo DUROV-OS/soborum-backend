@@ -10,6 +10,12 @@ from app.users.models import User
 from app.warehouse import excel, price_import, service as warehouse_service
 from app.warehouse.models import MaterialCategory, StockMovementReason, Supply, Warehouse
 from app.warehouse.schemas import (
+    AiFillCategoryResult,
+    BackfillTaskRequest,
+    BackfillTaskResult,
+    LeadTimeQuestionDraft,
+    LeadTimeQuestionSend,
+    LeadTimeQuestionSent,
     LinkMaxChatIn,
     PriceListImportResult,
     StockMovementOut,
@@ -218,8 +224,9 @@ def import_price_list(
             detail=f"Не удалось определить колонку {which}. Заголовки файла: {headers}",
         )
 
-    imported, skipped, task_id = warehouse_service.import_price_list(db, supplier, headers, data, mapping, user)
+    imported, skipped = warehouse_service.import_price_list(db, supplier, headers, data, mapping, user)
     db.commit()
+    missing = mapping.missing_fields()
     return PriceListImportResult(
         supplier=warehouse_service.supplier_out(supplier),
         imported=imported,
@@ -227,9 +234,64 @@ def import_price_list(
         ai_used=mapping.ai_used,
         note=mapping.note,
         column_mapping=mapping.as_dict(),
-        missing_fields=mapping.missing_fields(),
-        task_id=task_id,
+        missing_fields=missing,
+        backfill_suggested=bool(imported) and bool(missing or skipped),
     )
+
+
+@app.post("/suppliers/{supplier_id}/price-items/ai-fill-category", response_model=AiFillCategoryResult)
+def ai_fill_category(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    """ИИ проставляет категорию из справочника склада строкам прайса поставщика,
+    у которых она пуста."""
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    filled, skipped = warehouse_service.ai_fill_categories(db, supplier)
+    db.commit()
+    return AiFillCategoryResult(
+        supplier=warehouse_service.supplier_out(supplier), filled=filled, skipped=skipped
+    )
+
+
+@app.post(
+    "/suppliers/{supplier_id}/price-items/lead-time-question/draft",
+    response_model=LeadTimeQuestionDraft,
+)
+def draft_lead_time_question(
+    supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)
+):
+    """Черновик сообщения поставщику в MAX с просьбой указать сроки поставки по
+    позициям без срока. Ничего не отправляет. Нет привязанного чата MAX → 409."""
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    return LeadTimeQuestionDraft(**warehouse_service.draft_lead_time_question(supplier))
+
+
+@app.post(
+    "/suppliers/{supplier_id}/price-items/lead-time-question/send",
+    response_model=LeadTimeQuestionSent,
+)
+def send_lead_time_question(
+    supplier_id: int,
+    payload: LeadTimeQuestionSend,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    """Отправляет согласованный пользователем текст в привязанный чат MAX поставщика."""
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    chat_id = warehouse_service.send_lead_time_question(supplier, payload.message)
+    return LeadTimeQuestionSent(sent=True, chat_id=chat_id)
+
+
+@app.post("/suppliers/{supplier_id}/price-items/backfill-task", response_model=BackfillTaskResult)
+def create_backfill_task(
+    supplier_id: int,
+    payload: BackfillTaskRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    """Создаёт задачу «дозаполнить прайс поставщика» по подтверждению пользователя."""
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    task_id = warehouse_service.create_backfill_task(db, supplier, payload.missing_fields)
+    db.commit()
+    return BackfillTaskResult(task_id=task_id, supplier=warehouse_service.supplier_out(supplier))
 
 
 @app.post("/suppliers/{supplier_id}/price-items", response_model=SupplierOut, status_code=201)
