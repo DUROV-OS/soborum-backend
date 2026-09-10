@@ -59,7 +59,7 @@ def test_full_table_maps_every_column_no_task(api, make_user):
     assert body["skipped"] == 0
     assert body["ai_used"] is False
     assert body["missing_fields"] == []
-    assert body["task_id"] is None
+    assert body["backfill_suggested"] is False
     assert body["column_mapping"]["material"] == "Наименование"
     assert body["column_mapping"]["price"] == "Цена, руб"
 
@@ -73,7 +73,7 @@ def test_full_table_maps_every_column_no_task(api, make_user):
     assert supplier["price_items"][1]["tiers"][0]["price"] == 1250.5
 
 
-def test_partial_table_fills_empty_and_creates_backfill_task(api, make_user, db):
+def test_partial_table_fills_empty_and_suggests_backfill(api, make_user, db):
     client = api(make_user(Module.WAREHOUSE))
     sid = _make_supplier(client)
     content = _xlsx([["Товар", "Цена"], ["Саморез 4.2x75", "690"], ["Уголок 90x90", "38"]])
@@ -83,16 +83,29 @@ def test_partial_table_fills_empty_and_creates_backfill_task(api, make_user, db)
     body = res.json()
     assert body["imported"] == 2
     assert sorted(body["missing_fields"]) == ["category", "lead_time"]
-    assert body["task_id"] is not None
-
-    task = db.get(Task, body["task_id"])
-    assert task.link_type == TaskLinkType.SUPPLIER_PRICE_BACKFILL
-    assert task.link_id == sid
-    assert "Дозаполнить прайс" in task.title
-    assert task.assignees  # сотрудники склада
+    # импорт больше не создаёт задачу сам — только предлагает
+    assert body["backfill_suggested"] is True
+    assert db.query(Task).filter(Task.link_type == TaskLinkType.SUPPLIER_PRICE_BACKFILL).count() == 0
 
     item = body["supplier"]["price_items"][0]
     assert item["category"] is None and item["lead_time"] is None
+
+
+def test_backfill_task_created_on_confirm(api, make_user, db):
+    client = api(make_user(Module.WAREHOUSE))
+    sid = _make_supplier(client)
+    _upload(client, sid, _xlsx([["Товар", "Цена"], ["Гвоздь", "210"]]))
+
+    res = client.post(
+        f"/api/warehouse/suppliers/{sid}/price-items/backfill-task",
+        json={"missing_fields": ["category", "lead_time"]},
+    )
+    assert res.status_code == 200, res.text
+    task = db.get(Task, res.json()["task_id"])
+    assert task.link_type == TaskLinkType.SUPPLIER_PRICE_BACKFILL
+    assert task.link_id == sid
+    assert "категория, срок поставки" in task.title
+    assert task.assignees
 
 
 def test_reject_when_price_column_not_recognised(api, make_user):
@@ -152,4 +165,73 @@ def test_ai_mapping_path_is_marked(api, make_user, monkeypatch):
     body = res.json()
     assert body["ai_used"] is True
     assert body["imported"] == 1
-    assert body["task_id"] is not None
+    assert body["backfill_suggested"] is True
+
+
+# --- ИИ-помощь по недостающим полям (задача 0011-h) ---
+
+
+def _upload_partial(client, sid):
+    return _upload(client, sid, _xlsx([["Товар", "Цена"], ["Доска строганая 20x90", "260"], ["Брусок 50x50", "70"]]))
+
+
+def test_ai_fill_category_from_reference(api, make_user, monkeypatch):
+    from app.warehouse import price_import
+
+    monkeypatch.setattr(price_import, "ai_enabled", lambda: True)
+    monkeypatch.setattr(
+        price_import,
+        "ai_assign_categories",
+        lambda pairs: {pid: "брусы/доска" for pid, _ in pairs},
+    )
+    client = api(make_user(Module.WAREHOUSE))
+    sid = _make_supplier(client)
+    _upload_partial(client, sid)
+
+    res = client.post(f"/api/warehouse/suppliers/{sid}/price-items/ai-fill-category")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["filled"] == 2 and body["skipped"] == 0
+    assert all(pi["category"] == "брусы/доска" for pi in body["supplier"]["price_items"])
+
+
+def test_ai_fill_category_needs_key(api, make_user, monkeypatch):
+    from app.warehouse import price_import
+
+    monkeypatch.setattr(price_import, "ai_enabled", lambda: False)
+    client = api(make_user(Module.WAREHOUSE))
+    sid = _make_supplier(client)
+    _upload_partial(client, sid)
+    assert client.post(f"/api/warehouse/suppliers/{sid}/price-items/ai-fill-category").status_code == 503
+
+
+def test_lead_time_question_requires_linked_max_chat(api, make_user, monkeypatch):
+    from app.warehouse import price_import
+
+    monkeypatch.setattr(price_import, "ai_enabled", lambda: True)
+    monkeypatch.setattr(price_import, "ai_lead_time_message", lambda name, materials: "Здравствуйте! Укажите сроки.")
+    client = api(make_user(Module.WAREHOUSE))
+    sid = _make_supplier(client)
+    _upload_partial(client, sid)
+
+    # без чата MAX — отказ
+    assert client.post(f"/api/warehouse/suppliers/{sid}/price-items/lead-time-question/draft").status_code == 409
+
+    client.post(f"/api/warehouse/suppliers/{sid}/link-max-chat", json={"chat_id": -501})
+    draft = client.post(f"/api/warehouse/suppliers/{sid}/price-items/lead-time-question/draft")
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["chat_id"] == -501
+    assert len(draft.json()["materials"]) == 2
+
+    sent = {}
+    monkeypatch.setattr(
+        "app.max.service.send_message",
+        lambda chat_id, text, notify=True: sent.update(chat_id=chat_id, text=text) or {"chatId": chat_id},
+    )
+    res = client.post(
+        f"/api/warehouse/suppliers/{sid}/price-items/lead-time-question/send",
+        json={"message": "Здравствуйте! Проставьте сроки, пожалуйста."},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json() == {"sent": True, "chat_id": -501}
+    assert sent["chat_id"] == -501
