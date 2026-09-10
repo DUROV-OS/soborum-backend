@@ -141,11 +141,20 @@ class MeetingAskOut(BaseModel):
     answer_markdown: str
 
 
+class MeetingNotesOut(BaseModel):
+    summary: str
+    decisions: list[str]
+    tasks: list[str]
+    questions: list[str]
+    source_line_count: int
+    updated_at: datetime
+    stale: bool = False
+
+
 class MeetingDetailOut(MeetingOut):
     audio_url: str | None = None
     transcript: list[TranscriptLineOut] = Field(default_factory=list)
-    # Заметки Марины — 0004-c; здесь всегда null.
-    notes: dict | None = None
+    notes: MeetingNotesOut | None = None
     ai_enabled: bool = False
 
 

@@ -1,7 +1,7 @@
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.ai import analytics as ai_analytics
@@ -9,12 +9,22 @@ from app.ai import attachments as ai_attachments
 from app.ai import engine
 from app.ai import mcp_auth
 from app.ai import meeting_ask as ai_meeting_ask
+from app.ai import meeting_notes as ai_meeting_notes
 from app.ai import meetings as ai_meetings
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
 from app.ai import topic as ai_topic
 from app.ai import tts as ai_tts
-from app.ai.models import Chat, ChatDomain, ChatMode, McpCredential, Meeting, PendingAction, PendingActionStatus
+from app.ai.models import (
+    Chat,
+    ChatDomain,
+    ChatMode,
+    McpCredential,
+    Meeting,
+    MeetingNotes,
+    PendingAction,
+    PendingActionStatus,
+)
 from app.ai.tools import TOOLS
 from app.ai.schemas import (
     AskRequest,
@@ -28,6 +38,7 @@ from app.ai.schemas import (
     MeetingAskOut,
     MeetingCreate,
     MeetingDetailOut,
+    MeetingNotesOut,
     MeetingOut,
     PendingActionOut,
     SectionAnalyticsOut,
@@ -435,6 +446,20 @@ def _meeting_out(m: Meeting) -> MeetingOut:
     )
 
 
+def _notes_out(notes, stale: bool = False) -> MeetingNotesOut | None:
+    if notes is None:
+        return None
+    return MeetingNotesOut(
+        summary=notes.summary,
+        decisions=list(notes.decisions or []),
+        tasks=list(notes.tasks or []),
+        questions=list(notes.questions or []),
+        source_line_count=notes.source_line_count,
+        updated_at=notes.updated_at,
+        stale=stale,
+    )
+
+
 @app.post("/meetings", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
 def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db), user: User = Depends(require_ai)):
     return _meeting_out(ai_meetings.create_meeting(db, user, payload.title))
@@ -455,7 +480,8 @@ def get_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Dep
         transcript=[
             TranscriptLineOut.model_validate(line) for line in ai_meetings.transcript_lines(db, meeting)
         ],
-        ai_enabled=bool(settings.anthropic_api_key),
+        notes=_notes_out(db.get(MeetingNotes, meeting.id)),
+        ai_enabled=ai_meeting_notes.notes_ai_enabled(),
     )
 
 
@@ -498,7 +524,39 @@ def upload_meeting_audio(
 @app.post("/meetings/{meeting_id}/finish", response_model=MeetingOut)
 def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
-    return _meeting_out(ai_meetings.finish_meeting(db, meeting))
+    finished = ai_meetings.finish_meeting(db, meeting)
+    # Финальный пересчёт заметок по всему транскрипту — молча, finish не должен
+    # падать из-за ИИ (нет ключа / провайдер недоступен).
+    ai_meeting_notes.refresh_notes_quietly(db, finished)
+    return _meeting_out(finished)
+
+
+@app.post("/meetings/{meeting_id}/notes/refresh", response_model=MeetingNotesOut)
+def refresh_meeting_notes(
+    meeting_id: int,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    notes, stale = ai_meeting_notes.refresh_notes(db, meeting, force=force)
+    return _notes_out(notes, stale)
+
+
+@app.get("/meetings/{meeting_id}/document")
+def meeting_document(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    """Готовый markdown-документ совещания для базы знаний (frontmatter +
+    заметки + транскрипт). Реальная заливка в БЗ — задача 0010."""
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    notes = db.get(MeetingNotes, meeting.id)
+    body = ai_meeting_notes.build_document(db, meeting, notes)
+    started = meeting.started_at
+    filename = f"meeting-{meeting.id}-{started:%Y-%m-%d}.md"
+    return PlainTextResponse(
+        body,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/meetings/{meeting_id}/ask", response_model=MeetingAskOut)
