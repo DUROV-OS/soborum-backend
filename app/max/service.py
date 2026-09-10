@@ -41,15 +41,56 @@ def _fmt_attach(a: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _fmt_msg(m: dict | None, viewer_id: str = "") -> dict | None:
+# CONTROL-вложения MAX — служебные события чата (вступил / вышел / переименовал).
+# Показываем их отдельной строкой, а не как чьё-то сообщение.
+_CONTROL_EVENT_TEXT = {
+    "new": "чат создан",
+    "add": "добавил участника",
+    "remove": "удалил участника",
+    "leave": "вышел из чата",
+    "joinByLink": "присоединился по ссылке",
+    "title": "изменил название чата",
+    "pin": "закрепил сообщение",
+    "unpin": "открепил сообщение",
+    "photo": "изменил фото чата",
+}
+
+
+def _system_text(m: dict) -> str | None:
+    for a in m.get("attaches", []):
+        if a.get("_type") == "CONTROL":
+            ev = a.get("event")
+            if ev == "title" and a.get("title"):
+                return f"изменил название чата на «{a['title']}»"
+            return _CONTROL_EVENT_TEXT.get(ev, "служебное сообщение")
+    return None
+
+
+def _fmt_msg(
+    m: dict | None, viewer_id: str = "", contacts: dict | None = None
+) -> dict | None:
     if not m:
         return None
+    contacts = contacts or {}
     sender = m.get("sender")
+    sender_id = _sid(sender)
+    is_system = any(
+        a.get("_type") == "CONTROL" for a in m.get("attaches", [])
+    )
     return {
         "id": _sid(m.get("id")),
         "time": m.get("time"),
-        "sender": _sid(sender),
-        "outgoing": viewer_id != "" and str(sender) == str(viewer_id),
+        # id участника MAX (стабильный, строкой) — по нему фронт группирует
+        # подряд идущие сообщения и подписывает автора в группах.
+        "senderId": sender_id,
+        "senderName": _contact_name(contacts.get(sender_id)) if sender_id else None,
+        # исходящее = автор совпал с текущим пользователем; тип чата ни при чём.
+        # служебное событие никогда не «исходящее».
+        "isOutgoing": (
+            not is_system and viewer_id != "" and str(sender) == str(viewer_id)
+        ),
+        "isSystem": is_system,
+        "systemText": _system_text(m) if is_system else None,
         "type": m.get("type"),
         "status": m.get("status"),
         "text": m.get("text", ""),
