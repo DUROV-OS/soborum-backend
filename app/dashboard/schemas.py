@@ -31,3 +31,19 @@ class TodayDashboardOut(BaseModel):
     actions: list[DashboardAction] = Field(default_factory=list)
     source: Literal["database"] = "database"
     ai_configured: bool = False
+
+
+class AktualnoeItem(BaseModel):
+    cycle_id: int
+    client_name: str
+    stage: str
+    percent: int = Field(ge=0, le=100)
+    phrase: str = ""
+
+
+class AktualnoeOut(BaseModel):
+    generated_at: datetime
+    items: list[AktualnoeItem] = Field(default_factory=list)
+    ai_configured: bool = False
+    # true — блок собран без ИИ (топ по свежести, проценты детерминированные)
+    degraded: bool = False

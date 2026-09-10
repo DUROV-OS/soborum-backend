@@ -16,7 +16,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.ai import cache as ai_cache
+from app.common.module_access import Module
 from app.core.config import settings
+from app.dashboard.schemas import AktualnoeItem, AktualnoeOut
+from app.users.models import User
 
 from app.clients.models import Client, ClientNote, ClientStage
 from app.cycle.models import Cycle, CycleStatus
@@ -25,6 +29,9 @@ from app.production.models import Production, ProductionModule
 from app.tasks.models import Task, TaskLinkType, TaskStageEvent
 
 RECENT_WINDOW = timedelta(days=21)
+CACHE_KEY = "dashboard_aktualnoe"
+CACHE_TTL = timedelta(hours=12)
+TOP_N = 3
 
 # Человеческое название текущей стадии + запасной процент, если ИИ недоступен.
 CLIENT_STAGE_LABEL: dict[ClientStage, tuple[str, int]] = {
@@ -263,3 +270,52 @@ def ai_rate_cycles(activities: list[CycleActivity]) -> dict[int, dict] | None:
         phrase = str(row.get("phrase") or "").strip()
         out[cid] = {"percent": percent, "stage": stage, "phrase": phrase}
     return out or None
+
+
+# ---------------------------------------------------------------- сборка --
+
+def _build(db: Session) -> AktualnoeOut:
+    activities = top_active_cycles(db, TOP_N)
+    now = datetime.now(timezone.utc)
+    if not activities:
+        return AktualnoeOut(generated_at=now, items=[], ai_configured=bool(settings.anthropic_api_key), degraded=False)
+
+    rated = ai_rate_cycles(activities)
+    degraded = rated is None
+    items: list[AktualnoeItem] = []
+    for a in activities:
+        r = (rated or {}).get(a.cycle_id, {})
+        items.append(
+            AktualnoeItem(
+                cycle_id=a.cycle_id,
+                client_name=a.client_name,
+                stage=r.get("stage") or a.stage_label,
+                percent=r.get("percent", a.fallback_percent),
+                phrase=r.get("phrase", ""),
+            )
+        )
+    return AktualnoeOut(
+        generated_at=now,
+        items=items,
+        ai_configured=bool(settings.anthropic_api_key),
+        degraded=degraded,
+    )
+
+
+def generate_aktualnoe(db: Session, user: User, force: bool = False) -> AktualnoeOut:
+    """Блок «Актуальное» для «Сегодня». Пустой список, если у сотрудника нет
+    доступа к разделу «Цикл клиента». Кеш на 12 часов, общий на организацию;
+    кнопка «Обновить» на «Сегодня» проходит как force=True."""
+    if not user.has_access(Module.CYCLE):
+        return AktualnoeOut(generated_at=datetime.now(timezone.utc), items=[])
+
+    cached = ai_cache.get(db, CACHE_KEY, force, ttl=CACHE_TTL)
+    if cached is not None:
+        return AktualnoeOut(**cached)
+
+    result = _build(db)
+    # Не кешируем деградированный ответ — чтобы после появления ключа он
+    # пересчитался в ближайший запрос, а не жил 12 часов.
+    if not result.degraded:
+        ai_cache.set(db, CACHE_KEY, result.model_dump(mode="json"), result.generated_at)
+    return result

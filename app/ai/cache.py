@@ -25,11 +25,11 @@ def _aware(value: datetime) -> datetime:
     return value
 
 
-def get(db: Session, key: str, force: bool = False) -> dict | None:
+def get(db: Session, key: str, force: bool = False, ttl: timedelta | None = None) -> dict | None:
     if force:
         return None
     entry = db.get(AiCacheEntry, key)
-    if entry is None or datetime.now(timezone.utc) - _aware(entry.generated_at) > TTL:
+    if entry is None or datetime.now(timezone.utc) - _aware(entry.generated_at) > (ttl or TTL):
         return None
     return entry.payload
 
