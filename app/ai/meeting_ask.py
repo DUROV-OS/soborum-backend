@@ -1,37 +1,26 @@
 """«Спросить Марину о совещании» — одноразовый вопрос по конкретному
-совещанию. Контекст = транскрипт этого совещания; плюс, если коннектор
-базы знаний настроен и спрашивает администратор, Марине доступны read-only
-инструменты базы знаний и веб-поиск (та же обвязка, что в app/ai/engine).
+совещанию.
 
-Голосовой триггер «Марина» и озвучка ответа — отдельная задача 0004-d, здесь
-только текстовый вопрос и ответ на экран.
+Идёт через общий движок ассистента (app/ai/engine) в режиме NO_ACTIONS: у
+Марины те же инструменты чтения, что в разделе «Марина» — живой срез базы
+DurovOS, read-only инструменты разделов, база знаний (для админа) и веб.
+Никаких изменений данных (NO_ACTIONS отфильтровывает всё, кроме чтения).
+Контекст вопроса — транскрипт этого совещания.
+
+Голосовой ответ: движок возвращает первую строку «Голосом: …» (короткая
+фраза для озвучки) + развёрнутый текст ниже — фронт разбивает их сам.
 """
 
 from __future__ import annotations
 
-import anthropic
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.ai import engine
 from app.ai.meetings import transcript_lines
-from app.ai.models import Meeting
+from app.ai.models import Chat, ChatDomain, ChatMode, Meeting
 from app.core.config import settings
 from app.users.models import User
-
-MAX_ROUNDS = 5
-
-SYSTEM_PROMPT = (
-    "Ты — Марина, ассистент системы управления производством модульных домов. "
-    "Пользователь открыл конкретное совещание и задаёт по нему вопрос. Ниже — "
-    "транскрипт этого совещания. Отвечай строго по существу вопроса, опираясь на "
-    "транскрипт. Если доступны инструменты базы знаний компании (их имена "
-    "начинаются с «knowledge-base_») и вопрос требует справки по проекту, "
-    "техкарте, поставщику или правилам — сверься с базой знаний и учти найденное. "
-    "Не выдумывай фактов, которых нет ни в транскрипте, ни в базе знаний; если "
-    "данных не хватает — так и скажи. Пиши по-русски, кратко и по делу, можно "
-    "Markdown."
-)
 
 
 def _transcript_block(db: Session, meeting: Meeting) -> str:
@@ -52,36 +41,25 @@ def answer_meeting_question(db: Session, user: User, meeting: Meeting, question:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Пустой вопрос")
 
     title = meeting.title or f"Совещание #{meeting.id}"
-    user_block = (
-        f"Совещание: «{title}» (начато {meeting.started_at:%Y-%m-%d %H:%M}).\n\n"
-        f"Транскрипт:\n{_transcript_block(db, meeting)}\n\n---\nВопрос: {text}"
+    message = (
+        f"Вопрос задан во время совещания «{title}». Ниже транскрипт этого совещания — "
+        "это контекст разговора. Разделяй источники по общему правилу: вопрос про "
+        "текущее состояние и процессы компании (клиенты, заказы, склад, производство, "
+        "монтаж, задачи, деньги, сроки) — смотри в базе DurovOS через инструменты "
+        "чтения, а не в транскрипте и не в базе знаний; справочные и общие вопросы или "
+        "конкретика о том, чего в системе нет — база знаний; публичные факты — интернет.\n\n"
+        f"ТРАНСКРИПТ СОВЕЩАНИЯ:\n{_transcript_block(db, meeting)}\n\n---\nВОПРОС: {text}"
     )
-    messages: list[dict] = [{"role": "user", "content": user_block}]
-    client = engine._get_client()
 
-    for _ in range(MAX_ROUNDS):
-        kwargs, mcp_servers = engine._build_request(db, SYSTEM_PROMPT, messages, [], user)
-        try:
-            if mcp_servers is not None:
-                response = client.beta.messages.create(
-                    betas=[engine.MCP_BETA], mcp_servers=mcp_servers, **kwargs
-                )
-            else:
-                response = client.messages.create(**kwargs)
-        except anthropic.APIError:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Марина временно недоступна. Попробуйте позже.",
-            ) from None
+    # Временный «чат» только ради прогона движка; удаляем вместе с сообщениями.
+    chat = Chat(owner_id=user.id, domain=ChatDomain.GENERAL, mode=ChatMode.NO_ACTIONS)
+    db.add(chat)
+    db.commit()
+    db.refresh(chat)
+    try:
+        result = engine.run_turn(db, chat, user, message)
+    finally:
+        db.delete(chat)
+        db.commit()
 
-        blocks = [block.model_dump(mode="json") for block in response.content]
-        if response.stop_reason == "pause_turn":
-            # Провайдерский инструмент (веб / база знаний) в процессе — дослать
-            # накопленное и продолжить, как это делает engine._advance.
-            messages.append({"role": "assistant", "content": blocks})
-            continue
-
-        answer = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
-        return answer or "Не удалось сформулировать ответ по совещанию."
-
-    return "Не удалось получить ответ за отведённое число шагов. Попробуйте переформулировать вопрос."
+    return (result.reply or "").strip() or "Не удалось сформулировать ответ по совещанию."
