@@ -171,3 +171,55 @@ def test_transcript_is_private_to_owner(api, make_user):
         f"/api/ai/meetings/{mid}/transcript",
         json={"lines": [{"speaker": "Спикер 1", "text": "чужое", "at_ms": 0}]},
     ).status_code == 404
+
+
+# --- 0004-c: заметки Марины и документ для базы знаний ---------------------
+
+
+def test_notes_refresh_needs_key(api, make_user):
+    # conftest очищает ANTHROPIC_API_KEY → пересчёт заметок отключён
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    resp = client.post(f"/api/ai/meetings/{mid}/notes/refresh")
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["ai_enabled"] is False
+
+
+def test_detail_notes_null_until_computed(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    detail = client.get(f"/api/ai/meetings/{mid}").json()
+    assert detail["notes"] is None
+    assert detail["ai_enabled"] is False
+
+
+def test_meeting_document_assembles_without_ai(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={"title": "Планёрка"}).json()["id"]
+    client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [
+            {"speaker": "Спикер 1", "text": "Сдвигаем монтаж", "at_ms": 1000},
+            {"speaker": "Спикер 2", "text": "Ответственный Пётр", "at_ms": 4000},
+        ]},
+    )
+    client.post(f"/api/ai/meetings/{mid}/finish")  # notes-пересчёт молча пропускается без ключа
+
+    resp = client.get(f"/api/ai/meetings/{mid}/document")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/markdown")
+    assert "attachment" in resp.headers["content-disposition"]
+    body = resp.text
+    assert body.startswith("---\n")
+    assert "title: Планёрка" in body
+    assert "## Резюме" in body
+    assert "## Транскрипт" in body
+    assert "Сдвигаем монтаж" in body
+    assert "Ответственный Пётр" in body
+
+
+def test_meeting_document_private_to_owner(api, make_user):
+    owner = api(make_user(Module.AI))
+    mid = owner.post("/api/ai/meetings", json={}).json()["id"]
+    stranger = api(make_user(Module.AI))
+    assert stranger.get(f"/api/ai/meetings/{mid}/document").status_code == 404
