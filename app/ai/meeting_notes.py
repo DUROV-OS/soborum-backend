@@ -28,6 +28,8 @@ SYSTEM_PROMPT = (
     "передан транскрипт совещания по репликам. Составь по нему структурированные "
     "заметки на русском.\n\n"
     "Правила:\n"
+    "- title — короткое название совещания (3-7 слов), по сути разговора, без "
+    "кавычек и слова «Совещание».\n"
     "- summary — 2-4 предложения: о чём совещание и главное по итогу.\n"
     "- decisions — принятые решения, по одному пункту на решение; пусто, если явных "
     "решений нет.\n"
@@ -46,12 +48,13 @@ TOOL_SCHEMA = {
     "input_schema": {
         "type": "object",
         "properties": {
+            "title": {"type": "string"},
             "summary": {"type": "string"},
             "decisions": _STR_LIST,
             "tasks": _STR_LIST,
             "questions": _STR_LIST,
         },
-        "required": ["summary", "decisions", "tasks", "questions"],
+        "required": ["title", "summary", "decisions", "tasks", "questions"],
     },
 }
 
@@ -94,6 +97,7 @@ def _generate(transcript_text: str) -> dict:
         raise RuntimeError("no tool_use in notes response")
     payload = tool_use.input or {}
     return {
+        "title": str(payload.get("title", "")).strip().strip("«»\"'")[:255],
         "summary": str(payload.get("summary", "")).strip(),
         "decisions": _clean_list(payload.get("decisions")),
         "tasks": _clean_list(payload.get("tasks")),
@@ -150,6 +154,10 @@ def refresh_notes(db: Session, meeting: Meeting, *, force: bool = False) -> tupl
         notes.questions = result["questions"]
         notes.source_line_count = count
         db.add(notes)
+        # ИИ-название совещания — если человек не задал своё.
+        if not (meeting.title or "").strip() and result["title"]:
+            meeting.title = result["title"]
+            db.add(meeting)
         db.commit()
         db.refresh(notes)
         return notes, False
