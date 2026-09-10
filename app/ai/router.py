@@ -8,6 +8,7 @@ from app.ai import analytics as ai_analytics
 from app.ai import attachments as ai_attachments
 from app.ai import engine
 from app.ai import mcp_auth
+from app.ai import meeting_ask as ai_meeting_ask
 from app.ai import meetings as ai_meetings
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
@@ -23,6 +24,8 @@ from app.ai.schemas import (
     ChatOut,
     ChatTitleUpdate,
     ConsultAskResponse,
+    MeetingAskIn,
+    MeetingAskOut,
     MeetingCreate,
     MeetingDetailOut,
     MeetingOut,
@@ -496,6 +499,21 @@ def upload_meeting_audio(
 def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     return _meeting_out(ai_meetings.finish_meeting(db, meeting))
+
+
+@app.post("/meetings/{meeting_id}/ask", response_model=MeetingAskOut)
+def ask_about_meeting(
+    meeting_id: int,
+    payload: MeetingAskIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    """«Спросить Марину о совещании»: ответ на экран, контекст — транскрипт
+    этого совещания (+ база знаний, если коннектор настроен и спрашивает
+    администратор). Голосовой триггер и озвучка — задача 0004-d."""
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    answer = ai_meeting_ask.answer_meeting_question(db, user, meeting, payload.question)
+    return MeetingAskOut(answer_markdown=answer)
 
 
 @app.get("/meetings/{meeting_id}/audio")

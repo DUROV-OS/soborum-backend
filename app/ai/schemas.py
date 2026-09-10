@@ -133,6 +133,14 @@ class TranscriptSpeakerUpdate(BaseModel):
     speaker: str = Field(min_length=1, max_length=32)
 
 
+class MeetingAskIn(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class MeetingAskOut(BaseModel):
+    answer_markdown: str
+
+
 class MeetingDetailOut(MeetingOut):
     audio_url: str | None = None
     transcript: list[TranscriptLineOut] = Field(default_factory=list)

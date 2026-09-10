@@ -144,6 +144,25 @@ def test_transcript_frozen_after_finish(api, make_user):
     assert late.status_code == 409
 
 
+def test_ask_about_meeting_needs_key(api, make_user):
+    # conftest очищает ANTHROPIC_API_KEY → «Спросить Марину» деградирует в 503
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    resp = client.post(f"/api/ai/meetings/{mid}/ask", json={"question": "Что решили?"})
+    assert resp.status_code == 503
+
+
+def test_ask_about_meeting_is_private_and_validates(api, make_user):
+    owner = api(make_user(Module.AI))
+    mid = owner.post("/api/ai/meetings", json={}).json()["id"]
+    assert owner.post(f"/api/ai/meetings/{mid}/ask", json={"question": ""}).status_code == 422
+
+    stranger = api(make_user(Module.AI))
+    assert stranger.post(
+        f"/api/ai/meetings/{mid}/ask", json={"question": "Что там?"}
+    ).status_code == 404
+
+
 def test_transcript_is_private_to_owner(api, make_user):
     owner = api(make_user(Module.AI))
     mid = owner.post("/api/ai/meetings", json={}).json()["id"]
