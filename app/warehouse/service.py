@@ -497,28 +497,21 @@ def import_price_list(
     data: list[list[str]],
     mapping: ColumnMapping,
     created_by: User,
-) -> tuple[int, int, int | None]:
+) -> tuple[int, int]:
     """Добавляет строки прайса из разобранной таблицы. Возвращает
-    (добавлено, пропущено, id задачи на дозаполнение или None)."""
+    (добавлено, пропущено). Задачу «дозаполнить» больше не создаёт — это делает
+    отдельный `create_backfill_task` по кнопке в отчёте (задача 0011-h)."""
     built = price_import.build_rows(headers, data, mapping)
     for item in built.items:
         db.add(SupplierPriceItem(supplier_id=supplier.id, **item))
     db.flush()
-
-    task_id: int | None = None
-    missing = mapping.missing_fields()
-    if built.items and (missing or built.skipped):
-        task_id = _create_price_backfill_task(db, supplier, missing, built.skipped, len(built.items))
-    return len(built.items), built.skipped, task_id
+    return len(built.items), built.skipped
 
 
-def _create_price_backfill_task(
-    db: Session, supplier: Supplier, missing: list[str], skipped: int, imported: int
-) -> int:
-    parts = [_BACKFILL_FIELD_LABEL[m] for m in missing if m in _BACKFILL_FIELD_LABEL]
-    if skipped:
-        parts.append(f"{skipped} строк без цены")
-    detail = ", ".join(parts) or "проверить импортированные строки"
+def create_backfill_task(db: Session, supplier: Supplier, missing_fields: list[str]) -> int:
+    """Задача «дозаполнить прайс поставщика» — по подтверждению пользователя."""
+    parts = [_BACKFILL_FIELD_LABEL.get(m, m) for m in missing_fields] or ["проверить импортированные строки"]
+    detail = ", ".join(parts)
     assignees = user_service.users_with_access(db, AccessModule.WAREHOUSE)
     task = task_service.create_link_task(
         db,
@@ -526,15 +519,77 @@ def _create_price_backfill_task(
         link_type=TaskLinkType.SUPPLIER_PRICE_BACKFILL,
         link_id=supplier.id,
         assignees=assignees,
-        link_meta={
-            "supplier_id": supplier.id,
-            "missing": missing,
-            "skipped": skipped,
-            "imported": imported,
-        },
+        link_meta={"supplier_id": supplier.id, "missing": missing_fields},
     )
     db.flush()
     return task.id
+
+
+def ai_fill_categories(db: Session, supplier: Supplier) -> tuple[int, int]:
+    """ИИ проставляет `category` строкам прайса поставщика, где она пуста.
+    Возвращает (проставлено, осталось пустыми). Требует ANTHROPIC_API_KEY."""
+    if not price_import.ai_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ИИ недоступен: не задан ANTHROPIC_API_KEY",
+        )
+    blanks = [it for it in supplier.price_items if not (it.category or "").strip()]
+    if not blanks:
+        return 0, 0
+    try:
+        assigned = price_import.ai_assign_categories([(it.id, it.material) for it in blanks])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"ИИ не смог проставить категории: {exc}"
+        ) from exc
+    for it in blanks:
+        if it.id in assigned:
+            it.category = assigned[it.id]
+    db.flush()
+    filled = sum(1 for it in blanks if it.id in assigned)
+    return filled, len(blanks) - filled
+
+
+def _require_supplier_max_chat(supplier: Supplier) -> int:
+    if supplier.max_chat_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Чтобы спросить срок у поставщика, сначала привяжите к нему чат MAX",
+        )
+    return supplier.max_chat_id
+
+
+def draft_lead_time_question(supplier: Supplier) -> dict:
+    """Черновик сообщения поставщику в MAX с просьбой указать сроки поставки."""
+    chat_id = _require_supplier_max_chat(supplier)
+    materials = [it.material for it in supplier.price_items if not (it.lead_time or "").strip()]
+    if not materials:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="У всех строк прайса уже указан срок поставки"
+        )
+    if not price_import.ai_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ИИ недоступен: не задан ANTHROPIC_API_KEY"
+        )
+    try:
+        message = price_import.ai_lead_time_message(supplier.name, materials)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"ИИ не смог составить сообщение: {exc}"
+        ) from exc
+    return {"message": message, "materials": materials, "chat_id": chat_id}
+
+
+def send_lead_time_question(supplier: Supplier, message: str) -> int:
+    """Отправляет сообщение поставщику в привязанный чат MAX. Возвращает chat_id."""
+    chat_id = _require_supplier_max_chat(supplier)
+    text = (message or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустое сообщение")
+    from app.max import service as max_service
+
+    max_service.send_message(chat_id, text)
+    return chat_id
 
 
 def supplier_out(supplier: Supplier) -> SupplierOut:
