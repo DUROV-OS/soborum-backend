@@ -117,3 +117,32 @@ class McpCredential(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class MeetingStatus(str, enum.Enum):
+    RECORDING = "recording"
+    FINISHED = "finished"
+
+
+class Meeting(Base):
+    """A «Совещание» session: Marina listens in, the browser records audio and
+    (from 0004-b) streams a live transcript. This first slice stores only the
+    session lifecycle and the recorded audio blob; transcript lines and AI
+    notes hang off it in later slices."""
+
+    __tablename__ = "ai_meetings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[MeetingStatus] = mapped_column(
+        Enum(MeetingStatus, name="ai_meeting_status"), nullable=False, default=MeetingStatus.RECORDING
+    )
+    audio_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("file_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    owner: Mapped["User"] = relationship()  # noqa: F821
+    audio_file: Mapped["FileAsset | None"] = relationship()  # noqa: F821
