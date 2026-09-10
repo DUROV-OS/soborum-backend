@@ -10,7 +10,13 @@ from app.users.models import User
 from app.warehouse import excel, service as warehouse_service
 from app.warehouse.models import MaterialCategory, StockMovementReason, Supply, Warehouse
 from app.warehouse.schemas import (
+    LinkMaxChatIn,
     StockMovementOut,
+    SupplierCreate,
+    SupplierOut,
+    SupplierPriceItemCreate,
+    SupplierPriceItemUpdate,
+    SupplierUpdate,
     SupplyCreate,
     SupplyOut,
     WarehouseMaterialCreate,
@@ -147,3 +153,104 @@ def reject_request(request_id: int, db: Session = Depends(get_db), user: User = 
     db.commit()
     db.refresh(request)
     return request
+
+
+# --- Поставщики (задача 0011-a) ---
+
+
+@app.get("/suppliers", response_model=list[SupplierOut])
+def list_suppliers(db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    return [warehouse_service.supplier_out(s) for s in warehouse_service.list_suppliers(db)]
+
+
+@app.post("/suppliers", response_model=SupplierOut, status_code=201)
+def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    supplier = warehouse_service.create_supplier(db, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.get("/suppliers/{supplier_id}", response_model=SupplierOut)
+def get_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    return warehouse_service.supplier_out(warehouse_service.get_supplier_or_404(db, supplier_id))
+
+
+@app.patch("/suppliers/{supplier_id}", response_model=SupplierOut)
+def update_supplier(
+    supplier_id: int,
+    payload: SupplierUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    supplier = warehouse_service.update_supplier(db, supplier, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.delete("/suppliers/{supplier_id}", status_code=204)
+def delete_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    db.delete(warehouse_service.get_supplier_or_404(db, supplier_id))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/suppliers/{supplier_id}/price-items", response_model=SupplierOut, status_code=201)
+def add_price_item(
+    supplier_id: int,
+    payload: SupplierPriceItemCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.add_price_item(db, supplier, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.patch("/suppliers/{supplier_id}/price-items/{item_id}", response_model=SupplierOut)
+def update_price_item(
+    supplier_id: int,
+    item_id: int,
+    payload: SupplierPriceItemUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.update_price_item(db, supplier, item_id, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.delete("/suppliers/{supplier_id}/price-items/{item_id}", status_code=204)
+def delete_price_item(
+    supplier_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.delete_price_item(db, supplier, item_id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/suppliers/{supplier_id}/link-max-chat", response_model=SupplierOut)
+def link_max_chat(
+    supplier_id: int,
+    payload: LinkMaxChatIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    supplier = warehouse_service.link_max_chat(db, supplier, payload.chat_id)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.delete("/suppliers/{supplier_id}/link-max-chat", response_model=SupplierOut)
+def unlink_max_chat(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    supplier = warehouse_service.unlink_max_chat(db, supplier)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
