@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.ai.models import Meeting, MeetingStatus
+from app.ai.models import Meeting, MeetingStatus, MeetingTranscriptLine
 from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.users.models import User
 
@@ -70,6 +70,61 @@ def audio_asset(db: Session, meeting: Meeting) -> FileAsset | None:
     if meeting.audio_file_id is None:
         return None
     return db.get(FileAsset, meeting.audio_file_id)
+
+
+# --- Транскрипт (0004-b) -----------------------------------------------------
+
+_SPEAKER_MAX = 32
+
+
+def append_transcript_lines(
+    db: Session, meeting: Meeting, lines: list[tuple[str, str, int]]
+) -> list[MeetingTranscriptLine]:
+    """lines — список (speaker, text, at_ms). Дописывать можно только пока
+    совещание идёт: у завершённого транскрипт заморожен."""
+    if meeting.status == MeetingStatus.FINISHED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Совещание завершено — транскрипт больше не принимается",
+        )
+    created: list[MeetingTranscriptLine] = []
+    for speaker, text, at_ms in lines:
+        clean_text = (text or "").strip()
+        if not clean_text:
+            continue
+        row = MeetingTranscriptLine(
+            meeting_id=meeting.id,
+            speaker=(speaker or "Спикер 1").strip()[:_SPEAKER_MAX] or "Спикер 1",
+            text=clean_text,
+            at_ms=max(0, int(at_ms or 0)),
+        )
+        db.add(row)
+        created.append(row)
+    db.commit()
+    for row in created:
+        db.refresh(row)
+    return created
+
+
+def set_line_speaker(
+    db: Session, meeting: Meeting, line_id: int, speaker: str
+) -> MeetingTranscriptLine:
+    line = db.get(MeetingTranscriptLine, line_id)
+    if line is None or line.meeting_id != meeting.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Реплика не найдена")
+    line.speaker = (speaker or "").strip()[:_SPEAKER_MAX] or line.speaker
+    db.commit()
+    db.refresh(line)
+    return line
+
+
+def transcript_lines(db: Session, meeting: Meeting) -> list[MeetingTranscriptLine]:
+    return (
+        db.query(MeetingTranscriptLine)
+        .filter(MeetingTranscriptLine.meeting_id == meeting.id)
+        .order_by(MeetingTranscriptLine.at_ms, MeetingTranscriptLine.id)
+        .all()
+    )
 
 
 def duration_sec(meeting: Meeting) -> int | None:
