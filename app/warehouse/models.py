@@ -1,7 +1,19 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -115,3 +127,62 @@ class StockMovement(Base):
 
     warehouse_material: Mapped["WarehouseMaterial"] = relationship()
     created_by: Mapped["User"] = relationship()  # noqa: F821
+
+
+class SupplierStatus(str, enum.Enum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class Supplier(Base):
+    """Реестр поставщиков снабжения: контакты, привязанный чат MAX и прайс-лист
+    по материалам. Единая сущность для фичи 0011 «Бухгалтерия» — поля
+    взаиморасчётов/поставок добавляет дочерняя 0011-d поверх этой модели."""
+
+    __tablename__ = "suppliers"
+    __table_args__ = (UniqueConstraint("max_chat_id", name="uq_suppliers_max_chat_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # названия категорий материалов, с которыми работает поставщик (свободный список)
+    categories: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[SupplierStatus] = mapped_column(
+        Enum(SupplierStatus, name="supplier_status"), nullable=False, default=SupplierStatus.ACTIVE
+    )
+    # способы связи: [{"kind": "phone|email|messenger|website", "value": "...", "person": "..."}]
+    contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # ID чата MAX (app/max), привязанного к поставщику. Один чат — не более чем у
+    # одного поставщика (uq_suppliers_max_chat_id). 0 — «Избранное»; id групп MAX
+    # бывают большими и отрицательными → BigInteger. NULL — чат не привязан.
+    max_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    price_items: Mapped[list["SupplierPriceItem"]] = relationship(
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+        order_by="SupplierPriceItem.id",
+    )
+
+
+class SupplierPriceItem(Base):
+    """Строка прайс-листа поставщика: материал, категория, цена по диапазонам
+    размера партии и срок поставки. `round` — задел под принцип PROJECT.md
+    «предложение хранится после минимум трёх раундов переговоров»."""
+
+    __tablename__ = "supplier_price_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id", ondelete="CASCADE"), nullable=False)
+    material: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # диапазоны партии: [{"min_qty": 0, "max_qty": 100, "price": 1234.0}, ...].
+    # max_qty = null — «и больше». Хотя бы один диапазон с ценой обязателен.
+    tiers: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    lead_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    supplier: Mapped["Supplier"] = relationship(back_populates="price_items")
