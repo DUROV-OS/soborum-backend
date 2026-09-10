@@ -16,7 +16,7 @@ from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.tasks import service as task_service
 from app.tasks import sync as task_sync
-from app.tasks.models import TaskLinkType
+from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
 
 
@@ -27,11 +27,35 @@ def _next_stage(stage: ClientStage) -> ClientStage | None:
     return None
 
 
-def _create_transition_task(db: Session, client: Client) -> None:
+def _open_stage_tasks(db: Session, client_id: int) -> list[Task]:
+    return (
+        db.query(Task)
+        .filter(
+            Task.link_type == TaskLinkType.CLIENT_STAGE,
+            Task.link_id == client_id,
+            Task.status != TaskStatus.DONE,
+        )
+        .order_by(Task.id.desc())
+        .all()
+    )
+
+
+def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
+    """Гарантирует одну открытую задачу «перевести клиента на следующую стадию».
+
+    Идемпотентна: если открытая задача под текущую стадию уже есть (или её
+    стадия неизвестна — старые задачи без link_meta), ничего не создаёт.
+    На последней стадии не создаёт ничего. Вызывается при создании клиента,
+    при смене стадии и фоновой сверкой (app/clients/reconcile.py).
+    """
     if _next_stage(client.stage) is None:
-        return
+        return None
+    for task in _open_stage_tasks(db, client.id):
+        meta_stage = (task.link_meta or {}).get("stage")
+        if meta_stage in (None, client.stage.value):
+            return task
     assignees = user_service.users_with_access(db, Module.CLIENTS)
-    task_service.create_link_task(
+    return task_service.create_link_task(
         db,
         title=f"Клиент «{client.full_name}»: перевести со стадии «{client.stage.value}» на следующую",
         link_type=TaskLinkType.CLIENT_STAGE,
@@ -57,7 +81,7 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
     db.add(client)
     db.flush()
 
-    _create_transition_task(db, client)
+    ensure_stage_transition_task(db, client)
     return client
 
 
@@ -256,8 +280,11 @@ def transition_stage(db: Session, client: Client) -> Client:
         if client.payment_plan != PaymentPlan.FULL_PREPAYMENT:
             _create_balance_payment_task(db, client)
 
-    task_service.close_open_link_task(db, TaskLinkType.CLIENT_STAGE, client.id)
-    _create_transition_task(db, client)
+    # Закрываем все открытые задачи прошлой стадии (обычно одна; сверка могла
+    # оставить дубликат) и заводим одну под новую стадию.
+    for task in _open_stage_tasks(db, client.id):
+        task_service.force_close(db, task)
+    ensure_stage_transition_task(db, client)
 
     return client
 
