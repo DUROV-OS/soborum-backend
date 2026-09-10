@@ -15,6 +15,7 @@ from app.warehouse.models import (
     StockMovement,
     StockMovementReason,
     Supplier,
+    SupplierNote,
     SupplierPriceItem,
     Supply,
     SupplyLine,
@@ -24,6 +25,7 @@ from app.warehouse.models import (
 from app.warehouse.schemas import (
     RequestBreakdownItem,
     SupplierCreate,
+    SupplierNoteOut,
     SupplierOut,
     SupplierPriceItemCreate,
     SupplierPriceItemOut,
@@ -592,6 +594,28 @@ def send_lead_time_question(supplier: Supplier, message: str) -> int:
     return chat_id
 
 
+def add_supplier_note(db: Session, supplier: Supplier, author_id: int, text: str) -> SupplierNote:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Текст заметки не может быть пустым"
+        )
+    note = SupplierNote(supplier_id=supplier.id, author_id=author_id, text=cleaned[:2000])
+    db.add(note)
+    db.flush()
+    return note
+
+
+def delete_supplier_note(db: Session, supplier: Supplier, note_id: int) -> None:
+    note = next((n for n in supplier.notes if n.id == note_id), None)
+    if not note:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заметка не найдена")
+    # remove из коллекции (delete-orphan) — держит supplier.notes актуальным для
+    # последующего supplier_out даже без expire после commit
+    supplier.notes.remove(note)
+    db.flush()
+
+
 def supplier_out(supplier: Supplier) -> SupplierOut:
     return SupplierOut(
         id=supplier.id,
@@ -603,4 +627,15 @@ def supplier_out(supplier: Supplier) -> SupplierOut:
         created_at=supplier.created_at,
         price_items=[SupplierPriceItemOut.model_validate(i) for i in supplier.price_items],
         price_items_count=len(supplier.price_items),
+        notes=[
+            SupplierNoteOut(
+                id=n.id,
+                supplier_id=n.supplier_id,
+                author_id=n.author_id,
+                author_name=(n.author.full_name if n.author else None),
+                text=n.text,
+                created_at=n.created_at,
+            )
+            for n in supplier.notes
+        ],
     )
