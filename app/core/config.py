@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     agent_shift_autorun: bool = True
     agent_shift_interval_seconds: int = 3600
 
+    # Сверка задач смены стадии клиента с реальностью: на старте и раз в час.
+    stage_task_reconcile_autorun: bool = True
+    stage_task_reconcile_interval_seconds: int = 3600
+
     # --- AI assistant (app/ai) ---
     anthropic_api_key: str = ""
     anthropic_base_url: str = ""

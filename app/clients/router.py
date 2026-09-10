@@ -1,6 +1,7 @@
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.clients import reconcile as client_reconcile
 from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
 from app.clients.schemas import (
@@ -17,7 +18,7 @@ from app.clients.schemas import (
 )
 from app.common.files import FilePurpose, save_upload_file
 from app.common.module_access import Module
-from app.core.deps import require_module
+from app.core.deps import require_admin, require_module
 from app.db.session import get_db
 from app.users.models import User
 
@@ -199,6 +200,15 @@ def delete_note(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заметка не найдена")
     client_service.delete_note(db, note)
     db.commit()
+
+
+@app.post("/reconcile-stage-tasks")
+def reconcile_stage_tasks(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Ручной прогон сверки задач смены стадии с реальностью (та же, что раз в
+    час фоном). Создаёт недостающие задачи, закрывает устаревшие и дубли."""
+    report = client_reconcile.reconcile_client_stage_tasks(db)
+    db.commit()
+    return report
 
 
 @app.post("/{client_id}/transition", response_model=ClientOut)
