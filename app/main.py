@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.loop import start_shift_loop
 from app.agents.router import app as agents_app
+from app.clients.reconcile import start_stage_task_reconcile_loop
 from app.ai import mcp_auth
 from app.ai.router import app as ai_app
 from app.board.router import app as board_app
@@ -56,6 +57,7 @@ def on_startup() -> None:
     finally:
         db.close()
     start_shift_loop()
+    start_stage_task_reconcile_loop()
 
 
 @app.get("/health")
