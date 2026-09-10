@@ -81,7 +81,12 @@ def _transcript_text(lines) -> str:
 
 
 def meeting_context_line(meeting: Meeting) -> str:
-    """Однострочное описание обстоятельств встречи для промптов (пустое, если не заполнены)."""
+    """Описание темы, целей и обстоятельств встречи для промптов (пустое, если ничего не задано)."""
+    parts: list[str] = []
+    if meeting.topic:
+        parts.append(f"Тема переговоров: {meeting.topic}.")
+    if meeting.goals:
+        parts.append(f"Цели переговоров: {meeting.goals}.")
     bits: list[str] = []
     if meeting.occurred_at is not None:
         when = meeting.occurred_at
@@ -92,7 +97,9 @@ def meeting_context_line(meeting: Meeting) -> str:
         bits.append(f"где: {meeting.location}")
     if meeting.participants:
         bits.append(f"с кем: {meeting.participants}")
-    return f"Обстоятельства встречи — {'; '.join(bits)}.\n\n" if bits else ""
+    if bits:
+        parts.append(f"Обстоятельства встречи — {'; '.join(bits)}.")
+    return ("\n".join(parts) + "\n\n") if parts else ""
 
 
 def _generate(transcript_text: str) -> dict:
@@ -211,6 +218,8 @@ def build_document(db: Session, meeting: Meeting, notes: MeetingNotes | None) ->
     parts.append("---")
     parts.append(f"title: {title}")
     parts.append("kind: record")
+    if meeting.topic:
+        parts.append(f"topic: {meeting.topic}")
     parts.append(f"date: {occurred:%Y-%m-%d}")
     parts.append(f"started_at: {started:%Y-%m-%d %H:%M}")
     if meeting.finished_at is not None:
@@ -228,6 +237,16 @@ def build_document(db: Session, meeting: Meeting, notes: MeetingNotes | None) ->
     parts.append("")
     parts.append(f"# {title}")
     parts.append("")
+
+    if meeting.topic or meeting.goals:
+        parts.append("## Тема и цели")
+        parts.append("")
+        if meeting.topic:
+            parts.append(f"**Тема:** {meeting.topic}")
+            parts.append("")
+        if meeting.goals:
+            parts.append(f"**Цели:** {meeting.goals}")
+            parts.append("")
 
     if meeting.location or meeting.participants or meeting.occurred_at is not None:
         parts.append("## Обстоятельства")

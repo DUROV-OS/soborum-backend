@@ -143,8 +143,10 @@ class Meeting(Base):
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Обстоятельства встречи (заполняются человеком): где, когда (если отличается
-    # от started_at — например запись велась не с начала), с кем.
+    # Тема, цели и обстоятельства встречи (заполняются человеком): где, когда
+    # (если отличается от started_at — например запись велась не с начала), с кем.
+    topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    goals: Mapped[str | None] = mapped_column(Text, nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     participants: Mapped[str | None] = mapped_column(String(500), nullable=True)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

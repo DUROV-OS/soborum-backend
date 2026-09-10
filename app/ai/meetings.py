@@ -57,7 +57,7 @@ def finish_meeting(db: Session, meeting: Meeting) -> Meeting:
     return meeting
 
 
-_TEXT_FIELDS = {"title", "location", "participants"}
+_TEXT_FIELDS = {"title", "topic", "goals", "location", "participants"}
 
 
 def update_meeting(db: Session, meeting: Meeting, changes: dict) -> Meeting:

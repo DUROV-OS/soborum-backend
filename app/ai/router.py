@@ -444,6 +444,8 @@ def _meeting_out(m: Meeting) -> MeetingOut:
         finished_at=m.finished_at,
         duration_sec=ai_meetings.duration_sec(m),
         has_audio=m.audio_file_id is not None,
+        topic=m.topic,
+        goals=m.goals,
         location=m.location,
         participants=m.participants,
         occurred_at=m.occurred_at,

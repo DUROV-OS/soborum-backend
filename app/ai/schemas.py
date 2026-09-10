@@ -107,6 +107,8 @@ class MeetingUpdate(BaseModel):
     """PATCH — применяются только переданные поля (exclude_unset)."""
 
     title: str | None = Field(default=None, max_length=255)
+    topic: str | None = Field(default=None, max_length=255)
+    goals: str | None = Field(default=None, max_length=2000)
     location: str | None = Field(default=None, max_length=255)
     participants: str | None = Field(default=None, max_length=500)
     occurred_at: datetime | None = None
@@ -120,6 +122,8 @@ class MeetingOut(BaseModel):
     finished_at: datetime | None
     duration_sec: int | None
     has_audio: bool
+    topic: str | None = None
+    goals: str | None = None
     location: str | None = None
     participants: str | None = None
     occurred_at: datetime | None = None

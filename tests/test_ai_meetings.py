@@ -79,6 +79,8 @@ def test_meeting_circumstances(api, make_user):
     upd = client.patch(
         f"/api/ai/meetings/{mid}",
         json={
+            "topic": "  Поставка бруса на DH64  ",
+            "goals": "Согласовать новую дату монтажа и ответственного за закупку",
             "location": "  Переговорная 2  ",
             "participants": "Игорь, Пётр",
             "occurred_at": "2026-09-08T10:30:00Z",
@@ -86,6 +88,8 @@ def test_meeting_circumstances(api, make_user):
     )
     assert upd.status_code == 200
     body = upd.json()
+    assert body["topic"] == "Поставка бруса на DH64"
+    assert body["goals"].startswith("Согласовать")
     assert body["location"] == "Переговорная 2"
     assert body["participants"] == "Игорь, Пётр"
     assert body["occurred_at"].startswith("2026-09-08T10:30")
@@ -104,8 +108,10 @@ def test_meeting_circumstances(api, make_user):
     client.patch(f"/api/ai/meetings/{mid}", json={"location": "  "})
     assert client.get(f"/api/ai/meetings/{mid}").json()["location"] is None
 
-    # документ содержит обстоятельства
+    # документ содержит тему/цели и обстоятельства
     doc = client.get(f"/api/ai/meetings/{mid}/document").text
+    assert "## Тема и цели" in doc
+    assert "Поставка бруса на DH64" in doc
     assert "## Обстоятельства" in doc
     assert "Игорь, Пётр" in doc
 
