@@ -11,6 +11,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'b7e3f1a92c50'
@@ -20,15 +21,28 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    supplier_status = sa.Enum('ACTIVE', 'ARCHIVED', name='supplier_status')
-    supplier_status.create(op.get_bind(), checkfirst=True)
+    bind = op.get_bind()
+    is_pg = bind.dialect.name == 'postgresql'
+
+    # На PostgreSQL создаём enum-тип явно через raw SQL и передаём колонке
+    # ENUM(create_type=False) — так SQLAlchemy не пытается выпустить CREATE TYPE
+    # повторно во время create_table. DROP IF EXISTS убирает возможный «хвост»
+    # от прежней неудачной попытки применить эту миграцию.
+    if is_pg:
+        op.execute("DROP TYPE IF EXISTS supplier_status")
+        op.execute("CREATE TYPE supplier_status AS ENUM ('ACTIVE', 'ARCHIVED')")
+        status_col: sa.types.TypeEngine = postgresql.ENUM(
+            'ACTIVE', 'ARCHIVED', name='supplier_status', create_type=False
+        )
+    else:
+        status_col = sa.Enum('ACTIVE', 'ARCHIVED', name='supplier_status')
 
     op.create_table(
         'suppliers',
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('name', sa.String(length=255), nullable=False),
         sa.Column('categories', sa.JSON(), nullable=False),
-        sa.Column('status', supplier_status, nullable=False),
+        sa.Column('status', status_col, nullable=False),
         sa.Column('contacts', sa.JSON(), nullable=False),
         # id чата MAX; один чат — не более чем у одного поставщика.
         sa.Column('max_chat_id', sa.BigInteger(), nullable=True),
@@ -59,4 +73,6 @@ def downgrade() -> None:
     op.drop_index('ix_supplier_price_items_supplier_id', table_name='supplier_price_items')
     op.drop_table('supplier_price_items')
     op.drop_table('suppliers')
-    sa.Enum(name='supplier_status').drop(op.get_bind(), checkfirst=True)
+    bind = op.get_bind()
+    if bind.dialect.name == 'postgresql':
+        op.execute("DROP TYPE IF EXISTS supplier_status")
