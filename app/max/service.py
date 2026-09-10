@@ -41,15 +41,56 @@ def _fmt_attach(a: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _fmt_msg(m: dict | None, viewer_id: str = "") -> dict | None:
+# CONTROL-вложения MAX — служебные события чата (вступил / вышел / переименовал).
+# Показываем их отдельной строкой, а не как чьё-то сообщение.
+_CONTROL_EVENT_TEXT = {
+    "new": "чат создан",
+    "add": "добавил участника",
+    "remove": "удалил участника",
+    "leave": "вышел из чата",
+    "joinByLink": "присоединился по ссылке",
+    "title": "изменил название чата",
+    "pin": "закрепил сообщение",
+    "unpin": "открепил сообщение",
+    "photo": "изменил фото чата",
+}
+
+
+def _system_text(m: dict) -> str | None:
+    for a in m.get("attaches", []):
+        if a.get("_type") == "CONTROL":
+            ev = a.get("event")
+            if ev == "title" and a.get("title"):
+                return f"изменил название чата на «{a['title']}»"
+            return _CONTROL_EVENT_TEXT.get(ev, "служебное сообщение")
+    return None
+
+
+def _fmt_msg(
+    m: dict | None, viewer_id: str = "", contacts: dict | None = None
+) -> dict | None:
     if not m:
         return None
+    contacts = contacts or {}
     sender = m.get("sender")
+    sender_id = _sid(sender)
+    is_system = any(
+        a.get("_type") == "CONTROL" for a in m.get("attaches", [])
+    )
     return {
         "id": _sid(m.get("id")),
         "time": m.get("time"),
-        "sender": _sid(sender),
-        "outgoing": viewer_id != "" and str(sender) == str(viewer_id),
+        # id участника MAX (стабильный, строкой) — по нему фронт группирует
+        # подряд идущие сообщения и подписывает автора в группах.
+        "senderId": sender_id,
+        "senderName": _contact_name(contacts.get(sender_id)) if sender_id else None,
+        # исходящее = автор совпал с текущим пользователем; тип чата ни при чём.
+        # служебное событие никогда не «исходящее».
+        "isOutgoing": (
+            not is_system and viewer_id != "" and str(sender) == str(viewer_id)
+        ),
+        "isSystem": is_system,
+        "systemText": _system_text(m) if is_system else None,
         "type": m.get("type"),
         "status": m.get("status"),
         "text": m.get("text", ""),
@@ -96,8 +137,13 @@ def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> d
         "title": _chat_title(c, contacts, viewer_id),
         "unread": c.get("newMessages", c.get("unreadCount", 0)),
         "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
-        "lastMessage": _fmt_msg(last, viewer_id),
+        "lastMessage": _fmt_msg(last, viewer_id, contacts),
     }
+
+
+def _is_group_chat(meta: dict | None) -> bool:
+    """Групповой чат MAX — всё, что не диалог 1:1 (тип ``DIALOG``)."""
+    return bool(meta) and meta.get("type") != "DIALOG"
 
 
 def list_chats(limit: int | None = None) -> dict[str, Any]:
@@ -122,8 +168,9 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
         "chatId": chat_id,
         "title": _chat_title(meta, contacts, vid),
         "viewerId": vid,
+        "isGroup": _is_group_chat(meta),
         "count": len(msgs),
-        "messages": [_fmt_msg(m, vid) for m in msgs],
+        "messages": [_fmt_msg(m, vid, contacts) for m in msgs],
     }
 
 
@@ -139,9 +186,10 @@ def send_message(chat_id, text: str, notify: bool = True) -> dict[str, Any]:
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
         vid = s.viewer_id()
+        contacts = s.contacts_by_id()
     return {
         "chatId": payload.get("chatId", chat_id),
-        "message": _fmt_msg(payload.get("message"), vid),
+        "message": _fmt_msg(payload.get("message"), vid, contacts),
     }
 
 
