@@ -283,7 +283,7 @@ async def speak_text(payload: SpeakRequest, user: User = Depends(get_current_use
     """Neural female Russian voice for consult résumé. Free Edge TTS, no paid key."""
     _ = user
     try:
-        audio = await ai_tts.synthesize_mp3(payload.text)
+        audio = await ai_tts.synthesize_mp3(payload.text, payload.voice)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     except Exception as exc:

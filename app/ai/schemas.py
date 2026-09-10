@@ -76,6 +76,9 @@ class ConsultAskResponse(AskResponse):
 
 class SpeakRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=500)
+    # Необязательный выбор нейросетевого голоса Edge TTS; пустой = голос по
+    # умолчанию (как в разделе «Агенты»). Неизвестное имя откатывается на дефолт.
+    voice: str | None = Field(default=None, max_length=64)
 
 
 SectionStatus = Literal["red", "yellow", "green"]
