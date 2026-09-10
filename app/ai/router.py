@@ -30,6 +30,9 @@ from app.ai.schemas import (
     SectionAnalyticsOut,
     SpeakRequest,
     TaskPrioritiesOut,
+    TranscriptAppendIn,
+    TranscriptLineOut,
+    TranscriptSpeakerUpdate,
 )
 from app.common.files import FileAssetOut
 from app.common.module_access import Module
@@ -446,7 +449,38 @@ def get_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Dep
     return MeetingDetailOut(
         **base.model_dump(),
         audio_url=f"/api/ai/meetings/{meeting.id}/audio" if meeting.audio_file_id else None,
+        transcript=[
+            TranscriptLineOut.model_validate(line) for line in ai_meetings.transcript_lines(db, meeting)
+        ],
         ai_enabled=bool(settings.anthropic_api_key),
+    )
+
+
+@app.post("/meetings/{meeting_id}/transcript", response_model=list[TranscriptLineOut])
+def append_meeting_transcript(
+    meeting_id: int,
+    payload: TranscriptAppendIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    created = ai_meetings.append_transcript_lines(
+        db, meeting, [(line.speaker, line.text, line.at_ms) for line in payload.lines]
+    )
+    return [TranscriptLineOut.model_validate(line) for line in created]
+
+
+@app.patch("/meetings/{meeting_id}/transcript/{line_id}", response_model=TranscriptLineOut)
+def update_meeting_transcript_speaker(
+    meeting_id: int,
+    line_id: int,
+    payload: TranscriptSpeakerUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return TranscriptLineOut.model_validate(
+        ai_meetings.set_line_speaker(db, meeting, line_id, payload.speaker)
     )
 
 

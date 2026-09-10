@@ -110,10 +110,33 @@ class MeetingOut(BaseModel):
     has_audio: bool
 
 
+class TranscriptLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    speaker: str
+    text: str
+    at_ms: int
+
+
+class TranscriptLineIn(BaseModel):
+    speaker: str = Field(default="Спикер 1", max_length=32)
+    text: str = Field(min_length=1)
+    at_ms: int = Field(default=0, ge=0)
+
+
+class TranscriptAppendIn(BaseModel):
+    lines: list[TranscriptLineIn] = Field(default_factory=list)
+
+
+class TranscriptSpeakerUpdate(BaseModel):
+    speaker: str = Field(min_length=1, max_length=32)
+
+
 class MeetingDetailOut(MeetingOut):
     audio_url: str | None = None
-    # Наполняются в 0004-b (реплики) и 0004-c (заметки); здесь всегда пустые.
-    transcript: list = Field(default_factory=list)
+    transcript: list[TranscriptLineOut] = Field(default_factory=list)
+    # Заметки Марины — 0004-c; здесь всегда null.
     notes: dict | None = None
     ai_enabled: bool = False
 
