@@ -80,3 +80,75 @@ def test_audio_rejects_non_audio_file(api, make_user):
         files={"file": ("notes.txt", b"hello", "text/plain")},
     )
     assert bad.status_code == 400
+
+
+# --- 0004-b: транскрипт по репликам ----------------------------------------
+
+
+def test_transcript_append_reorders_and_returns_ids(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+
+    first = client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [
+            {"speaker": "Спикер 1", "text": "Начинаем планёрку", "at_ms": 1000},
+            {"speaker": "Спикер 2", "text": "  ", "at_ms": 2000},  # пустая — отбрасывается
+            {"speaker": "Спикер 2", "text": "Что по монтажу", "at_ms": 3000},
+        ]},
+    )
+    assert first.status_code == 200
+    created = first.json()
+    assert [c["text"] for c in created] == ["Начинаем планёрку", "Что по монтажу"]
+    assert all(isinstance(c["id"], int) for c in created)
+
+    client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [{"speaker": "Спикер 1", "text": "Отвечаю", "at_ms": 500}]},
+    )
+
+    detail = client.get(f"/api/ai/meetings/{mid}").json()
+    # порядок по at_ms: 500, 1000, 3000
+    assert [l["at_ms"] for l in detail["transcript"]] == [500, 1000, 3000]
+    assert detail["transcript"][0]["text"] == "Отвечаю"
+
+
+def test_transcript_speaker_can_be_corrected(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    line_id = client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [{"speaker": "Спикер 1", "text": "Реплика", "at_ms": 0}]},
+    ).json()[0]["id"]
+
+    patched = client.patch(
+        f"/api/ai/meetings/{mid}/transcript/{line_id}", json={"speaker": "Спикер 3"}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["speaker"] == "Спикер 3"
+
+    other_meeting = client.post("/api/ai/meetings", json={}).json()["id"]
+    assert client.patch(
+        f"/api/ai/meetings/{other_meeting}/transcript/{line_id}", json={"speaker": "X"}
+    ).status_code == 404
+
+
+def test_transcript_frozen_after_finish(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    client.post(f"/api/ai/meetings/{mid}/finish")
+    late = client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [{"speaker": "Спикер 1", "text": "поздно", "at_ms": 10}]},
+    )
+    assert late.status_code == 409
+
+
+def test_transcript_is_private_to_owner(api, make_user):
+    owner = api(make_user(Module.AI))
+    mid = owner.post("/api/ai/meetings", json={}).json()["id"]
+    stranger = api(make_user(Module.AI))
+    assert stranger.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [{"speaker": "Спикер 1", "text": "чужое", "at_ms": 0}]},
+    ).status_code == 404
