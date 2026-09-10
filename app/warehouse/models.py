@@ -162,6 +162,13 @@ class Supplier(Base):
         cascade="all, delete-orphan",
         order_by="SupplierPriceItem.id",
     )
+    notes: Mapped[list["SupplierNote"]] = relationship(
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+        # id как вторичный ключ: несколько заметок в одну секунду (server_default
+        # now()) иначе сортируются недетерминированно.
+        order_by="(SupplierNote.created_at.desc(), SupplierNote.id.desc())",
+    )
 
 
 class SupplierPriceItem(Base):
@@ -186,3 +193,19 @@ class SupplierPriceItem(Base):
     )
 
     supplier: Mapped["Supplier"] = relationship(back_populates="price_items")
+
+
+class SupplierNote(Base):
+    """Свободная заметка по поставщику: «завышает цены», «долго отвечает» и т. п.
+    Не редактируется — только добавить/удалить (история не переписывается)."""
+
+    __tablename__ = "supplier_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id", ondelete="CASCADE"), nullable=False)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    text: Mapped[str] = mapped_column(String(2000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    supplier: Mapped["Supplier"] = relationship(back_populates="notes")
+    author: Mapped["User"] = relationship()  # noqa: F821
