@@ -9,11 +9,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
+
+from app.core.config import settings
 
 from app.clients.models import Client, ClientNote, ClientStage
 from app.cycle.models import Cycle, CycleStatus
@@ -165,3 +168,98 @@ def collect_cycle_activity(db: Session) -> list[CycleActivity]:
 
 def top_active_cycles(db: Session, limit: int = 3) -> list[CycleActivity]:
     return collect_cycle_activity(db)[:limit]
+
+
+# --------------------------------------------------------------- ИИ-оценка --
+
+SUBMIT_TOOL_NAME = "submit_aktualnoe"
+
+SYSTEM_PROMPT = (
+    "Ты — аналитик системы управления производством модульных домов «Soborbum». "
+    "Тебе передан список из нескольких циклов клиентов с их текущей стадией и "
+    "признаками недавней работы над ними (даты заметок, фиксаций стадий, событий "
+    "по задачам). По КАЖДОМУ переданному циклу оцени, насколько выполнена его "
+    "ТЕКУЩАЯ стадия.\n\n"
+    "Правила:\n"
+    "- percent — целое 0..100, насколько текущая стадия близка к завершению. "
+    "Опирайся на переданные признаки, не выдумывай факты.\n"
+    "- phrase — 2-3 слова по-русски о том, что сейчас происходит на этой стадии "
+    "(например: «согласуют планировку», «ждут предоплату», «собирают модули»).\n"
+    "- stage — короткое (2-3 слова) название текущей стадии по-русски.\n"
+    "- Верни ровно по одному объекту на каждый cycle_id из входных данных.\n"
+    "- Отвечай ТОЛЬКО вызовом инструмента submit_aktualnoe, без текста."
+)
+
+TOOL_SCHEMA = {
+    "name": SUBMIT_TOOL_NAME,
+    "description": "Отправить оценку выполненности текущей стадии по каждому циклу.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "cycle_id": {"type": "integer"},
+                        "stage": {"type": "string"},
+                        "percent": {"type": "integer", "minimum": 0, "maximum": 100},
+                        "phrase": {"type": "string"},
+                    },
+                    "required": ["cycle_id", "stage", "percent", "phrase"],
+                },
+            }
+        },
+        "required": ["items"],
+    },
+}
+
+
+def ai_rate_cycles(activities: list[CycleActivity]) -> dict[int, dict] | None:
+    """Спросить у Claude процент/фразу/стадию по каждому циклу. `None` — если
+    ИИ не настроен или не вернул валидный ответ (вызывающий откатывается на
+    детерминированные значения)."""
+    if not settings.anthropic_api_key or not activities:
+        return None
+
+    from app.core.llm import anthropic_client
+
+    payload = [
+        {
+            "cycle_id": a.cycle_id,
+            "client": a.client_name,
+            "current_stage": a.stage_label,
+            "days_since_last_activity": a.days_since_activity,
+            "recent_events": a.recent_events,
+            "signals": a.signals,
+        }
+        for a in activities
+    ]
+
+    try:
+        response = anthropic_client().messages.create(
+            model=settings.ai_model,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            tools=[TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": SUBMIT_TOOL_NAME},
+        )
+    except Exception:  # noqa: BLE001 — сеть/квоты/парсинг: молча деградируем
+        return None
+
+    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use is None:
+        return None
+
+    out: dict[int, dict] = {}
+    for row in tool_use.input.get("items", []):
+        try:
+            cid = int(row["cycle_id"])
+            percent = max(0, min(100, int(row["percent"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+        stage = str(row.get("stage") or "").strip()
+        phrase = str(row.get("phrase") or "").strip()
+        out[cid] = {"percent": percent, "stage": stage, "phrase": phrase}
+    return out or None
