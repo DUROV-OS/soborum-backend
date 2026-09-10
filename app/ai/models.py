@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, JSON, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -146,3 +146,28 @@ class Meeting(Base):
 
     owner: Mapped["User"] = relationship()  # noqa: F821
     audio_file: Mapped["FileAsset | None"] = relationship()  # noqa: F821
+    transcript_lines: Mapped[list["MeetingTranscriptLine"]] = relationship(
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+        order_by="MeetingTranscriptLine.at_ms, MeetingTranscriptLine.id",
+    )
+
+
+class MeetingTranscriptLine(Base):
+    """One finalized speech fragment of a meeting. The browser recognizes speech
+    (Web Speech API) and posts finalized fragments in batches; `speaker` is a
+    naive «Спикер N» label the client assigns by pause length and the user can
+    correct. `at_ms` is the offset from Meeting.started_at."""
+
+    __tablename__ = "ai_meeting_transcript_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_meetings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    speaker: Mapped[str] = mapped_column(String(32), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    at_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    meeting: Mapped["Meeting"] = relationship(back_populates="transcript_lines")
