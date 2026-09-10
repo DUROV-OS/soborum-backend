@@ -9,6 +9,8 @@ from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
 from app.users.models import User
+from app.warehouse import price_import
+from app.warehouse.price_import import ColumnMapping
 from app.warehouse.models import (
     StockMovement,
     StockMovementReason,
@@ -483,6 +485,56 @@ def price_for_qty(item: SupplierPriceItem, qty: float) -> float | None:
         if qty >= low and (high is None or qty <= high):
             return tier.get("price")
     return None
+
+
+_BACKFILL_FIELD_LABEL = {"category": "категория", "lead_time": "срок поставки"}
+
+
+def import_price_list(
+    db: Session,
+    supplier: Supplier,
+    headers: list[str],
+    data: list[list[str]],
+    mapping: ColumnMapping,
+    created_by: User,
+) -> tuple[int, int, int | None]:
+    """Добавляет строки прайса из разобранной таблицы. Возвращает
+    (добавлено, пропущено, id задачи на дозаполнение или None)."""
+    built = price_import.build_rows(headers, data, mapping)
+    for item in built.items:
+        db.add(SupplierPriceItem(supplier_id=supplier.id, **item))
+    db.flush()
+
+    task_id: int | None = None
+    missing = mapping.missing_fields()
+    if built.items and (missing or built.skipped):
+        task_id = _create_price_backfill_task(db, supplier, missing, built.skipped, len(built.items))
+    return len(built.items), built.skipped, task_id
+
+
+def _create_price_backfill_task(
+    db: Session, supplier: Supplier, missing: list[str], skipped: int, imported: int
+) -> int:
+    parts = [_BACKFILL_FIELD_LABEL[m] for m in missing if m in _BACKFILL_FIELD_LABEL]
+    if skipped:
+        parts.append(f"{skipped} строк без цены")
+    detail = ", ".join(parts) or "проверить импортированные строки"
+    assignees = user_service.users_with_access(db, AccessModule.WAREHOUSE)
+    task = task_service.create_link_task(
+        db,
+        title=f"Дозаполнить прайс поставщика «{supplier.name}»: нет данных — {detail}",
+        link_type=TaskLinkType.SUPPLIER_PRICE_BACKFILL,
+        link_id=supplier.id,
+        assignees=assignees,
+        link_meta={
+            "supplier_id": supplier.id,
+            "missing": missing,
+            "skipped": skipped,
+            "imported": imported,
+        },
+    )
+    db.flush()
+    return task.id
 
 
 def supplier_out(supplier: Supplier) -> SupplierOut:

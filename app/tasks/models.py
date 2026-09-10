@@ -32,6 +32,10 @@ class TaskLinkType(str, enum.Enum):
     CONTENT_STAGE = "content_stage"
     WAREHOUSE_REQUEST = "warehouse_request"
     WAREHOUSE_SHORTAGE = "warehouse_shortage"
+    # Дозаполнить прайс поставщика после импорта таблицей: ИИ не нашёл в файле
+    # колонок для части полей (см. app.warehouse.price_import). link_id — id
+    # поставщика.
+    SUPPLIER_PRICE_BACKFILL = "supplier_price_backfill"
 
 
 task_assignees = Table(
