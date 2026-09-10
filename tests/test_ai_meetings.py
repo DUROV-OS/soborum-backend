@@ -47,6 +47,39 @@ def test_meeting_lifecycle_and_audio(api, make_user):
     assert audio.content == b"fake-opus-bytes"
 
 
+def test_meeting_rename_and_delete(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [{"speaker": "Спикер 1", "text": "реплика", "at_ms": 0}]},
+    )
+
+    renamed = client.patch(f"/api/ai/meetings/{mid}", json={"title": "  Планёрка по DH64  "})
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "Планёрка по DH64"
+
+    assert client.delete(f"/api/ai/meetings/{mid}").status_code == 204
+    assert client.get(f"/api/ai/meetings/{mid}").status_code == 404
+    assert client.get("/api/ai/meetings").json() == []
+    # каскад: строки транскрипта тоже удалены
+    assert (
+        client.post(
+            f"/api/ai/meetings/{mid}/transcript",
+            json={"lines": [{"speaker": "Спикер 1", "text": "x", "at_ms": 0}]},
+        ).status_code
+        == 404
+    )
+
+
+def test_meeting_rename_delete_private_to_owner(api, make_user):
+    owner = api(make_user(Module.AI))
+    mid = owner.post("/api/ai/meetings", json={}).json()["id"]
+    stranger = api(make_user(Module.AI))
+    assert stranger.patch(f"/api/ai/meetings/{mid}", json={"title": "чужое"}).status_code == 404
+    assert stranger.delete(f"/api/ai/meetings/{mid}").status_code == 404
+
+
 def test_meeting_requires_ai_access(api, make_user):
     user = make_user()  # без Module.AI
     client = api(user)

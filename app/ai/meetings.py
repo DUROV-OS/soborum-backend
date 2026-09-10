@@ -57,6 +57,24 @@ def finish_meeting(db: Session, meeting: Meeting) -> Meeting:
     return meeting
 
 
+def rename_meeting(db: Session, meeting: Meeting, title: str | None) -> Meeting:
+    meeting.title = (title or "").strip() or None
+    db.commit()
+    db.refresh(meeting)
+    return meeting
+
+
+def delete_meeting(db: Session, meeting: Meeting) -> None:
+    """Удаляет совещание с транскриптом и заметками (каскад) и его аудио-ассет.
+    Файл на диске не трогаем — как и в остальных разделах."""
+    asset = db.get(FileAsset, meeting.audio_file_id) if meeting.audio_file_id else None
+    db.delete(meeting)
+    db.flush()
+    if asset is not None:
+        db.delete(asset)
+    db.commit()
+
+
 def list_own_meetings(db: Session, owner: User) -> list[Meeting]:
     return (
         db.query(Meeting)

@@ -40,6 +40,7 @@ from app.ai.schemas import (
     MeetingDetailOut,
     MeetingNotesOut,
     MeetingOut,
+    MeetingUpdate,
     PendingActionOut,
     SectionAnalyticsOut,
     SpeakRequest,
@@ -468,6 +469,23 @@ def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db), user: 
 @app.get("/meetings", response_model=list[MeetingOut])
 def list_meetings(db: Session = Depends(get_db), user: User = Depends(require_ai)):
     return [_meeting_out(m) for m in ai_meetings.list_own_meetings(db, user)]
+
+
+@app.patch("/meetings/{meeting_id}", response_model=MeetingOut)
+def rename_meeting(
+    meeting_id: int,
+    payload: MeetingUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return _meeting_out(ai_meetings.rename_meeting(db, meeting, payload.title))
+
+
+@app.delete("/meetings/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    ai_meetings.delete_meeting(db, meeting)
 
 
 @app.get("/meetings/{meeting_id}", response_model=MeetingDetailOut)

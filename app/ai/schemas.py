@@ -103,6 +103,10 @@ class MeetingCreate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
 
 
+class MeetingUpdate(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+
+
 class MeetingOut(BaseModel):
     id: int
     title: str | None
