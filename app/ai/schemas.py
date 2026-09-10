@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.ai.models import ChatDomain, ChatMode, PendingActionStatus
+from app.ai.models import ChatDomain, ChatMode, MeetingStatus, PendingActionStatus
 from app.tasks.schemas import TaskOut
 
 
@@ -91,6 +91,31 @@ class SectionAnalyticsOut(BaseModel):
 class PriorityTaskOut(BaseModel):
     task: TaskOut
     reason: str
+
+
+# --- Режим «Совещание» (0004) -------------------------------------------------
+
+
+class MeetingCreate(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+
+
+class MeetingOut(BaseModel):
+    id: int
+    title: str | None
+    status: MeetingStatus
+    started_at: datetime
+    finished_at: datetime | None
+    duration_sec: int | None
+    has_audio: bool
+
+
+class MeetingDetailOut(MeetingOut):
+    audio_url: str | None = None
+    # Наполняются в 0004-b (реплики) и 0004-c (заметки); здесь всегда пустые.
+    transcript: list = Field(default_factory=list)
+    notes: dict | None = None
+    ai_enabled: bool = False
 
 
 class TaskPrioritiesOut(BaseModel):

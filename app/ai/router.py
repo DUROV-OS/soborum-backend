@@ -1,18 +1,19 @@
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.ai import analytics as ai_analytics
 from app.ai import attachments as ai_attachments
 from app.ai import engine
 from app.ai import mcp_auth
+from app.ai import meetings as ai_meetings
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
 from app.ai import topic as ai_topic
 from app.ai import tts as ai_tts
-from app.ai.models import Chat, ChatDomain, ChatMode, McpCredential, PendingAction, PendingActionStatus
+from app.ai.models import Chat, ChatDomain, ChatMode, McpCredential, Meeting, PendingAction, PendingActionStatus
 from app.ai.tools import TOOLS
 from app.ai.schemas import (
     AskRequest,
@@ -22,6 +23,9 @@ from app.ai.schemas import (
     ChatOut,
     ChatTitleUpdate,
     ConsultAskResponse,
+    MeetingCreate,
+    MeetingDetailOut,
+    MeetingOut,
     PendingActionOut,
     SectionAnalyticsOut,
     SpeakRequest,
@@ -409,6 +413,64 @@ def reject_pending_action(pending_action_id: int, db: Session = Depends(get_db),
         reply=result.reply,
         pending_actions=[_to_pending_out(p) for p in result.pending_actions],
     )
+
+
+#  --- Режим «Совещание» (0004-a): сессия + запись аудио, без ИИ ------------
+
+def _meeting_out(m: Meeting) -> MeetingOut:
+    return MeetingOut(
+        id=m.id,
+        title=m.title,
+        status=m.status,
+        started_at=m.started_at,
+        finished_at=m.finished_at,
+        duration_sec=ai_meetings.duration_sec(m),
+        has_audio=m.audio_file_id is not None,
+    )
+
+
+@app.post("/meetings", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
+def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    return _meeting_out(ai_meetings.create_meeting(db, user, payload.title))
+
+
+@app.get("/meetings", response_model=list[MeetingOut])
+def list_meetings(db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    return [_meeting_out(m) for m in ai_meetings.list_own_meetings(db, user)]
+
+
+@app.get("/meetings/{meeting_id}", response_model=MeetingDetailOut)
+def get_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    base = _meeting_out(meeting)
+    return MeetingDetailOut(
+        **base.model_dump(),
+        audio_url=f"/api/ai/meetings/{meeting.id}/audio" if meeting.audio_file_id else None,
+        ai_enabled=bool(settings.anthropic_api_key),
+    )
+
+
+@app.post("/meetings/{meeting_id}/audio", response_model=MeetingOut)
+def upload_meeting_audio(
+    meeting_id: int, file: UploadFile, db: Session = Depends(get_db), user: User = Depends(require_ai)
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return _meeting_out(ai_meetings.attach_audio(db, meeting, file, user))
+
+
+@app.post("/meetings/{meeting_id}/finish", response_model=MeetingOut)
+def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return _meeting_out(ai_meetings.finish_meeting(db, meeting))
+
+
+@app.get("/meetings/{meeting_id}/audio")
+def download_meeting_audio(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    asset = ai_meetings.audio_asset(db, meeting)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Запись совещания не найдена")
+    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
 
 
 @app.get("/mcp/authorize")
