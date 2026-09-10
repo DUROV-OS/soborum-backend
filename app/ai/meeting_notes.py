@@ -80,6 +80,21 @@ def _transcript_text(lines) -> str:
     return "\n".join(f"[{line.speaker}] {line.text}" for line in lines)
 
 
+def meeting_context_line(meeting: Meeting) -> str:
+    """Однострочное описание обстоятельств встречи для промптов (пустое, если не заполнены)."""
+    bits: list[str] = []
+    if meeting.occurred_at is not None:
+        when = meeting.occurred_at
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        bits.append(f"когда: {when:%Y-%m-%d %H:%M}")
+    if meeting.location:
+        bits.append(f"где: {meeting.location}")
+    if meeting.participants:
+        bits.append(f"с кем: {meeting.participants}")
+    return f"Обстоятельства встречи — {'; '.join(bits)}.\n\n" if bits else ""
+
+
 def _generate(transcript_text: str) -> dict:
     from app.core.llm import anthropic_client
 
@@ -140,7 +155,7 @@ def refresh_notes(db: Session, meeting: Meeting, *, force: bool = False) -> tupl
             return existing or _empty_notes(db, meeting), False
 
         try:
-            result = _generate(_transcript_text(lines))
+            result = _generate(meeting_context_line(meeting) + _transcript_text(lines))
         except (anthropic.APIError, RuntimeError, ValueError):
             if existing is not None:
                 return existing, True
@@ -181,32 +196,49 @@ def _yaml_list(items: list[str]) -> str:
     return "\n" + "\n".join(f"  - {item}" for item in items)
 
 
+def _aware(value):
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def build_document(db: Session, meeting: Meeting, notes: MeetingNotes | None) -> str:
     lines = transcript_lines(db, meeting)
     speakers = sorted({line.speaker for line in lines})
-    started = meeting.started_at
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    title = meeting.title or f"Совещание от {started:%Y-%m-%d %H:%M}"
+    started = _aware(meeting.started_at)
+    occurred = _aware(meeting.occurred_at) if meeting.occurred_at is not None else started
+    title = meeting.title or f"Совещание от {occurred:%Y-%m-%d %H:%M}"
 
     parts: list[str] = []
     parts.append("---")
     parts.append(f"title: {title}")
     parts.append("kind: record")
-    parts.append(f"date: {started:%Y-%m-%d}")
+    parts.append(f"date: {occurred:%Y-%m-%d}")
     parts.append(f"started_at: {started:%Y-%m-%d %H:%M}")
     if meeting.finished_at is not None:
-        finished = meeting.finished_at
-        if finished.tzinfo is None:
-            finished = finished.replace(tzinfo=timezone.utc)
-        parts.append(f"finished_at: {finished:%Y-%m-%d %H:%M}")
-    parts.append(f"participants:{_yaml_list(speakers)}")
+        parts.append(f"finished_at: {_aware(meeting.finished_at):%Y-%m-%d %H:%M}")
+    if meeting.occurred_at is not None:
+        parts.append(f"occurred_at: {occurred:%Y-%m-%d %H:%M}")
+    if meeting.location:
+        parts.append(f"location: {meeting.location}")
+    if meeting.participants:
+        parts.append(f"participants: {meeting.participants}")
+    parts.append(f"speakers:{_yaml_list(speakers)}")
     parts.append("source: durov-os/meeting")
     parts.append(f"meeting_id: {meeting.id}")
     parts.append("---")
     parts.append("")
     parts.append(f"# {title}")
     parts.append("")
+
+    if meeting.location or meeting.participants or meeting.occurred_at is not None:
+        parts.append("## Обстоятельства")
+        parts.append("")
+        if meeting.occurred_at is not None:
+            parts.append(f"- **Когда:** {occurred:%Y-%m-%d %H:%M}")
+        if meeting.location:
+            parts.append(f"- **Где:** {meeting.location}")
+        if meeting.participants:
+            parts.append(f"- **С кем:** {meeting.participants}")
+        parts.append("")
 
     summary = (notes.summary if notes else "").strip()
     parts.append("## Резюме")

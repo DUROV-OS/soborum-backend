@@ -444,6 +444,9 @@ def _meeting_out(m: Meeting) -> MeetingOut:
         finished_at=m.finished_at,
         duration_sec=ai_meetings.duration_sec(m),
         has_audio=m.audio_file_id is not None,
+        location=m.location,
+        participants=m.participants,
+        occurred_at=m.occurred_at,
     )
 
 
@@ -472,14 +475,17 @@ def list_meetings(db: Session = Depends(get_db), user: User = Depends(require_ai
 
 
 @app.patch("/meetings/{meeting_id}", response_model=MeetingOut)
-def rename_meeting(
+def update_meeting(
     meeting_id: int,
     payload: MeetingUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(require_ai),
 ):
+    """Название и обстоятельства встречи (где / когда / с кем). Применяются
+    только переданные поля."""
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
-    return _meeting_out(ai_meetings.rename_meeting(db, meeting, payload.title))
+    changes = payload.model_dump(exclude_unset=True)
+    return _meeting_out(ai_meetings.update_meeting(db, meeting, changes))
 
 
 @app.delete("/meetings/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)

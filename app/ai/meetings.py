@@ -57,8 +57,17 @@ def finish_meeting(db: Session, meeting: Meeting) -> Meeting:
     return meeting
 
 
-def rename_meeting(db: Session, meeting: Meeting, title: str | None) -> Meeting:
-    meeting.title = (title or "").strip() or None
+_TEXT_FIELDS = {"title", "location", "participants"}
+
+
+def update_meeting(db: Session, meeting: Meeting, changes: dict) -> Meeting:
+    """changes — только реально переданные поля (title / location / participants /
+    occurred_at). Пустая строка в текстовом поле → сбрасываем в NULL."""
+    for field, value in changes.items():
+        if field in _TEXT_FIELDS:
+            setattr(meeting, field, (value or "").strip() or None)
+        elif field == "occurred_at":
+            meeting.occurred_at = value
     db.commit()
     db.refresh(meeting)
     return meeting

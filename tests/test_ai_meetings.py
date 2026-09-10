@@ -72,6 +72,44 @@ def test_meeting_rename_and_delete(api, make_user):
     )
 
 
+def test_meeting_circumstances(api, make_user):
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+
+    upd = client.patch(
+        f"/api/ai/meetings/{mid}",
+        json={
+            "location": "  Переговорная 2  ",
+            "participants": "Игорь, Пётр",
+            "occurred_at": "2026-09-08T10:30:00Z",
+        },
+    )
+    assert upd.status_code == 200
+    body = upd.json()
+    assert body["location"] == "Переговорная 2"
+    assert body["participants"] == "Игорь, Пётр"
+    assert body["occurred_at"].startswith("2026-09-08T10:30")
+
+    detail = client.get(f"/api/ai/meetings/{mid}").json()
+    assert detail["location"] == "Переговорная 2"
+    assert detail["participants"] == "Игорь, Пётр"
+
+    # частичный PATCH не трогает остальные поля
+    client.patch(f"/api/ai/meetings/{mid}", json={"title": "Разбор поставки"})
+    detail = client.get(f"/api/ai/meetings/{mid}").json()
+    assert detail["title"] == "Разбор поставки"
+    assert detail["location"] == "Переговорная 2"
+
+    # пустая строка → сброс в null
+    client.patch(f"/api/ai/meetings/{mid}", json={"location": "  "})
+    assert client.get(f"/api/ai/meetings/{mid}").json()["location"] is None
+
+    # документ содержит обстоятельства
+    doc = client.get(f"/api/ai/meetings/{mid}/document").text
+    assert "## Обстоятельства" in doc
+    assert "Игорь, Пётр" in doc
+
+
 def test_meeting_rename_delete_private_to_owner(api, make_user):
     owner = api(make_user(Module.AI))
     mid = owner.post("/api/ai/meetings", json={}).json()["id"]

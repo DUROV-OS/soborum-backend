@@ -17,6 +17,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.ai import engine
+from app.ai.meeting_notes import meeting_context_line
 from app.ai.meetings import transcript_lines
 from app.ai.models import Chat, ChatDomain, ChatMode, Meeting
 from app.core.config import settings
@@ -48,6 +49,7 @@ def answer_meeting_question(db: Session, user: User, meeting: Meeting, question:
         "монтаж, задачи, деньги, сроки) — смотри в базе DurovOS через инструменты "
         "чтения, а не в транскрипте и не в базе знаний; справочные и общие вопросы или "
         "конкретика о том, чего в системе нет — база знаний; публичные факты — интернет.\n\n"
+        f"{meeting_context_line(meeting)}"
         f"ТРАНСКРИПТ СОВЕЩАНИЯ:\n{_transcript_block(db, meeting)}\n\n---\nВОПРОС: {text}"
     )
 
