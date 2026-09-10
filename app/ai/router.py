@@ -1,18 +1,30 @@
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.ai import analytics as ai_analytics
 from app.ai import attachments as ai_attachments
 from app.ai import engine
 from app.ai import mcp_auth
+from app.ai import meeting_ask as ai_meeting_ask
+from app.ai import meeting_notes as ai_meeting_notes
+from app.ai import meetings as ai_meetings
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
 from app.ai import topic as ai_topic
 from app.ai import tts as ai_tts
-from app.ai.models import Chat, ChatDomain, ChatMode, McpCredential, PendingAction, PendingActionStatus
+from app.ai.models import (
+    Chat,
+    ChatDomain,
+    ChatMode,
+    McpCredential,
+    Meeting,
+    MeetingNotes,
+    PendingAction,
+    PendingActionStatus,
+)
 from app.ai.tools import TOOLS
 from app.ai.schemas import (
     AskRequest,
@@ -22,10 +34,20 @@ from app.ai.schemas import (
     ChatOut,
     ChatTitleUpdate,
     ConsultAskResponse,
+    MeetingAskIn,
+    MeetingAskOut,
+    MeetingCreate,
+    MeetingDetailOut,
+    MeetingNotesOut,
+    MeetingOut,
+    MeetingUpdate,
     PendingActionOut,
     SectionAnalyticsOut,
     SpeakRequest,
     TaskPrioritiesOut,
+    TranscriptAppendIn,
+    TranscriptLineOut,
+    TranscriptSpeakerUpdate,
 )
 from app.common.files import FileAssetOut
 from app.common.module_access import Module
@@ -262,7 +284,7 @@ async def speak_text(payload: SpeakRequest, user: User = Depends(get_current_use
     """Neural female Russian voice for consult résumé. Free Edge TTS, no paid key."""
     _ = user
     try:
-        audio = await ai_tts.synthesize_mp3(payload.text)
+        audio = await ai_tts.synthesize_mp3(payload.text, payload.voice)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     except Exception as exc:
@@ -409,6 +431,184 @@ def reject_pending_action(pending_action_id: int, db: Session = Depends(get_db),
         reply=result.reply,
         pending_actions=[_to_pending_out(p) for p in result.pending_actions],
     )
+
+
+#  --- Режим «Совещание» (0004-a): сессия + запись аудио, без ИИ ------------
+
+def _meeting_out(m: Meeting) -> MeetingOut:
+    return MeetingOut(
+        id=m.id,
+        title=m.title,
+        status=m.status,
+        started_at=m.started_at,
+        finished_at=m.finished_at,
+        duration_sec=ai_meetings.duration_sec(m),
+        has_audio=m.audio_file_id is not None,
+        topic=m.topic,
+        goals=m.goals,
+        location=m.location,
+        participants=m.participants,
+        occurred_at=m.occurred_at,
+    )
+
+
+def _notes_out(notes, stale: bool = False) -> MeetingNotesOut | None:
+    if notes is None:
+        return None
+    return MeetingNotesOut(
+        summary=notes.summary,
+        decisions=list(notes.decisions or []),
+        tasks=list(notes.tasks or []),
+        questions=list(notes.questions or []),
+        source_line_count=notes.source_line_count,
+        updated_at=notes.updated_at,
+        stale=stale,
+    )
+
+
+@app.post("/meetings", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
+def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    return _meeting_out(ai_meetings.create_meeting(db, user, payload.title))
+
+
+@app.get("/meetings", response_model=list[MeetingOut])
+def list_meetings(db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    return [_meeting_out(m) for m in ai_meetings.list_own_meetings(db, user)]
+
+
+@app.patch("/meetings/{meeting_id}", response_model=MeetingOut)
+def update_meeting(
+    meeting_id: int,
+    payload: MeetingUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    """Название и обстоятельства встречи (где / когда / с кем). Применяются
+    только переданные поля."""
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    changes = payload.model_dump(exclude_unset=True)
+    return _meeting_out(ai_meetings.update_meeting(db, meeting, changes))
+
+
+@app.delete("/meetings/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    ai_meetings.delete_meeting(db, meeting)
+
+
+@app.get("/meetings/{meeting_id}", response_model=MeetingDetailOut)
+def get_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    base = _meeting_out(meeting)
+    return MeetingDetailOut(
+        **base.model_dump(),
+        audio_url=f"/api/ai/meetings/{meeting.id}/audio" if meeting.audio_file_id else None,
+        transcript=[
+            TranscriptLineOut.model_validate(line) for line in ai_meetings.transcript_lines(db, meeting)
+        ],
+        notes=_notes_out(db.get(MeetingNotes, meeting.id)),
+        ai_enabled=ai_meeting_notes.notes_ai_enabled(),
+    )
+
+
+@app.post("/meetings/{meeting_id}/transcript", response_model=list[TranscriptLineOut])
+def append_meeting_transcript(
+    meeting_id: int,
+    payload: TranscriptAppendIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    created = ai_meetings.append_transcript_lines(
+        db,
+        meeting,
+        [(line.speaker, line.text, line.at_ms, line.is_assistant_query) for line in payload.lines],
+    )
+    return [TranscriptLineOut.model_validate(line) for line in created]
+
+
+@app.patch("/meetings/{meeting_id}/transcript/{line_id}", response_model=TranscriptLineOut)
+def update_meeting_transcript_speaker(
+    meeting_id: int,
+    line_id: int,
+    payload: TranscriptSpeakerUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return TranscriptLineOut.model_validate(
+        ai_meetings.set_line_speaker(db, meeting, line_id, payload.speaker)
+    )
+
+
+@app.post("/meetings/{meeting_id}/audio", response_model=MeetingOut)
+def upload_meeting_audio(
+    meeting_id: int, file: UploadFile, db: Session = Depends(get_db), user: User = Depends(require_ai)
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return _meeting_out(ai_meetings.attach_audio(db, meeting, file, user))
+
+
+@app.post("/meetings/{meeting_id}/finish", response_model=MeetingOut)
+def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    finished = ai_meetings.finish_meeting(db, meeting)
+    # Финальный пересчёт заметок по всему транскрипту — молча, finish не должен
+    # падать из-за ИИ (нет ключа / провайдер недоступен).
+    ai_meeting_notes.refresh_notes_quietly(db, finished)
+    return _meeting_out(finished)
+
+
+@app.post("/meetings/{meeting_id}/notes/refresh", response_model=MeetingNotesOut)
+def refresh_meeting_notes(
+    meeting_id: int,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    notes, stale = ai_meeting_notes.refresh_notes(db, meeting, force=force)
+    return _notes_out(notes, stale)
+
+
+@app.get("/meetings/{meeting_id}/document")
+def meeting_document(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    """Готовый markdown-документ совещания для базы знаний (frontmatter +
+    заметки + транскрипт). Реальная заливка в БЗ — задача 0010."""
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    notes = db.get(MeetingNotes, meeting.id)
+    body = ai_meeting_notes.build_document(db, meeting, notes)
+    started = meeting.started_at
+    filename = f"meeting-{meeting.id}-{started:%Y-%m-%d}.md"
+    return PlainTextResponse(
+        body,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/meetings/{meeting_id}/ask", response_model=MeetingAskOut)
+def ask_about_meeting(
+    meeting_id: int,
+    payload: MeetingAskIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_ai),
+):
+    """«Спросить Марину о совещании»: ответ на экран, контекст — транскрипт
+    этого совещания (+ база знаний, если коннектор настроен и спрашивает
+    администратор). Голосовой триггер и озвучка — задача 0004-d."""
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    answer = ai_meeting_ask.answer_meeting_question(db, user, meeting, payload.question)
+    return MeetingAskOut(answer_markdown=answer)
+
+
+@app.get("/meetings/{meeting_id}/audio")
+def download_meeting_audio(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    asset = ai_meetings.audio_asset(db, meeting)
+    if asset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Запись совещания не найдена")
+    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
 
 
 @app.get("/mcp/authorize")

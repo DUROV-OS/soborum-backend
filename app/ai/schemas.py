@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.ai.models import ChatDomain, ChatMode, PendingActionStatus
+from app.ai.models import ChatDomain, ChatMode, MeetingStatus, PendingActionStatus
 from app.tasks.schemas import TaskOut
 
 
@@ -76,6 +76,9 @@ class ConsultAskResponse(AskResponse):
 
 class SpeakRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=500)
+    # Необязательный выбор нейросетевого голоса Edge TTS; пустой = голос по
+    # умолчанию (как в разделе «Агенты»). Неизвестное имя откатывается на дефолт.
+    voice: str | None = Field(default=None, max_length=64)
 
 
 SectionStatus = Literal["red", "yellow", "green"]
@@ -91,6 +94,89 @@ class SectionAnalyticsOut(BaseModel):
 class PriorityTaskOut(BaseModel):
     task: TaskOut
     reason: str
+
+
+# --- Режим «Совещание» (0004) -------------------------------------------------
+
+
+class MeetingCreate(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+
+
+class MeetingUpdate(BaseModel):
+    """PATCH — применяются только переданные поля (exclude_unset)."""
+
+    title: str | None = Field(default=None, max_length=255)
+    topic: str | None = Field(default=None, max_length=255)
+    goals: str | None = Field(default=None, max_length=2000)
+    location: str | None = Field(default=None, max_length=255)
+    participants: str | None = Field(default=None, max_length=500)
+    occurred_at: datetime | None = None
+
+
+class MeetingOut(BaseModel):
+    id: int
+    title: str | None
+    status: MeetingStatus
+    started_at: datetime
+    finished_at: datetime | None
+    duration_sec: int | None
+    has_audio: bool
+    topic: str | None = None
+    goals: str | None = None
+    location: str | None = None
+    participants: str | None = None
+    occurred_at: datetime | None = None
+
+
+class TranscriptLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    speaker: str
+    text: str
+    at_ms: int
+    is_assistant_query: bool = False
+
+
+class TranscriptLineIn(BaseModel):
+    speaker: str = Field(default="Спикер 1", max_length=32)
+    text: str = Field(min_length=1)
+    at_ms: int = Field(default=0, ge=0)
+    is_assistant_query: bool = False
+
+
+class TranscriptAppendIn(BaseModel):
+    lines: list[TranscriptLineIn] = Field(default_factory=list)
+
+
+class TranscriptSpeakerUpdate(BaseModel):
+    speaker: str = Field(min_length=1, max_length=32)
+
+
+class MeetingAskIn(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
+class MeetingAskOut(BaseModel):
+    answer_markdown: str
+
+
+class MeetingNotesOut(BaseModel):
+    summary: str
+    decisions: list[str]
+    tasks: list[str]
+    questions: list[str]
+    source_line_count: int
+    updated_at: datetime
+    stale: bool = False
+
+
+class MeetingDetailOut(MeetingOut):
+    audio_url: str | None = None
+    transcript: list[TranscriptLineOut] = Field(default_factory=list)
+    notes: MeetingNotesOut | None = None
+    ai_enabled: bool = False
 
 
 class TaskPrioritiesOut(BaseModel):

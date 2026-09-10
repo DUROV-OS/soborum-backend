@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, JSON, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -117,3 +117,90 @@ class McpCredential(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class MeetingStatus(str, enum.Enum):
+    RECORDING = "recording"
+    FINISHED = "finished"
+
+
+class Meeting(Base):
+    """A «Совещание» session: Marina listens in, the browser records audio and
+    (from 0004-b) streams a live transcript. This first slice stores only the
+    session lifecycle and the recorded audio blob; transcript lines and AI
+    notes hang off it in later slices."""
+
+    __tablename__ = "ai_meetings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[MeetingStatus] = mapped_column(
+        Enum(MeetingStatus, name="ai_meeting_status"), nullable=False, default=MeetingStatus.RECORDING
+    )
+    audio_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("file_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Тема, цели и обстоятельства встречи (заполняются человеком): где, когда
+    # (если отличается от started_at — например запись велась не с начала), с кем.
+    topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    goals: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    participants: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    owner: Mapped["User"] = relationship()  # noqa: F821
+    audio_file: Mapped["FileAsset | None"] = relationship()  # noqa: F821
+    transcript_lines: Mapped[list["MeetingTranscriptLine"]] = relationship(
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+        order_by="MeetingTranscriptLine.at_ms, MeetingTranscriptLine.id",
+    )
+
+
+class MeetingTranscriptLine(Base):
+    """One finalized speech fragment of a meeting. The browser recognizes speech
+    (Web Speech API) and posts finalized fragments in batches; `speaker` is a
+    naive «Спикер N» label the client assigns by pause length and the user can
+    correct. `at_ms` is the offset from Meeting.started_at."""
+
+    __tablename__ = "ai_meeting_transcript_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_meetings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    speaker: Mapped[str] = mapped_column(String(32), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    at_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Реплика-обращение к Марине по слову-триггеру: показывается в транскрипте
+    # с пометкой, но не учитывается как обычная реплика в ИИ-заметках.
+    is_assistant_query: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    meeting: Mapped["Meeting"] = relationship(back_populates="transcript_lines")
+
+
+class MeetingNotes(Base):
+    """Marina's structured notes for one meeting (1:1). Recomputed from the
+    full transcript — резюме / решения / задачи / открытые вопросы —
+    incrementally as the transcript grows and once more on finish.
+    `source_line_count` is how many transcript lines the current notes reflect."""
+
+    __tablename__ = "ai_meeting_notes"
+
+    meeting_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_meetings.id", ondelete="CASCADE"), primary_key=True
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    decisions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    tasks: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    questions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_line_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    meeting: Mapped["Meeting"] = relationship()

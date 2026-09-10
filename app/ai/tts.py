@@ -17,8 +17,16 @@ RATE = "-12%"
 PITCH = "+8Hz"
 MAX_CHARS = 420
 
+# Выбираемые нейросетевые голоса Edge TTS (бесплатные, без ключа). Значение —
+# кортеж (voice, rate, pitch); дефолт совпадает с настройками раздела «Агенты».
+VOICES: dict[str, tuple[str, str, str]] = {
+    "ru-RU-SvetlanaNeural": (VOICE, RATE, PITCH),
+    "ru-RU-DmitryNeural": ("ru-RU-DmitryNeural", "-6%", "+0Hz"),
+    "ru-RU-DariyaNeural": ("ru-RU-DariyaNeural", "-10%", "+4Hz"),
+}
 
-async def synthesize_mp3(text: str) -> bytes:
+
+async def synthesize_mp3(text: str, voice: str | None = None) -> bytes:
     cleaned = " ".join((text or "").split()).strip()
     if not cleaned:
         raise ValueError("Пустой текст для озвучки")
@@ -30,7 +38,8 @@ async def synthesize_mp3(text: str) -> bytes:
     except ImportError as exc:
         raise RuntimeError("edge-tts не установлен") from exc
 
-    communicate = edge_tts.Communicate(cleaned, VOICE, rate=RATE, pitch=PITCH)
+    name, rate, pitch = VOICES.get(voice or "", VOICES[VOICE])
+    communicate = edge_tts.Communicate(cleaned, name, rate=rate, pitch=pitch)
     buffer = io.BytesIO()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
