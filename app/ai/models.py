@@ -119,6 +119,28 @@ class McpCredential(Base):
     )
 
 
+class AgentActivity(Base):
+    """Один пункт «Действия агента» в разделе «Марина» — что агент сделал сам,
+    когда и почему (см. предложение в задаче 0007). Пока сюда не пишут реальные
+    события: строки создаёт только демо-сид для localhost (`app/ai/demo_seed.py`,
+    задача 0033) - реальная интеграция с фоновой работой агентов - будущая
+    задача."""
+
+    __tablename__ = "ai_agent_activities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    # True - агент сделал сам, без подтверждения (дёшево/обратимо/внутренняя
+    # метрика); False - решение потребовало или потребует подтверждения
+    # человеком (деньги, внешняя коммуникация, необратимое действие).
+    autonomous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    related_section: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    related_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    related_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class MeetingStatus(str, enum.Enum):
     RECORDING = "recording"
     FINISHED = "finished"
