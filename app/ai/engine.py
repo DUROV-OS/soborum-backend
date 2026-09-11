@@ -125,6 +125,11 @@ def _resolve_content(db: Session, content: list) -> list:
                 resolved.append({"type": "text", "text": f"[Файл «{block.get('filename')}» больше недоступен]"})
             else:
                 resolved.append(ai_attachments.build_content_block(asset))
+        elif block.get("type") == "context_note":
+            # Unfolded into text only for the model - stays a distinct block type in
+            # the persisted message so the frontend's MessageBubble (which only
+            # renders "text"/"tool_use"/"file_ref") never shows it to the user.
+            resolved.append({"type": "text", "text": block["note"]})
         else:
             resolved.append(block)
     return resolved
@@ -267,15 +272,18 @@ def _execute_tool(db: Session, name: str, tool_input: dict, user: User, chat: Ch
                 "guardian": decision_record(user, approved=approved)}
 
 
-def run_turn(db: Session, chat: Chat, user: User, user_text: str, file_ids: list[int] | None = None) -> TurnResult:
+def run_turn(db: Session, chat: Chat, user: User, user_text: str, file_ids: list[int] | None = None,
+             context_note: str | None = None) -> TurnResult:
     if db.query(PendingAction).filter(PendingAction.chat_id == chat.id,
                                      PendingAction.status == PendingActionStatus.PENDING).first():
         raise HTTPException(409, "Сначала подтвердите или отклоните ожидающие действия")
     content = ai_attachments.resolve_file_ids(db, file_ids or [], user)
+    if not content and not user_text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нужно отправить текст или файл")
+    if context_note:
+        content.append({"type": "context_note", "note": context_note})
     if user_text:
         content.append({"type": "text", "text": user_text})
-    if not content:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нужно отправить текст или файл")
 
     db.add(Message(chat_id=chat.id, role="user", content=content))
     db.commit()
@@ -432,7 +440,8 @@ def _pending_payload(pa: PendingAction) -> dict:
 
 
 def prepare_stream_turn(
-    db: Session, chat: Chat, user: User, user_text: str, file_ids: list[int] | None = None
+    db: Session, chat: Chat, user: User, user_text: str, file_ids: list[int] | None = None,
+    context_note: str | None = None,
 ) -> None:
     """Preflight + persist the user message, synchronously, so a 400/409 is a
     real HTTP error rather than a mid-stream event. Mirrors run_turn's head."""
@@ -440,10 +449,12 @@ def prepare_stream_turn(
                                      PendingAction.status == PendingActionStatus.PENDING).first():
         raise HTTPException(409, "Сначала подтвердите или отклоните ожидающие действия")
     content = ai_attachments.resolve_file_ids(db, file_ids or [], user)
+    if not content and not user_text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нужно отправить текст или файл")
+    if context_note:
+        content.append({"type": "context_note", "note": context_note})
     if user_text:
         content.append({"type": "text", "text": user_text})
-    if not content:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нужно отправить текст или файл")
     db.add(Message(chat_id=chat.id, role="user", content=content))
     db.commit()
 

@@ -1,7 +1,9 @@
 """Стартовый мок-набор проводок «Бухгалтерии». Идемпотентно (skip, если в
-`money_movements` уже что-то есть), по образцу `app.board.seed.ensure_seed` и
-`app.users.service.bootstrap_admin`: делает что-то ровно один раз после первого
-деплоя, no-op на каждом рестарте.
+`money_movements` уже что-то есть) и **никогда не запускается в prod** — это
+демо-данные для локальной разработки/приёмки, не для боевой базы (см.
+`app.tasks.demo_seed`/`app.clients.demo_seed`, тот же принцип), по образцу
+`app.board.seed.ensure_seed` и `app.users.service.bootstrap_admin`: делает
+что-то ровно один раз после первого деплоя, no-op на каждом рестарте.
 
 Ничего не создаёт ради привязок — только переиспурует уже существующих
 клиентов / сотрудников / поставки. Если подходящей сущности нет, проводка,
@@ -12,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.accounting.models import (
     INCOME_SUBKINDS,
     MoneyAssessment,
@@ -61,8 +64,10 @@ _SPECS: list[tuple] = [
 
 
 def ensure_accounting_seed(db: Session) -> int:
-    """Возвращает число созданных проводок (0, если реестр уже был не пуст или
-    не хватило сущностей для привязок)."""
+    """Возвращает число созданных проводок (0 в prod, если реестр уже был не
+    пуст, или если не хватило сущностей для привязок)."""
+    if settings.is_prod:
+        return 0
     if db.query(MoneyMovement).first() is not None:
         return 0
 

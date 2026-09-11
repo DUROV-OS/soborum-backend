@@ -150,6 +150,17 @@ class SupplierOrderOut(BaseModel):
         return out
 
 
+class EmployeeSalaryOverview(BaseModel):
+    """Строка раздела «Сотрудники» (0023): сотрудник + его текущая незакрытая
+    (draft/approved) зарплатная проводка, если есть. Отдельный эндпоинт, а не
+    `GET /api/auth/users`, потому что тот доступен только админу — здесь
+    доступ по `Module.ACCOUNTING`, как у остальной бухгалтерии."""
+
+    employee_id: int
+    full_name: str
+    open_movement: MoneyMovementOut | None
+
+
 # --- Импорт платежей таблицей (задача 0011-k) ---
 
 

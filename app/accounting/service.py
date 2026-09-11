@@ -29,7 +29,9 @@ from app.accounting.models import (
     SupplierOrderStatus,
 )
 from app.accounting.schemas import (
+    EmployeeSalaryOverview,
     MoneyMovementCreate,
+    MoneyMovementOut,
     MoneyMovementUpdate,
     SupplierOrderCreate,
     SupplierOrderUpdate,
@@ -124,6 +126,29 @@ def _assert_source_exists(
         raise _bad_request("Заказ у поставщика — источник не найден")
 
 
+_OPEN_STATUSES = {MoneyMovementStatus.DRAFT, MoneyMovementStatus.APPROVED}
+
+
+def _assert_no_open_salary_payout(db: Session, employee_id: int | None) -> None:
+    """Раздел «Сотрудники» (0023) начисляет зарплату по одной незакрытой
+    проводке за раз — не даёт скопить несколько черновиков/утверждённых
+    начислений на одного сотрудника, пока предыдущее не проведено/отменено."""
+    if employee_id is None:
+        return
+    has_open = (
+        db.query(MoneyMovement.id)
+        .filter(
+            MoneyMovement.subkind == MoneySubkind.SALARY_PAYOUT,
+            MoneyMovement.employee_id == employee_id,
+            MoneyMovement.status.in_(_OPEN_STATUSES),
+        )
+        .first()
+        is not None
+    )
+    if has_open:
+        raise _conflict("У сотрудника уже есть незакрытая зарплатная проводка")
+
+
 def create_money_movement(
     db: Session, data: MoneyMovementCreate, initiator_id: int
 ) -> MoneyMovement:
@@ -135,6 +160,9 @@ def create_money_movement(
     source_kind = _resolve_source(
         db, data.subkind, data.client_id, data.employee_id, data.supply_id
     )
+
+    if data.subkind is MoneySubkind.SALARY_PAYOUT:
+        _assert_no_open_salary_payout(db, data.employee_id)
 
     mm = MoneyMovement(
         direction=_direction_for(data.subkind),
@@ -257,6 +285,31 @@ def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
         )
     db.delete(mm)
     db.commit()
+
+
+def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
+    """0023: сотрудники (все активные пользователи — worker и admin) с их
+    текущей незакрытой (draft/approved) зарплатной проводкой, если есть."""
+    employees = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name).all()
+    open_by_employee: dict[int, MoneyMovement] = {
+        mm.employee_id: mm
+        for mm in db.query(MoneyMovement)
+        .filter(
+            MoneyMovement.subkind == MoneySubkind.SALARY_PAYOUT,
+            MoneyMovement.status.in_(_OPEN_STATUSES),
+        )
+        .all()
+    }
+    return [
+        EmployeeSalaryOverview(
+            employee_id=employee.id,
+            full_name=employee.full_name,
+            open_movement=MoneyMovementOut.from_movement(open_by_employee[employee.id])
+            if employee.id in open_by_employee
+            else None,
+        )
+        for employee in employees
+    ]
 
 
 def change_status(

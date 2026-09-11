@@ -181,3 +181,73 @@ def test_list_filters(db, api, acc_user, make_user):
 def test_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/money-movements")
     assert r.status_code == 403
+
+
+def test_salary_payout_rejects_second_open_movement_for_same_employee(db, api, acc_user, make_user):
+    """0023: раздел «Сотрудники» показывает «Начислить» только пока у
+    сотрудника нет незакрытой (draft/approved) зарплатной проводки —
+    эндпоинт отказывает и на второй draft, и пока первая на approved."""
+    employee = make_user()
+    api_client = api(acc_user)
+
+    first = _create(api_client, subkind="salary_payout", employee_id=employee.id)
+    assert first.status_code == 201
+
+    second = _create(api_client, subkind="salary_payout", employee_id=employee.id)
+    assert second.status_code == 409
+
+    api_client.post(
+        f"/api/accounting/money-movements/{first.json()['id']}/status", json={"to": "approved"}
+    )
+    still_open = _create(api_client, subkind="salary_payout", employee_id=employee.id)
+    assert still_open.status_code == 409
+
+
+def test_salary_payout_allowed_again_once_previous_is_posted_or_cancelled(db, api, acc_user, make_user):
+    employee = make_user()
+    api_client = api(acc_user)
+
+    first = _create(api_client, subkind="salary_payout", employee_id=employee.id).json()
+    api_client.post(f"/api/accounting/money-movements/{first['id']}/status", json={"to": "approved"})
+    api_client.post(f"/api/accounting/money-movements/{first['id']}/status", json={"to": "posted"})
+
+    reopened = _create(api_client, subkind="salary_payout", employee_id=employee.id)
+    assert reopened.status_code == 201
+
+    api_client.post(
+        f"/api/accounting/money-movements/{reopened.json()['id']}/status",
+        json={"to": "cancelled", "reason": "ошибка ввода"},
+    )
+    third = _create(api_client, subkind="salary_payout", employee_id=employee.id)
+    assert third.status_code == 201
+
+
+def test_salary_payout_invariant_is_per_employee(db, api, acc_user, make_user):
+    a = make_user()
+    b = make_user()
+    api_client = api(acc_user)
+
+    assert _create(api_client, subkind="salary_payout", employee_id=a.id).status_code == 201
+    assert _create(api_client, subkind="salary_payout", employee_id=b.id).status_code == 201
+
+
+def test_salary_overview_lists_active_employees_with_open_movement(db, api, acc_user, make_user):
+    with_open = make_user()
+    without_open = make_user()
+    api_client = api(acc_user)
+
+    _create(api_client, subkind="salary_payout", employee_id=with_open.id, amount=50000)
+
+    overview = {
+        row["employee_id"]: row
+        for row in api_client.get("/api/accounting/salary-overview").json()
+    }
+    assert without_open.id in overview and overview[without_open.id]["open_movement"] is None
+    assert with_open.id in overview
+    assert overview[with_open.id]["open_movement"]["status"] == "draft"
+    assert overview[with_open.id]["open_movement"]["amount"] == 50000
+
+
+def test_salary_overview_requires_module_access(db, api, other_user):
+    r = api(other_user).get("/api/accounting/salary-overview")
+    assert r.status_code == 403
