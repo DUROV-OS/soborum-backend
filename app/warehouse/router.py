@@ -7,10 +7,17 @@ from app.core.deps import require_module
 from app.db.session import get_db
 from app.production.schemas import MaterialRequestOut
 from app.users.models import User
-from app.warehouse import excel, service as warehouse_service
+from app.warehouse import excel, price_import, service as warehouse_service
 from app.warehouse.models import MaterialCategory, StockMovementReason, Supply, Warehouse
 from app.warehouse.schemas import (
+    LinkMaxChatIn,
+    PriceListImportResult,
     StockMovementOut,
+    SupplierCreate,
+    SupplierOut,
+    SupplierPriceItemCreate,
+    SupplierPriceItemUpdate,
+    SupplierUpdate,
     SupplyCreate,
     SupplyOut,
     WarehouseMaterialCreate,
@@ -147,3 +154,140 @@ def reject_request(request_id: int, db: Session = Depends(get_db), user: User = 
     db.commit()
     db.refresh(request)
     return request
+
+
+# --- Поставщики (задача 0011-a) ---
+
+
+@app.get("/suppliers", response_model=list[SupplierOut])
+def list_suppliers(db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    return [warehouse_service.supplier_out(s) for s in warehouse_service.list_suppliers(db)]
+
+
+@app.post("/suppliers", response_model=SupplierOut, status_code=201)
+def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    supplier = warehouse_service.create_supplier(db, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.get("/suppliers/{supplier_id}", response_model=SupplierOut)
+def get_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    return warehouse_service.supplier_out(warehouse_service.get_supplier_or_404(db, supplier_id))
+
+
+@app.patch("/suppliers/{supplier_id}", response_model=SupplierOut)
+def update_supplier(
+    supplier_id: int,
+    payload: SupplierUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    supplier = warehouse_service.update_supplier(db, supplier, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.delete("/suppliers/{supplier_id}", status_code=204)
+def delete_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    db.delete(warehouse_service.get_supplier_or_404(db, supplier_id))
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/suppliers/{supplier_id}/price-items/import", response_model=PriceListImportResult)
+def import_price_list(
+    supplier_id: int,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_warehouse),
+):
+    """Импорт прайс-листа таблицей (.xlsx/.csv). Колонки размечает ИИ (при
+    наличии `ANTHROPIC_API_KEY`), иначе — словарь синонимов. Строки добавляются
+    к существующему прайсу; недостающие поля остаются пустыми и порождают задачу
+    «дозаполнить». Без опознанных колонок материала и цены — отказ 400."""
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    headers, data = price_import.read_table(file)
+    mapping = price_import.resolve_mapping(headers, data)
+
+    if not mapping.material or (not mapping.price and not mapping.qty_breaks):
+        which = "с названием материала" if not mapping.material else "с ценой"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Не удалось определить колонку {which}. Заголовки файла: {headers}",
+        )
+
+    imported, skipped, task_id = warehouse_service.import_price_list(db, supplier, headers, data, mapping, user)
+    db.commit()
+    return PriceListImportResult(
+        supplier=warehouse_service.supplier_out(supplier),
+        imported=imported,
+        skipped=skipped,
+        ai_used=mapping.ai_used,
+        note=mapping.note,
+        column_mapping=mapping.as_dict(),
+        missing_fields=mapping.missing_fields(),
+        task_id=task_id,
+    )
+
+
+@app.post("/suppliers/{supplier_id}/price-items", response_model=SupplierOut, status_code=201)
+def add_price_item(
+    supplier_id: int,
+    payload: SupplierPriceItemCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.add_price_item(db, supplier, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.patch("/suppliers/{supplier_id}/price-items/{item_id}", response_model=SupplierOut)
+def update_price_item(
+    supplier_id: int,
+    item_id: int,
+    payload: SupplierPriceItemUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.update_price_item(db, supplier, item_id, payload)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.delete("/suppliers/{supplier_id}/price-items/{item_id}", status_code=204)
+def delete_price_item(
+    supplier_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.delete_price_item(db, supplier, item_id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/suppliers/{supplier_id}/link-max-chat", response_model=SupplierOut)
+def link_max_chat(
+    supplier_id: int,
+    payload: LinkMaxChatIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    supplier = warehouse_service.link_max_chat(db, supplier, payload.chat_id)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.delete("/suppliers/{supplier_id}/link-max-chat", response_model=SupplierOut)
+def unlink_max_chat(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    supplier = warehouse_service.unlink_max_chat(db, supplier)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)

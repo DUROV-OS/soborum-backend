@@ -9,9 +9,13 @@ from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
 from app.users.models import User
+from app.warehouse import price_import
+from app.warehouse.price_import import ColumnMapping
 from app.warehouse.models import (
     StockMovement,
     StockMovementReason,
+    Supplier,
+    SupplierPriceItem,
     Supply,
     SupplyLine,
     Warehouse,
@@ -19,6 +23,12 @@ from app.warehouse.models import (
 )
 from app.warehouse.schemas import (
     RequestBreakdownItem,
+    SupplierCreate,
+    SupplierOut,
+    SupplierPriceItemCreate,
+    SupplierPriceItemOut,
+    SupplierPriceItemUpdate,
+    SupplierUpdate,
     SupplyCreate,
     WarehouseMaterialCreate,
     WarehouseMaterialOut,
@@ -320,3 +330,222 @@ def get_history(
     if reason is not None:
         query = query.filter(StockMovement.reason == reason)
     return query.order_by(StockMovement.created_at.desc()).all()
+
+
+# --- Поставщики (задача 0011-a) ---
+
+
+def get_supplier_or_404(db: Session, supplier_id: int) -> Supplier:
+    supplier = db.get(Supplier, supplier_id)
+    if not supplier:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Поставщик не найден")
+    return supplier
+
+
+def _price_item_or_404(supplier: Supplier, item_id: int) -> SupplierPriceItem:
+    item = next((i for i in supplier.price_items if i.id == item_id), None)
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Строка прайса не найдена")
+    return item
+
+
+def _clean_name(raw: str | None) -> str:
+    name = (raw or "").strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Название поставщика не может быть пустым"
+        )
+    return name
+
+
+class _TierView:
+    """Лёгкая обёртка над сохранённым диапазоном (dict) — чтобы
+    ``_validate_price_item`` одинаково работал и со схемами, и с моделью."""
+
+    def __init__(self, price: float | None = None, **_: object) -> None:
+        self.price = price
+
+
+def _validate_price_item(material: str | None, tiers) -> str:
+    """Отклоняет строку прайса без материала или без единого диапазона с ценой."""
+    cleaned = (material or "").strip()
+    if not cleaned:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="У строки прайса не указан материал"
+        )
+    if not tiers or all(t.price is None for t in tiers):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="У строки прайса нужен хотя бы один диапазон партии с ценой",
+        )
+    return cleaned
+
+
+def list_suppliers(db: Session) -> list[Supplier]:
+    return db.query(Supplier).order_by(Supplier.name).all()
+
+
+def create_supplier(db: Session, payload: SupplierCreate) -> Supplier:
+    supplier = Supplier(
+        name=_clean_name(payload.name),
+        categories=list(payload.categories),
+        status=payload.status,
+        contacts=[c.model_dump() for c in payload.contacts],
+    )
+    db.add(supplier)
+    db.flush()
+    return supplier
+
+
+def update_supplier(db: Session, supplier: Supplier, payload: SupplierUpdate) -> Supplier:
+    data = payload.model_dump(exclude_unset=True)
+    if "name" in data:
+        supplier.name = _clean_name(data["name"])
+    if "categories" in data:
+        supplier.categories = list(data["categories"] or [])
+    if "status" in data and data["status"] is not None:
+        supplier.status = data["status"]
+    if "contacts" in data:
+        supplier.contacts = [c.model_dump() for c in (payload.contacts or [])]
+    db.flush()
+    return supplier
+
+
+def add_price_item(db: Session, supplier: Supplier, payload: SupplierPriceItemCreate) -> SupplierPriceItem:
+    material = _validate_price_item(payload.material, payload.tiers)
+    item = SupplierPriceItem(
+        supplier_id=supplier.id,
+        material=material,
+        category=payload.category,
+        tiers=[t.model_dump() for t in payload.tiers],
+        lead_time=payload.lead_time,
+        round=payload.round,
+    )
+    db.add(item)
+    db.flush()
+    return item
+
+
+def update_price_item(
+    db: Session, supplier: Supplier, item_id: int, payload: SupplierPriceItemUpdate
+) -> SupplierPriceItem:
+    item = _price_item_or_404(supplier, item_id)
+    data = payload.model_dump(exclude_unset=True)
+    material = data["material"] if "material" in data else item.material
+    tiers = payload.tiers if "tiers" in data else None
+    if "material" in data or "tiers" in data:
+        # проверяем итоговое состояние строки, а не только присланные поля
+        check_tiers = payload.tiers if tiers is not None else [_TierView(**t) for t in item.tiers]
+        item.material = _validate_price_item(material, check_tiers)
+    if "category" in data:
+        item.category = data["category"]
+    if tiers is not None:
+        item.tiers = [t.model_dump() for t in payload.tiers]
+    if "lead_time" in data:
+        item.lead_time = data["lead_time"]
+    if "round" in data:
+        item.round = data["round"]
+    db.flush()
+    return item
+
+
+def delete_price_item(db: Session, supplier: Supplier, item_id: int) -> None:
+    db.delete(_price_item_or_404(supplier, item_id))
+    db.flush()
+
+
+def link_max_chat(db: Session, supplier: Supplier, chat_id: int) -> Supplier:
+    taken = (
+        db.query(Supplier)
+        .filter(Supplier.max_chat_id == chat_id, Supplier.id != supplier.id)
+        .first()
+    )
+    if taken:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Чат уже привязан к поставщику «{taken.name}» — сначала открепите его там",
+        )
+    supplier.max_chat_id = chat_id
+    db.flush()
+    return supplier
+
+
+def unlink_max_chat(db: Session, supplier: Supplier) -> Supplier:
+    supplier.max_chat_id = None
+    db.flush()
+    return supplier
+
+
+def price_for_qty(item: SupplierPriceItem, qty: float) -> float | None:
+    """Цена материала у поставщика для партии размера ``qty`` — первый диапазон,
+    в который она попадает. Используется заявками на материалы (production)."""
+    for tier in item.tiers or []:
+        low = tier.get("min_qty") or 0
+        high = tier.get("max_qty")
+        if qty >= low and (high is None or qty <= high):
+            return tier.get("price")
+    return None
+
+
+_BACKFILL_FIELD_LABEL = {"category": "категория", "lead_time": "срок поставки"}
+
+
+def import_price_list(
+    db: Session,
+    supplier: Supplier,
+    headers: list[str],
+    data: list[list[str]],
+    mapping: ColumnMapping,
+    created_by: User,
+) -> tuple[int, int, int | None]:
+    """Добавляет строки прайса из разобранной таблицы. Возвращает
+    (добавлено, пропущено, id задачи на дозаполнение или None)."""
+    built = price_import.build_rows(headers, data, mapping)
+    for item in built.items:
+        db.add(SupplierPriceItem(supplier_id=supplier.id, **item))
+    db.flush()
+
+    task_id: int | None = None
+    missing = mapping.missing_fields()
+    if built.items and (missing or built.skipped):
+        task_id = _create_price_backfill_task(db, supplier, missing, built.skipped, len(built.items))
+    return len(built.items), built.skipped, task_id
+
+
+def _create_price_backfill_task(
+    db: Session, supplier: Supplier, missing: list[str], skipped: int, imported: int
+) -> int:
+    parts = [_BACKFILL_FIELD_LABEL[m] for m in missing if m in _BACKFILL_FIELD_LABEL]
+    if skipped:
+        parts.append(f"{skipped} строк без цены")
+    detail = ", ".join(parts) or "проверить импортированные строки"
+    assignees = user_service.users_with_access(db, AccessModule.WAREHOUSE)
+    task = task_service.create_link_task(
+        db,
+        title=f"Дозаполнить прайс поставщика «{supplier.name}»: нет данных — {detail}",
+        link_type=TaskLinkType.SUPPLIER_PRICE_BACKFILL,
+        link_id=supplier.id,
+        assignees=assignees,
+        link_meta={
+            "supplier_id": supplier.id,
+            "missing": missing,
+            "skipped": skipped,
+            "imported": imported,
+        },
+    )
+    db.flush()
+    return task.id
+
+
+def supplier_out(supplier: Supplier) -> SupplierOut:
+    return SupplierOut(
+        id=supplier.id,
+        name=supplier.name,
+        categories=list(supplier.categories or []),
+        status=supplier.status,
+        contacts=list(supplier.contacts or []),
+        max_chat_id=supplier.max_chat_id,
+        created_at=supplier.created_at,
+        price_items=[SupplierPriceItemOut.model_validate(i) for i in supplier.price_items],
+        price_items_count=len(supplier.price_items),
+    )
