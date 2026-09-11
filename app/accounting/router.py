@@ -14,6 +14,7 @@ from app.accounting.models import (
 from app.accounting.schemas import (
     AiFillSubkindRequest,
     AiFillSubkindResult,
+    EmployeeSalaryOverview,
     ImportBackfillRequest,
     ImportBackfillResult,
     MoneyMovementCreate,
@@ -123,6 +124,14 @@ def create_import_backfill_task(
         db, payload.movement_ids, payload.missing_fields
     )
     return ImportBackfillResult(task_id=task_id)
+
+
+@app.get("/salary-overview", response_model=list[EmployeeSalaryOverview])
+def salary_overview(db: Session = Depends(get_db), _: User = Depends(require_accounting)):
+    """0023: раздел «Сотрудники» — каждый активный сотрудник и его текущая
+    незакрытая зарплатная проводка (если есть), для кнопок «Начислить» /
+    «Утвердить» / «Выплатить»."""
+    return accounting_service.list_employee_salary_overview(db)
 
 
 @app.get("/money-movements", response_model=list[MoneyMovementOut])
