@@ -290,3 +290,139 @@ Durov OS: реализация «отмены проведённой прово�
 
 ---
 
+## 7. Таблица соответствия: МойСклад → Durov OS
+
+### 7.1. `MoneyMovement` (новая сущность, `0011-c`)
+
+| Поле Durov OS | Источник в МойСклад | Комментарий |
+|---|---|---|
+| `kind` (приход/расход + подвид) | тип документа (`paymentin`/`cashin` vs `paymentout`/`cashout`) + `expenseItem.name` | направление из типа документа; подвид — из статьи ДДС. Enum §3.3 |
+| `amount` | `paymentin.sum` / `paymentout.sum` / `cashin.sum` / `cashout.sum` | МойСклад — копейки; у нас рубли `Numeric(14,2)` |
+| `currency` | `rate.currency` | у нас строка `"RUB"`, задел |
+| `tax` | `vatSum` | сумма налога `Numeric(14,2)` |
+| `tax_rate` (опц.) | справочник `taxrate` / `organization.advancePaymentVat` | опционально, %, можно не заводить в MVP |
+| `initiator` (сотрудник) | `owner` (Владелец, `employee`) | кто завёл проводку |
+| `assessment` (оценка) | `expenseitem.operatingExpenses` (учитывать ли в оценке прибыли) + пара «план (счёт/заказ) ↔ факт (платёж)» | см. §8 — в МойСклад нет «достоверности» у платежа; трактуем как `planned`/`actual` + флаг «в расчёте прибыли» |
+| `status` (`draft`→`approved`→`posted`→`cancelled`) | `applicable` (граница `posted`) + `state` (процессный ярлык) | §2.1 |
+| `posted_at` | `moment` при `applicable=true` | дата проведения |
+| `source_ref` (полиморфная) | `operations` (Meta базового документа) + `agent` | ровно одна привязка (§7.4) |
+| `payment_purpose` (опц.) | `paymentPurpose` | текст назначения |
+| `comment` | `description` | комментарий |
+| `external_number` (опц.) | `incomingNumber` / `incomingDate` | номер платёжки, задел под банк-интеграцию |
+| `cancel_reason` | — (в МойСклад: `counterpartyadjustment.description` / распроведение) | обязателен при `cancelled` из `posted` |
+
+### 7.2. `Supplier` — уже есть (`app/warehouse/models.py`, из `0011-a`)
+
+| Поле Durov OS | Источник в МойСклад | Комментарий |
+|---|---|---|
+| `Supplier` (сущность) | `counterparty` (`companyType` = юрлицо/ИП) | единый справочник; отдельный «поставщик» — наш срез |
+| `Supplier.name` | `counterparty.name` | |
+| `Supplier.contacts` (JSON) | `counterparty.phone`/`email`/`contactpersons` | |
+| `Supplier.status` (`active`/`archived`) | `counterparty.archived` + `counterparty.state` | |
+| `Supplier.categories` | `counterparty.tags` | свободные метки направлений |
+| **баланс/долг поставщика** (добавляет `0011-d`) | `report/counterparty` → `balance` | вычисляемый, не хранимый в МойСклад; у нас — денормализованное поле, пересчёт при `posted` |
+
+### 7.3. `Supply` — есть черновой (`app/warehouse/models.py`), расширяет `0011-d`
+
+| Поле Durov OS | Источник в МойСклад | Комментарий |
+|---|---|---|
+| `Supply` (сущность) | `purchaseorder` (заказ поставщику) + `supply` (приёмка) | у нас одна сущность на «поставку»; в МойСклад это два документа |
+| `Supply.lines` / `SupplyLine.quantity` | позиции `supply.positions` (`quantity`, `price`) | цены позиций — копейки |
+| `Supply.supplier_id` | `supply.agent` → `counterparty` | |
+| статус поставки (заказана→в пути→принята) | `supply.applicable` + `state` | приёмка = проведение `supply` |
+| оплата поставки | `paymentout`/`cashout` c `operations=[supply.meta]`, `expenseItem`=«Закупка товаров» | создаёт `MoneyMovement(supply_payment)` |
+
+> Принцип PROJECT.md: **оплата и физическая приёмка поставки — независимые
+> состояния**. В МойСклад это и есть: `supply.applicable` (приёмка) ≠
+> `paymentout.applicable` (оплата). Не связывать один с другим.
+
+### 7.4. `source_ref` — полиморфная привязка (ровно одна)
+
+| Подвид `MoneyMovement` | Поле | Аналог МойСклад |
+|---|---|---|
+| доход от продажи | `client_id` → `clients.id` | `paymentin.agent` = клиент-`counterparty` + `operations` на его счёт/отгрузку; обновляет «Состояние оплаты» (`Client.is_paid` / `balance_paid`) |
+| выплата зарплаты | `employee_id` → `users.id` | `paymentout.agent` = `employee` + `expenseItem`=«Зарплата» |
+| оплата поставки | `supply_id` → `supplies.id` | `paymentout.operations` = `[supply.meta]` → `supply.agent` = поставщик |
+| прочее | все NULL | платёж без `operations` |
+
+Ограничение (принцип `0011`): **не более одной** привязки на проводку.
+
+### 7.5. Связи с существующими разделами
+
+| Схема заказчика | МойСклад | Durov OS |
+|---|---|---|
+| `доход от продажи → Клиент (Состояние оплаты)` | `paymentin` + баланс контрагента | `MoneyMovement(sale_income).client_id` → пересчёт `Client.is_paid`/`balance_paid` (`app/clients`) |
+| `выплата зарплаты → Сотрудник (KPI + зарплата)` | `paymentout(agent=employee)` + взаиморасчёты по сотруднику | `MoneyMovement(salary_payout).employee_id` → раздел зарплаты (`app/users`) |
+| `оплата поставки → Поставка ← Поставщик` | `paymentout(operations=[supply])` | `MoneyMovement(supply_payment).supply_id` → `Supply.supplier_id` (`app/warehouse`) |
+| `Задачи ← движение денег (согласование/проведение)` | `state` = «Согласование» (вручную) | `MoneyMovement(status=draft)` порождает задачу в `app/tasks`; проведение задачи двигает статус |
+
+---
+
+## 8. Выводы для `0011-c` (модель `MoneyMovement`)
+
+1. **Направление** (`приход`/`расход`) — из типа документа. Заводим `direction`
+   enum (`income`/`expense`) + `subkind` enum (`sale_income`, `salary_payout`,
+   `supply_payment`, `tax`, `rent`, `other`). Статью ДДС как настраиваемый
+   справочник в MVP не делаем — фиксированный enum по §3.3.
+2. **Статусная машина.** `draft → approved → posted → cancelled`.
+   - `posted` ⇔ «проведён» (`applicable=true` в МойСклад): деньги/взаиморасчёты
+     учтены, запись неизменяема.
+   - `draft`/`approved` — наш процессный слой (в МойСклад это `state` + отсутствие
+     проведения); `approved` = «согласовано», может рождать/закрывать задачу в
+     `tasks`.
+   - `cancelled` из `posted` — только с `cancel_reason`; исходную запись не
+     удаляем и не редактируем, при необходимости компенсируем отдельной записью
+     (аналог `counterpartyadjustment`). История не переписывается (принцип
+     PROJECT.md).
+3. **«Оценка» (`assessment`).** В МойСклад у денежного документа **нет** поля
+   «оценка достоверности» или «план/факт». Ближайшие смыслы:
+   - `expenseitem.operatingExpenses` — влияет ли расход на оценку прибыли;
+   - разделение «плановое обязательство» (счёт `invoiceout`/`invoicein`, заказ)
+     против «фактический платёж».
+   Решение для `0011-c`: `assessment` = enum `planned | actual` (по умолчанию
+   `actual`) + отдельный boolean `affects_profit` (по умолчанию `true`, аналог
+   `operatingExpenses`). Отдельную «шкалу достоверности» не вводим.
+4. **Суммы** — `Numeric(14, 2)` в рублях (консистентно с `clients`/`warehouse`).
+   Помним: МойСклад отдаёт копейки (×100) — на будущий обмен.
+5. **Налог** — `tax` (`Numeric(14, 2)`, сумма) ← `vatSum`. Ставку `%` в MVP
+   опускаем или держим необязательным полем.
+6. **`initiator`** ← `owner` (сотрудник, `users.id`), обязателен для `posted`.
+7. **`source_ref`** — полиморфно, ровно одна из `client_id` / `employee_id` /
+   `supply_id`, либо ни одной для `other`. Валидация «не больше одной привязки».
+8. **Сознательно НЕ переносим из МойСклад:**
+   - нал/безнал (`cashin/out` vs `paymentin/out`), `organizationAccount` /
+     `agentAccount`, кассы (`cashier`, `retailStore`) — денежный контур один;
+   - `contract` как сущность — достаточно `source_ref`;
+   - `project` как сущность — роль проекта играет цикл клиента / производство;
+   - `factureIn` / `factureOut`, `commissionreport*`, розничные ордера,
+     `prepayment` — вне контура фичи;
+   - `state` как настраиваемый справочник статусов — заменяем фиксированной
+     статусной машиной из п. 2;
+   - множественные `operations` с `linkedSum` — у нас одна привязка `source_ref`
+     на проводку.
+
+---
+
+## 9. Проверяемые факты (для ручной приёмки)
+
+| Утверждение | Где в доке МойСклад |
+|---|---|
+| Сущность статей ДДС называется `expenseitem` | `md/dictionaries/_expenseitem.md` |
+| `expenseItem` есть у `paymentout` и `cashout`, отсутствует у `paymentin`/`cashin` | `md/documents/_payment_out.md`, `_cashout.md` (поле `expenseItem`); `_payment_in.md`, `_cashin.md` (поля нет) |
+| `applicable` — «Отметка о проведении», Boolean | все `md/documents/_payment_*`, `_cashin/out.md` |
+| Для расходных документов `agent` = «контрагента, сотрудника или юр.лицо» | `md/documents/_payment_out.md` (описание `agent`) |
+| Ручная правка баланса — `counterpartyadjustment`, `agent` = контрагент или сотрудник | `md/documents/_counterpartyadjustment.md` |
+| Баланс контрагента — отчёт `report/counterparty`, поле `balance` | `md/reports/_report_counterparty.md` |
+| Суммы в API — в копейках | `sum` в `md/documents/_payment_in.md` и др. (`Сумма … в копейках` — у `counterpartyadjustment.sum`; у платежей — «в установленной валюте», значение целочисленное копеечное) |
+| Встроенные статьи: Закупка товаров, Возврат, Налоги и сборы, Списания, Перемещение, Аренда, Зарплата | пример ответа в `md/dictionaries/_expenseitem.md` |
+| `contract.contractType` ∈ {Sales, Commission}, `rewardType` | `md/dictionaries/_contract.md` |
+
+---
+
+## Приложение. Доступ к боевому МойСклад
+
+Для этой разведки боевой доступ не требовался — модель разобрана по официальной
+доке. Выданный MCP-эндпоинт (`https://moysklad.89-207-254-32.nip.io/mcp`,
+OAuth client credentials) можно подключить позже, когда/если понадобится сверка
+на реальных данных или обмен — это отдельная задача (кандидат в `0011` после
+`0011-f`), в контур `MoneyMovement` не входит.
