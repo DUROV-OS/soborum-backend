@@ -20,6 +20,7 @@ from app.accounting.models import (
     MoneyMovementStatus,
     MoneySourceKind,
     MoneySubkind,
+    SupplierOrder,
 )
 
 
@@ -27,7 +28,6 @@ def _direction_for(subkind: MoneySubkind) -> MoneyDirection:
     return MoneyDirection.INCOME if subkind in INCOME_SUBKINDS else MoneyDirection.EXPENSE
 from app.clients.models import Client
 from app.users.models import User, UserRole
-from app.warehouse.models import Supply
 
 _NOW = datetime.now(timezone.utc)
 
@@ -75,7 +75,7 @@ def ensure_accounting_seed(db: Session) -> int:
         db.query(User).filter(User.role == UserRole.WORKER).order_by(User.id).first()
         or admin
     )
-    supply = db.query(Supply).order_by(Supply.id).first()
+    supply = db.query(SupplierOrder).order_by(SupplierOrder.id).first()
 
     source_ok = {
         MoneySourceKind.NONE: True,

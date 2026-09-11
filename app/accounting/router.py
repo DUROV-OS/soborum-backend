@@ -10,6 +10,7 @@ from app.accounting.models import (
     MoneyMovementStatus,
     MoneySourceKind,
     MoneySubkind,
+    SupplierOrderStatus,
 )
 from app.accounting.schemas import (
     AiFillSubkindRequest,
@@ -21,6 +22,10 @@ from app.accounting.schemas import (
     MoneyMovementOut,
     MoneyMovementStatusChange,
     MoneyMovementUpdate,
+    SupplierOrderCreate,
+    SupplierOrderOut,
+    SupplierOrderStatusChange,
+    SupplierOrderUpdate,
 )
 from app.common.module_access import Module as AccessModule
 from app.core.deps import require_module
@@ -208,3 +213,67 @@ def change_money_movement_status(
     mm = accounting_service.get_money_movement(db, mm_id)
     mm = accounting_service.change_status(db, mm, payload.to, payload.reason)
     return MoneyMovementOut.from_movement(mm)
+
+
+# --- Заказы у поставщика (задача 0011-d) ---
+
+
+@app.get("/supplier-orders", response_model=list[SupplierOrderOut])
+def list_supplier_orders(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting),
+    supplier_id: int | None = None,
+    status_filter: SupplierOrderStatus | None = Query(None, alias="status"),
+):
+    orders = accounting_service.list_supplier_orders(db, supplier_id=supplier_id, status_=status_filter)
+    return [SupplierOrderOut.from_order(o) for o in orders]
+
+
+@app.post("/supplier-orders", response_model=SupplierOrderOut, status_code=201)
+def create_supplier_order(
+    payload: SupplierOrderCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting),
+):
+    order = accounting_service.create_supplier_order(db, payload)
+    return SupplierOrderOut.from_order(order)
+
+
+@app.get("/supplier-orders/{order_id}", response_model=SupplierOrderOut)
+def get_supplier_order(
+    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting)
+):
+    return SupplierOrderOut.from_order(accounting_service.get_supplier_order_or_404(db, order_id))
+
+
+@app.patch("/supplier-orders/{order_id}", response_model=SupplierOrderOut)
+def update_supplier_order(
+    order_id: int,
+    payload: SupplierOrderUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting),
+):
+    order = accounting_service.get_supplier_order_or_404(db, order_id)
+    order = accounting_service.update_supplier_order(db, order, payload)
+    return SupplierOrderOut.from_order(order)
+
+
+@app.delete("/supplier-orders/{order_id}", status_code=204)
+def delete_supplier_order(
+    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting)
+):
+    order = accounting_service.get_supplier_order_or_404(db, order_id)
+    accounting_service.delete_supplier_order(db, order)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/supplier-orders/{order_id}/status", response_model=SupplierOrderOut)
+def change_supplier_order_status(
+    order_id: int,
+    payload: SupplierOrderStatusChange,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting),
+):
+    order = accounting_service.get_supplier_order_or_404(db, order_id)
+    order = accounting_service.change_supplier_order_status(db, order, payload.to)
+    return SupplierOrderOut.from_order(order)
