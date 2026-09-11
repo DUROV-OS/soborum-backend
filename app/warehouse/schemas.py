@@ -157,6 +157,21 @@ class SupplierUpdate(BaseModel):
     contacts: list[SupplierContact] | None = None
 
 
+class SupplierNoteCreate(BaseModel):
+    text: str
+
+
+class SupplierNoteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    supplier_id: int
+    author_id: int
+    author_name: str | None = None
+    text: str
+    created_at: datetime
+
+
 class SupplierOut(BaseModel):
     id: int
     name: str
@@ -167,6 +182,7 @@ class SupplierOut(BaseModel):
     created_at: datetime
     price_items: list[SupplierPriceItemOut] = []
     price_items_count: int = 0
+    notes: list[SupplierNoteOut] = []
 
 
 class LinkMaxChatIn(BaseModel):

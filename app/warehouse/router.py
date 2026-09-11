@@ -20,6 +20,7 @@ from app.warehouse.schemas import (
     PriceListImportResult,
     StockMovementOut,
     SupplierCreate,
+    SupplierNoteCreate,
     SupplierOut,
     SupplierPriceItemCreate,
     SupplierPriceItemUpdate,
@@ -332,6 +333,32 @@ def delete_price_item(
     warehouse_service.delete_price_item(db, supplier, item_id)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/suppliers/{supplier_id}/notes", response_model=SupplierOut, status_code=201)
+def add_supplier_note(
+    supplier_id: int,
+    payload: SupplierNoteCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.add_supplier_note(db, supplier, user.id, payload.text)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
+
+
+@app.delete("/suppliers/{supplier_id}/notes/{note_id}", response_model=SupplierOut)
+def delete_supplier_note(
+    supplier_id: int,
+    note_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse),
+):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.delete_supplier_note(db, supplier, note_id)
+    db.commit()
+    return warehouse_service.supplier_out(supplier)
 
 
 @app.post("/suppliers/{supplier_id}/link-max-chat", response_model=SupplierOut)
