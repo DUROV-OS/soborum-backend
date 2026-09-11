@@ -29,7 +29,7 @@ from app.accounting.schemas import (
     SupplierOrderUpdate,
 )
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_module
+from app.core.deps import require_admin, require_module
 from app.db.session import get_db
 from app.users.models import User
 
@@ -205,7 +205,7 @@ def update_money_movement(
 
 @app.delete("/money-movements/{mm_id}", status_code=204)
 def delete_money_movement(
-    mm_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting)
+    mm_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)
 ):
     mm = accounting_service.get_money_movement(db, mm_id)
     accounting_service.delete_money_movement(db, mm)
