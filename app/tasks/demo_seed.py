@@ -10,6 +10,9 @@
 
 from sqlalchemy.orm import Session
 
+from app.accounting.models import MoneyMovementStatus, MoneySubkind
+from app.accounting.schemas import MoneyMovementCreate
+from app.accounting.service import change_status, create_money_movement
 from app.common.module_access import Module
 from app.core.config import settings
 from app.core.security import hash_password
@@ -61,6 +64,13 @@ _EMPLOYEES: list[tuple[str, str, list[Module], list[tuple[str, bool, str]]]] = [
     ),
 ]
 
+# Кому из демо-сотрудников (по email slug) заводим зарплатную проводку и до
+# какого статуса доводим — задел на приёмку 0023 (раздел «Сотрудники»/зарплата).
+_SALARY_DEMO: list[tuple[str, float, MoneyMovementStatus]] = [
+    ("morozova", 95_000, MoneyMovementStatus.APPROVED),
+    ("belova", 88_000, MoneyMovementStatus.POSTED),
+]
+
 
 def ensure_demo_workforce_seed(db: Session) -> int:
     """Возвращает число созданных демо-сотрудников (0, если сидер уже
@@ -102,6 +112,22 @@ def ensure_demo_workforce_seed(db: Session) -> int:
             task = set_status(db, task, TaskStatus.IN_REVIEW, actor=employee)
             if task.status == TaskStatus.IN_REVIEW and task.reviewers:
                 set_status(db, task, TaskStatus.DONE, actor=task.reviewers[0])
+
+    for slug, amount, target_status in _SALARY_DEMO:
+        employee = created_users[slug]
+        mm = create_money_movement(
+            db,
+            MoneyMovementCreate(
+                subkind=MoneySubkind.SALARY_PAYOUT,
+                amount=amount,
+                employee_id=employee.id,
+                payment_purpose="демо-начисление зарплаты",
+            ),
+            initiator_id=reviewer.id,
+        )
+        change_status(db, mm, MoneyMovementStatus.APPROVED)
+        if target_status == MoneyMovementStatus.POSTED:
+            change_status(db, mm, MoneyMovementStatus.POSTED)
 
     db.commit()
     return len(created_users)
