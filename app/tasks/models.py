@@ -36,6 +36,10 @@ class TaskLinkType(str, enum.Enum):
     # колонок для части полей (см. app.warehouse.price_import). link_id — id
     # поставщика.
     SUPPLIER_PRICE_BACKFILL = "supplier_price_backfill"
+    # Согласование проводки «Бухгалтерии» в статусе draft. Само создание/закрытие
+    # такой задачи делает app/accounting интеграциями из разделов (задача 0011-f);
+    # здесь — только значение enum под будущую сшивку.
+    MONEY_MOVEMENT_APPROVAL = "money_movement_approval"
 
 
 task_assignees = Table(

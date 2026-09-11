@@ -14,3 +14,4 @@ class Module(str, enum.Enum):
     TASKS = "tasks"
     AI = "ai"
     BOARD = "board"
+    ACCOUNTING = "accounting"
