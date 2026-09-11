@@ -26,7 +26,7 @@ from app.accounting.models import (
     MoneySourceKind,
     MoneySubkind,
 )
-from app.accounting.schemas import MoneyMovementCreate, MoneyMovementUpdate
+from app.accounting.schemas import EmployeeSalaryOverview, MoneyMovementCreate, MoneyMovementUpdate, MoneyMovementOut
 from app.clients.models import Client
 from app.common.module_access import Module as AccessModule
 from app.core.config import settings
@@ -275,6 +275,31 @@ def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
         )
     db.delete(mm)
     db.commit()
+
+
+def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
+    """0023: сотрудники (все активные пользователи — worker и admin) с их
+    текущей незакрытой (draft/approved) зарплатной проводкой, если есть."""
+    employees = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name).all()
+    open_by_employee: dict[int, MoneyMovement] = {
+        mm.employee_id: mm
+        for mm in db.query(MoneyMovement)
+        .filter(
+            MoneyMovement.subkind == MoneySubkind.SALARY_PAYOUT,
+            MoneyMovement.status.in_(_OPEN_STATUSES),
+        )
+        .all()
+    }
+    return [
+        EmployeeSalaryOverview(
+            employee_id=employee.id,
+            full_name=employee.full_name,
+            open_movement=MoneyMovementOut.from_movement(open_by_employee[employee.id])
+            if employee.id in open_by_employee
+            else None,
+        )
+        for employee in employees
+    ]
 
 
 def change_status(
