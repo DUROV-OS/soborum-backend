@@ -116,6 +116,29 @@ def _assert_source_exists(
         raise _bad_request("Поставка-источник не найдена")
 
 
+_OPEN_STATUSES = {MoneyMovementStatus.DRAFT, MoneyMovementStatus.APPROVED}
+
+
+def _assert_no_open_salary_payout(db: Session, employee_id: int | None) -> None:
+    """Раздел «Сотрудники» (0023) начисляет зарплату по одной незакрытой
+    проводке за раз — не даёт скопить несколько черновиков/утверждённых
+    начислений на одного сотрудника, пока предыдущее не проведено/отменено."""
+    if employee_id is None:
+        return
+    has_open = (
+        db.query(MoneyMovement.id)
+        .filter(
+            MoneyMovement.subkind == MoneySubkind.SALARY_PAYOUT,
+            MoneyMovement.employee_id == employee_id,
+            MoneyMovement.status.in_(_OPEN_STATUSES),
+        )
+        .first()
+        is not None
+    )
+    if has_open:
+        raise _conflict("У сотрудника уже есть незакрытая зарплатная проводка")
+
+
 def create_money_movement(
     db: Session, data: MoneyMovementCreate, initiator_id: int
 ) -> MoneyMovement:
@@ -127,6 +150,9 @@ def create_money_movement(
     source_kind = _resolve_source(
         db, data.subkind, data.client_id, data.employee_id, data.supply_id
     )
+
+    if data.subkind is MoneySubkind.SALARY_PAYOUT:
+        _assert_no_open_salary_payout(db, data.employee_id)
 
     mm = MoneyMovement(
         direction=_direction_for(data.subkind),
