@@ -236,7 +236,7 @@ def ask_consult_stream(payload: AskRequest, db: Session = Depends(get_db), user:
 
     def events():
         yield {"type": "topic_reset", "value": reset}
-        yield from engine.stream_turn(chat_id, user_id)
+        yield from engine.stream_turn(chat_id, user_id, voice_lead=True)
 
     return _sse(events())
 
@@ -260,7 +260,7 @@ def ask_consult(payload: AskRequest, db: Session = Depends(get_db), user: User =
         chat = ai_service.get_or_create_chat(
             db, user, ChatDomain.GENERAL, None, payload.mode or ChatMode.REQUIRE_APPROVAL
         )
-    result = engine.run_turn(db, chat, user, payload.message, payload.file_ids)
+    result = engine.run_turn(db, chat, user, payload.message, payload.file_ids, voice_lead=True)
     return ConsultAskResponse(
         chat_id=chat.id,
         status=result.status,
@@ -298,7 +298,7 @@ async def speak_text(payload: SpeakRequest, user: User = Depends(get_current_use
 @app.post("/consult/pending-actions/{pending_action_id}/approve", response_model=AskResponse)
 def consult_approve(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     pa = ai_service.get_own_pending_action_or_404(db, user, pending_action_id)
-    result = engine.resolve_pending_action(db, pa, approve=True, decided_by=user)
+    result = engine.resolve_pending_action(db, pa, approve=True, decided_by=user, voice_lead=True)
     return AskResponse(
         chat_id=pa.chat_id,
         status=result.status,
@@ -310,7 +310,7 @@ def consult_approve(pending_action_id: int, db: Session = Depends(get_db), user:
 @app.post("/consult/pending-actions/{pending_action_id}/reject", response_model=AskResponse)
 def consult_reject(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     pa = ai_service.get_own_pending_action_or_404(db, user, pending_action_id)
-    result = engine.resolve_pending_action(db, pa, approve=False, decided_by=user)
+    result = engine.resolve_pending_action(db, pa, approve=False, decided_by=user, voice_lead=True)
     return AskResponse(
         chat_id=pa.chat_id,
         status=result.status,
