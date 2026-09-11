@@ -64,7 +64,7 @@ def test_create_sale_income_is_draft_and_bound_to_client(db, api, acc_user):
     assert data["initiator_id"] == acc_user.id
 
 
-def test_status_machine_no_skipping_and_posted_is_frozen(db, api, acc_user):
+def test_status_machine_no_skipping_and_posted_is_frozen(db, api, acc_user, make_user):
     client = _client(db)
     api_client = api(acc_user)
     mm_id = _create(api_client, client_id=client.id).json()["id"]
@@ -87,10 +87,13 @@ def test_status_machine_no_skipping_and_posted_is_frozen(db, api, acc_user):
     assert api_client.patch(
         f"/api/accounting/money-movements/{mm_id}", json={"amount": 1}
     ).status_code == 409
-    assert api_client.delete(f"/api/accounting/money-movements/{mm_id}").status_code == 409
+    # удаление — только ADMIN (0030-d); сама проверка «удалять можно только
+    # черновик» ниже по стеку не зависит от роли
+    admin_client = api(make_user(admin=True))
+    assert admin_client.delete(f"/api/accounting/money-movements/{mm_id}").status_code == 409
 
     # назад по статусу тоже нельзя
-    assert api_client.post(
+    assert admin_client.post(
         f"/api/accounting/money-movements/{mm_id}/status", json={"to": "approved"}
     ).status_code == 409
 
@@ -181,6 +184,17 @@ def test_list_filters(db, api, acc_user, make_user):
 def test_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/money-movements")
     assert r.status_code == 403
+
+
+def test_delete_draft_requires_admin(db, api, acc_user, make_user):
+    """0030-d: удаление проводки — только ADMIN, доступа к модулю «Бухгалтерия»
+    недостаточно, даже для черновика."""
+    mm_id = _create(api(acc_user), subkind="tax").json()["id"]
+    assert api(acc_user).delete(f"/api/accounting/money-movements/{mm_id}").status_code == 403
+
+    admin = api(make_user(admin=True))
+    assert admin.delete(f"/api/accounting/money-movements/{mm_id}").status_code == 204
+    assert admin.get(f"/api/accounting/money-movements/{mm_id}").status_code == 404
 
 
 def test_salary_payout_rejects_second_open_movement_for_same_employee(db, api, acc_user, make_user):
