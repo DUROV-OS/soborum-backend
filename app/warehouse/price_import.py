@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from fastapi import HTTPException, UploadFile, status
 
 from app.core.config import settings
+from app.warehouse.models import MaterialCategory
 
 MAX_DATA_ROWS = 1000
 SAMPLE_ROWS_FOR_AI = 5
@@ -343,3 +344,105 @@ def build_rows(headers: list[str], data: list[list[str]], mapping: ColumnMapping
             }
         )
     return BuiltRows(items=items, skipped=skipped)
+
+
+# --------------------------------------------------------------------------- #
+# ИИ-помощь по недостающим полям (задача 0011-h)                              #
+# --------------------------------------------------------------------------- #
+
+CATEGORY_CHOICES = [c.value for c in MaterialCategory if c is not MaterialCategory.NONE]
+
+_CATEGORY_TOOL = {
+    "name": "assign_categories",
+    "description": "Проставить категорию складского справочника каждой позиции по её названию.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "assignments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "category": {
+                            "type": "string",
+                            "description": "Строго одно из значений справочника; пусто, если не определяется.",
+                        },
+                    },
+                    "required": ["id", "category"],
+                },
+            }
+        },
+        "required": ["assignments"],
+    },
+}
+
+
+def ai_assign_categories(pairs: list[tuple[int, str]]) -> dict[int, str]:
+    """{id строки прайса -> категория из справочника}. Только уверенные назначения."""
+    if not pairs:
+        return {}
+    from app.core.llm import anthropic_client
+
+    listing = "\n".join(f"{pid}. {material}" for pid, material in pairs)
+    user = (
+        "Справочник категорий склада:\n- " + "\n- ".join(CATEGORY_CHOICES) + "\n\n"
+        "Позиции прайса (id. название):\n" + listing + "\n\n"
+        "Для каждой позиции выбери ближайшую категорию из справочника. Если "
+        "категория не определяется однозначно — оставь пустую строку."
+    )
+    client = anthropic_client(timeout=45.0, max_retries=2)
+    response = client.messages.create(
+        model=settings.ai_model,
+        max_tokens=1024,
+        system="Ты классифицируешь строительные материалы по складскому справочнику. Отвечай только вызовом assign_categories.",
+        messages=[{"role": "user", "content": user}],
+        tools=[_CATEGORY_TOOL],
+        tool_choice={"type": "tool", "name": "assign_categories"},
+    )
+    block = next((b for b in response.content if b.type == "tool_use"), None)
+    if block is None:
+        raise RuntimeError("no tool_use in assign_categories response")
+
+    allowed = set(CATEGORY_CHOICES)
+    ids = {pid for pid, _ in pairs}
+    out: dict[int, str] = {}
+    for row in (block.input or {}).get("assignments") or []:
+        try:
+            pid = int(row.get("id"))
+        except (TypeError, ValueError):
+            continue
+        cat = str(row.get("category") or "").strip()
+        if pid in ids and cat in allowed:
+            out[pid] = cat
+    return out
+
+
+def ai_lead_time_message(supplier_name: str, materials: list[str]) -> str:
+    """Короткое вежливое сообщение поставщику с просьбой указать сроки поставки."""
+    from app.core.llm import anthropic_client
+
+    listing = "\n".join(f"{i}. {m}" for i, m in enumerate(materials, start=1))
+    client = anthropic_client(timeout=45.0, max_retries=2)
+    response = client.messages.create(
+        model=settings.ai_model,
+        max_tokens=600,
+        system=(
+            "Ты менеджер по снабжению. Напиши короткое вежливое сообщение поставщику "
+            "в мессенджере: попроси указать срок поставки по каждой позиции из списка. "
+            "Без формального шапки-подписи, простой деловой тон, по-русски. Верни только текст сообщения."
+        ),
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Поставщик: {supplier_name}. Нужны сроки поставки по позициям:\n{listing}\n\n"
+                    "Вставь этот список в сообщение и попроси напротив каждой позиции указать срок."
+                ),
+            }
+        ],
+    )
+    text = "".join(getattr(b, "text", "") for b in response.content if b.type == "text").strip()
+    if not text:
+        raise RuntimeError("empty lead-time message")
+    return text
