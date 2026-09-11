@@ -43,3 +43,18 @@ def require_module(module: Module):
         return user
 
     return dependency
+
+
+def require_admin_or_module(module: Module):
+    """Шире, чем require_module: пропускает и ADMIN, и сотрудника с грантом на
+    module — нужно операциям, доступным «админу и, отдельно, разделу X»
+    (например списание материалов склада, задача 0030-e)."""
+    def dependency(user: User = Depends(get_current_user)) -> User:
+        if user.role != UserRole.ADMIN and not user.has_access(module):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Требуются права администратора или доступ к разделу «{module.value}»",
+            )
+        return user
+
+    return dependency

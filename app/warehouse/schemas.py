@@ -90,8 +90,14 @@ class StockMovementOut(BaseModel):
     delta: float
     reason: StockMovementReason
     reference_id: int | None
+    note: str | None = None
     created_by_id: int
     created_at: datetime
+
+
+class WriteOffRequest(BaseModel):
+    quantity: float
+    reason: str
 
 
 # --- Поставщики (задача 0011-a) ---

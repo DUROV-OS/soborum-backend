@@ -173,17 +173,36 @@ def log_movement(
     reason: StockMovementReason,
     created_by: User,
     reference_id: int | None = None,
+    note: str | None = None,
 ) -> StockMovement:
     movement = StockMovement(
         warehouse_material_id=material.id,
         delta=delta,
         reason=reason,
         reference_id=reference_id,
+        note=note,
         created_by_id=created_by.id,
     )
     db.add(movement)
     db.flush()
     return movement
+
+
+def write_off_material(
+    db: Session, material: WarehouseMaterial, quantity: float, reason: str, created_by: User
+) -> WarehouseMaterial:
+    if quantity <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество списания должно быть больше нуля")
+    if not reason.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Укажите причину списания")
+    if quantity > float(material.quantity_in_stock):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя списать больше, чем есть на складе")
+
+    material.quantity_in_stock -= quantity
+    db.flush()
+    log_movement(db, material, -float(quantity), StockMovementReason.WRITE_OFF, created_by, note=reason.strip())
+    sync_shortage_task(db, material)
+    return material
 
 
 def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> MaterialRequest:
