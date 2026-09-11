@@ -69,6 +69,19 @@ class PendingActionOut(BaseModel):
     policy_version: str | None = None
 
 
+class AgentActivityOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    detail: str
+    autonomous: bool
+    related_section: str | None
+    related_path: str | None
+    related_label: str | None
+    created_at: datetime
+
+
 class AskResponse(BaseModel):
     chat_id: int
     status: Literal["completed", "pending_approval"]

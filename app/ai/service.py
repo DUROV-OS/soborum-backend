@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.ai.models import Chat, ChatDomain, ChatMode, PendingAction
+from app.ai.models import AgentActivity, Chat, ChatDomain, ChatMode, PendingAction
 from app.users.models import User
 
 
@@ -90,3 +90,9 @@ def list_own_pending_actions(db: Session, owner: User, chat_id: int | None = Non
     if chat_id is not None:
         query = query.filter(PendingAction.chat_id == chat_id)
     return query.order_by(PendingAction.id.desc()).all()
+
+
+def list_agent_activity(db: Session, limit: int = 30) -> list[AgentActivity]:
+    """Общий (не по владельцу) лог «Действия агента» — витрина, не привязана
+    к конкретному чату. См. app/ai/demo_seed.py, задача 0033."""
+    return db.query(AgentActivity).order_by(AgentActivity.id.desc()).limit(limit).all()
