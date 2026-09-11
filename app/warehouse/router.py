@@ -3,7 +3,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_module
+from app.core.deps import require_admin_or_module, require_module
 from app.db.session import get_db
 from app.production.schemas import MaterialRequestOut
 from app.users.models import User
@@ -30,6 +30,7 @@ from app.warehouse.schemas import (
     WarehouseMaterialCreate,
     WarehouseMaterialOut,
     WarehouseMaterialUpdate,
+    WriteOffRequest,
 )
 
 app = FastAPI(
@@ -39,6 +40,7 @@ app = FastAPI(
 )
 
 require_warehouse = require_module(AccessModule.WAREHOUSE)
+require_warehouse_or_admin = require_admin_or_module(AccessModule.WAREHOUSE)
 
 
 @app.get("/warehouses", response_model=list[str])
@@ -85,6 +87,19 @@ def update_material(
 ):
     material = warehouse_service.get_material_or_404(db, material_id)
     material = warehouse_service.update_material(db, material, payload)
+    db.commit()
+    return warehouse_service.to_out(db, material)
+
+
+@app.post("/materials/{material_id}/write-off", response_model=WarehouseMaterialOut)
+def write_off_material(
+    material_id: int,
+    payload: WriteOffRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_warehouse_or_admin),
+):
+    material = warehouse_service.get_material_or_404(db, material_id)
+    material = warehouse_service.write_off_material(db, material, payload.quantity, payload.reason, user)
     db.commit()
     return warehouse_service.to_out(db, material)
 
