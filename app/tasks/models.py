@@ -40,6 +40,10 @@ class TaskLinkType(str, enum.Enum):
     # такой задачи делает app/accounting интеграциями из разделов (задача 0011-f);
     # здесь — только значение enum под будущую сшивку.
     MONEY_MOVEMENT_APPROVAL = "money_movement_approval"
+    # Дозаполнить проводки после импорта платежей выпиской: ИИ не определил вид
+    # / нет назначения (см. app.accounting.payment_import, задача 0011-k).
+    # link_meta = {movement_ids, missing_fields}.
+    MONEY_MOVEMENT_BACKFILL = "money_movement_backfill"
 
 
 task_assignees = Table(

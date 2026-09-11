@@ -24,6 +24,7 @@ class MoneyMovementCreate(BaseModel):
     client_id: int | None = None
     employee_id: int | None = None
     supply_id: int | None = None
+    doc_date: datetime | None = None
     payment_purpose: str | None = None
     comment: str | None = None
     external_number: str | None = None
@@ -71,6 +72,7 @@ class MoneyMovementOut(BaseModel):
     initiator_name: str | None = None
     status: MoneyMovementStatus
     posted_at: datetime | None
+    doc_date: datetime | None
     cancel_reason: str | None
     payment_purpose: str | None
     comment: str | None

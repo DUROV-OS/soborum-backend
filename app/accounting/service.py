@@ -129,6 +129,7 @@ def create_money_movement(
         affects_profit=data.affects_profit,
         initiator_id=initiator_id,
         status=MoneyMovementStatus.DRAFT,
+        doc_date=data.doc_date,
         payment_purpose=data.payment_purpose,
         comment=data.comment,
         external_number=data.external_number,
@@ -180,8 +181,11 @@ def list_money_movements(
         stmt = stmt.where(MoneyMovement.employee_id == employee_id)
     if supply_id is not None:
         stmt = stmt.where(MoneyMovement.supply_id == supply_id)
-    # Период — по фактической дате проведения, а для непроведённых — по созданию.
-    effective_date = func.coalesce(MoneyMovement.posted_at, MoneyMovement.created_at)
+    # Период — по дате платёжного документа (импорт выпиской), иначе по дате
+    # проведения, иначе по созданию.
+    effective_date = func.coalesce(
+        MoneyMovement.doc_date, MoneyMovement.posted_at, MoneyMovement.created_at
+    )
     if date_from is not None:
         stmt = stmt.where(effective_date >= date_from)
     if date_to is not None:
