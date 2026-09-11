@@ -44,6 +44,34 @@ class PaymentPlan(str, enum.Enum):
     POST_PAYMENT = "post_payment"
 
 
+PAYMENT_PLAN_LABELS: dict[str, PaymentPlan] = {
+    "полная предоплата": PaymentPlan.FULL_PREPAYMENT,
+    "аванс + оплата после получения": PaymentPlan.ADVANCE_THEN_BALANCE,
+    "аванс и оплата после получения": PaymentPlan.ADVANCE_THEN_BALANCE,
+    "оплата после получения": PaymentPlan.POST_PAYMENT,
+}
+
+
+def parse_payment_plan(value: str) -> PaymentPlan:
+    """Принимает `payment_plan` и как значение enum (`full_prepayment`…), и как
+    русский лейбл («Полная предоплата»…) — Марина иногда передаёт то, что
+    сказал человек, а не точное значение enum. Неизвестное значение —
+    `ValueError` с перечислением допустимых (вызывающий код решает, во что это
+    завернуть)."""
+    try:
+        return PaymentPlan(value)
+    except ValueError:
+        pass
+    plan = PAYMENT_PLAN_LABELS.get(value.strip().lower())
+    if plan is not None:
+        return plan
+    allowed = ", ".join(f"'{p.value}'" for p in PaymentPlan)
+    labels = ", ".join(f"«{label.capitalize()}»" for label in (
+        "полная предоплата", "аванс + оплата после получения", "оплата после получения"
+    ))
+    raise ValueError(f"Неизвестный формат расчёта: {value!r}. Допустимые значения: {allowed} ({labels}).")
+
+
 CLIENT_STAGE_ORDER = [
     ClientStage.LEAD,
     ClientStage.DISCUSSION,
