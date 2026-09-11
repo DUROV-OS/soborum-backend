@@ -5,11 +5,17 @@
 сотруднику / поставке, а при их отсутствии — пропускает такие строки.
 """
 
-from app.accounting.models import MoneyMovement, MoneyMovementStatus, MoneySourceKind, MoneySubkind
+from app.accounting.models import (
+    MoneyMovement,
+    MoneyMovementStatus,
+    MoneySourceKind,
+    MoneySubkind,
+    SupplierOrder,
+)
 from app.accounting.seed import ensure_accounting_seed
 from app.clients import service as client_service
 from app.clients.schemas import ClientCreate
-from app.warehouse.models import Supply
+from app.warehouse.models import Supplier
 
 
 def _client(db):
@@ -22,8 +28,15 @@ def test_seed_populates_all_subkinds_and_statuses(db, make_user):
     admin = make_user(admin=True)
     worker = make_user()
     client = _client(db)
-    supply = Supply(supplier_name="ООО Лес", created_by_id=admin.id)
-    db.add(supply)
+    supplier = Supplier(name="ООО Лес", categories=[], contacts=[])
+    db.add(supplier)
+    db.flush()
+    order = SupplierOrder(
+        supplier_id=supplier.id,
+        items=[{"material": "Доска", "category": None, "quantity": 5, "unit_price": 3000}],
+        total_cost=15000,
+    )
+    db.add(order)
     db.commit()
 
     created = ensure_accounting_seed(db)
@@ -39,7 +52,7 @@ def test_seed_populates_all_subkinds_and_statuses(db, make_user):
     salary = next(r for r in rows if r.subkind is MoneySubkind.SALARY_PAYOUT)
     assert salary.source_kind is MoneySourceKind.EMPLOYEE and salary.employee_id == worker.id
     supply_pay = next(r for r in rows if r.subkind is MoneySubkind.SUPPLY_PAYMENT)
-    assert supply_pay.source_kind is MoneySourceKind.SUPPLY and supply_pay.supply_id == supply.id
+    assert supply_pay.source_kind is MoneySourceKind.SUPPLY and supply_pay.supply_id == order.id
 
     posted = [r for r in rows if r.status is MoneyMovementStatus.POSTED]
     assert posted and all(r.posted_at is not None for r in posted)
