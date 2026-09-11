@@ -3,6 +3,7 @@ Base.metadata know about all tables/relationships before create_all/Alembic
 autogenerate run. Import this module (not its contents) for the side effect.
 """
 
+from app.accounting import models as _accounting_models  # noqa: F401
 from app.agents import models as _agents_models  # noqa: F401
 from app.ai import models as _ai_models  # noqa: F401
 from app.board import models as _board_models  # noqa: F401
