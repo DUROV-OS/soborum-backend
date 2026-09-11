@@ -157,6 +157,14 @@ class Supplier(Base):
     max_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Взаиморасчёты (задача 0011-d). total_ordered — не инкремент/декремент, а
+    # пересчёт суммой всех SupplierOrder этого поставщика при каждой правке
+    # (app.accounting.service), чтобы не разъезжалось. total_paid — 0 в 0011-d,
+    # растёт при проведении MoneyMovement(supply_payment) в 0011-f. balance
+    # (total_ordered - total_paid) не хранится, считается в supplier_out().
+    total_ordered: Mapped[float] = mapped_column(Numeric(14, 2, asdecimal=False), nullable=False, default=0, server_default="0")
+    total_paid: Mapped[float] = mapped_column(Numeric(14, 2, asdecimal=False), nullable=False, default=0, server_default="0")
+
     price_items: Mapped[list["SupplierPriceItem"]] = relationship(
         back_populates="supplier",
         cascade="all, delete-orphan",
