@@ -1,14 +1,15 @@
 """Deterministic operational overview. No model-generated counts or stale permission cache."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
+from app.ai import cache as ai_cache
 from app.ai.models import Chat, PendingAction, PendingActionStatus
 from app.common.module_access import Module
 from app.core.config import settings
-from app.dashboard.schemas import DashboardAction, DashboardWidget, TodayDashboardOut
-from app.dashboard.service import build_snapshot
-from app.users.models import User
+from app.dashboard.schemas import DashboardAction, DashboardWidget, SectionSignalOut, TodayDashboardOut
+from app.dashboard.service import SECTION_BUILDERS, _snapshot_users, build_snapshot
+from app.users.models import User, UserRole
 
 # section, title, metric key, attention metric (a positive count needs attention)
 METRICS = [
@@ -81,3 +82,54 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
     return TodayDashboardOut(generated_at=datetime.now(timezone.utc), summary=summary,
                              widgets=widgets, actions=actions,
                              ai_configured=user.has_access(Module.AI) and bool(settings.anthropic_api_key))
+
+
+# --------------------------------------------------------- по одному разделу --
+
+SECTION_CACHE_TTL = timedelta(hours=6)
+
+
+def _section_snapshot(db: Session, user: User, section: str) -> dict | None:
+    """None — раздела нет в METRICS/ATTENTION (например «Совещание»/MAX/«Поставщики»
+    сейчас без посчитанного сигнала) или у пользователя нет доступа к нему."""
+    if section == "users":
+        return _snapshot_users(db) if user.role == UserRole.ADMIN else None
+    entry = SECTION_BUILDERS.get(section)
+    if entry is None:
+        return None
+    module, builder = entry
+    return builder(db) if user.has_access(module) else None
+
+
+def generate_section_signal(db: Session, user: User, section: str, force: bool = False) -> SectionSignalOut:
+    """Один раздел «Работы» отдельным запросом — то же действие, что попало бы
+    в `TodayDashboardOut.actions`, но не держит остальные плитки, если этот
+    раздел тяжело считать, и кэшируется на 6 часов (общий кеш на организацию —
+    факт один и тот же для всех, кому раздел вообще доступен; неавторизованный
+    запрос до кеша не доходит вовсе, см. `_section_snapshot` выше)."""
+    now = datetime.now(timezone.utc)
+    snapshot = _section_snapshot(db, user, section)
+    if snapshot is None:
+        return SectionSignalOut(section=section, action=None, generated_at=now)
+
+    cache_key = f"dashboard_section_signal:{section}"
+    if not force:
+        cached = ai_cache.get(db, cache_key, ttl=SECTION_CACHE_TTL)
+        if cached is not None:
+            return SectionSignalOut.model_validate(cached)
+
+    action = None
+    for sec, metric, title, description, href, tone in ATTENTION:
+        if sec != section:
+            continue
+        count = int(snapshot.get(metric, 0))
+        if count > 0:
+            action = DashboardAction(
+                id=f"{sec}:{metric}", section=sec, title=title,
+                description=description, href=href, count=count, tone=tone,
+            )
+            break
+
+    out = SectionSignalOut(section=section, action=action, generated_at=now)
+    ai_cache.set(db, cache_key, out.model_dump(mode="json"), now)
+    return out

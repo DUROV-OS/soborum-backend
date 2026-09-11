@@ -33,6 +33,15 @@ class TodayDashboardOut(BaseModel):
     ai_configured: bool = False
 
 
+class SectionSignalOut(BaseModel):
+    """Один раздел «Работы» — то же действие, что попало бы в `actions` у
+    `TodayDashboardOut`, отдельным кэшируемым запросом (см. app.dashboard.overview)."""
+
+    section: str
+    action: DashboardAction | None = None
+    generated_at: datetime
+
+
 class AktualnoeItem(BaseModel):
     cycle_id: int
     client_name: str
