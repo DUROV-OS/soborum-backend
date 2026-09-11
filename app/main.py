@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.accounting.router import app as accounting_app
 from app.accounting.seed import ensure_accounting_seed
 from app.agents.loop import start_shift_loop
+from app.ai.demo_seed import ensure_agent_activity_seed
 from app.agents.router import app as agents_app
 from app.clients.demo_seed import ensure_demo_clients_seed
 from app.clients.reconcile import start_stage_task_reconcile_loop
@@ -69,6 +70,11 @@ def on_startup() -> None:
         # cycles) so the "Актуальное" block on "Пульс" has activity to show
         # locally — never in prod, no-op once real clients exist.
         ensure_demo_clients_seed(db)
+        # Same contract again: demo rows for the "Действия агента" panel in
+        # "Марина" (0033) — never in prod, no-op once real activity exists.
+        # Runs after the demo clients/production/marketing seeds above so it
+        # can link to real ids when they exist.
+        ensure_agent_activity_seed(db)
     finally:
         db.close()
     start_shift_loop()

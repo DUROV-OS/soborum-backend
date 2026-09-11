@@ -27,6 +27,7 @@ from app.ai.models import (
 )
 from app.ai.tools import TOOLS
 from app.ai.schemas import (
+    AgentActivityOut,
     AskRequest,
     AskResponse,
     ChatDetailOut,
@@ -431,6 +432,13 @@ def reject_pending_action(pending_action_id: int, db: Session = Depends(get_db),
         reply=result.reply,
         pending_actions=[_to_pending_out(p) for p in result.pending_actions],
     )
+
+
+@app.get("/agent-actions", response_model=list[AgentActivityOut])
+def list_agent_actions(limit: int = 30, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    """Панель «Действия агента» справа от чата в «Марине» — общий (не по
+    владельцу) лог, сейчас наполняется только демо-сидом на localhost (0033)."""
+    return ai_service.list_agent_activity(db, limit=limit)
 
 
 #  --- Режим «Совещание» (0004-a): сессия + запись аудио, без ИИ ------------
