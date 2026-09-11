@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
+from app.accounting.router import app as accounting_app
 from app.agents.loop import start_shift_loop
 from app.agents.router import app as agents_app
 from app.clients.reconcile import start_stage_task_reconcile_loop
@@ -90,3 +91,4 @@ app.mount("/api/ai", ai_app)
 app.mount("/api/dashboard", dashboard_app)
 app.mount("/api/board", board_app)
 app.mount("/api/agents", agents_app)
+app.mount("/api/accounting", accounting_app)
