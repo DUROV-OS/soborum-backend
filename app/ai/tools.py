@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Callable
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.ai.models import ChatDomain
 from app.clients import service as client_service
-from app.clients.models import Client, ClientStage, OrderType, PaymentPlan
+from app.clients.models import Client, ClientStage, OrderType, parse_payment_plan
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientDocumentsUpdate,
@@ -241,13 +242,16 @@ def _update_client_project(db: Session, user: User, client_id: int, **fields) ->
 
 
 @register(
-    "update_client_documents", "Заполнить/изменить документные данные клиента (пока не зафиксированы).",
+    "update_client_documents", "Заполнить/изменить документные данные клиента (пока не зафиксированы). "
+    "payment_plan принимает значение enum ('full_prepayment', 'advance_then_balance', 'post_payment') "
+    "или русский лейбл («Полная предоплата», «Аванс + оплата после получения», «Оплата после получения») "
+    "— используй enum-значение, если знаешь его, иначе передай лейбл как есть.",
     {
         "client_id": {"type": "integer"},
         "final_price": {"type": "number"},
         "installation_address": {"type": "string"},
         "houses_count": {"type": "integer"},
-        "payment_plan": {"type": "string", "enum": [p.value for p in PaymentPlan]},
+        "payment_plan": {"type": "string"},
         "advance_amount": {"type": "number"},
     },
     ["client_id"],
@@ -255,6 +259,11 @@ def _update_client_project(db: Session, user: User, client_id: int, **fields) ->
 )
 def _update_client_documents(db: Session, user: User, client_id: int, **fields) -> dict:
     client = client_service.get_client_or_404(db, client_id)
+    if fields.get("payment_plan") is not None:
+        try:
+            fields["payment_plan"] = parse_payment_plan(fields["payment_plan"])
+        except ValueError as error:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     payload = ClientDocumentsUpdate(**{k: v for k, v in fields.items() if v is not None})
     client = client_service.update_documents(db, client, payload)
     return _serialize_client(client)
