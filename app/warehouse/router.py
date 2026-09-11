@@ -3,7 +3,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_module
+from app.core.deps import require_admin, require_module
 from app.db.session import get_db
 from app.production.schemas import MaterialRequestOut
 from app.users.models import User
@@ -197,8 +197,9 @@ def update_supplier(
 
 
 @app.delete("/suppliers/{supplier_id}", status_code=204)
-def delete_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
-    db.delete(warehouse_service.get_supplier_or_404(db, supplier_id))
+def delete_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
+    warehouse_service.delete_supplier(db, supplier)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
