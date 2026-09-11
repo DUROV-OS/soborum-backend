@@ -414,6 +414,25 @@ def build_rows(headers: list[str], data: list[list[str]], mapping: PaymentColumn
     return out
 
 
+TEMPLATE_HEADERS = ["Дата", "Контрагент", "Назначение платежа", "Сумма", "НДС", "№ документа", "Вид"]
+
+
+def generate_template() -> bytes:
+    """.xlsx-шаблон таблицы платежей: заголовки + пара строк-примеров
+    (приход со знаком «+», расход со знаком «−»)."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Платежи"
+    ws.append(TEMPLATE_HEADERS)
+    ws.append(["01.09.2026", "ООО «Ромашка»", "оплата по счёту №12 от 25.08.2026", 150000, 25000, "125", "доход от продажи"])
+    ws.append(["03.09.2026", "ИФНС №7", "НДС за 2 квартал 2026", -274000, 0, "126", "налоги и сборы"])
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
 def _row_amount_direction(row, mapping: PaymentColumnMapping, cell) -> tuple[float | None, MoneyDirection]:
     # 1) разнесённые дебет/кредит
     if mapping.amount_debit and mapping.amount_credit:

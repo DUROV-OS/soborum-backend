@@ -96,3 +96,42 @@ class MoneyMovementOut(BaseModel):
         elif mm.source_kind is MoneySourceKind.SUPPLY and mm.supply is not None:
             out.source_label = mm.supply.supplier_name or f"Поставка №{mm.supply.id}"
         return out
+
+
+# --- Импорт платежей таблицей (задача 0011-k) ---
+
+
+class MoneyMovementImportResult(BaseModel):
+    """Итог `POST /money-movements/import`."""
+
+    imported: int
+    skipped: int
+    ai_used: bool
+    note: str = ""
+    column_mapping: dict
+    # некритичные поля, для которых в файле не нашлось колонки (subkind / payment_purpose)
+    missing_fields: list[str] = []
+    # строк с контрагентом, не сопоставленным клиенту (нужен ручной источник)
+    unmatched_source: int = 0
+    # проводок с «предварительным» видом (other_income/other_expense) — кандидаты на ИИ-вид
+    preliminary_subkind: int = 0
+    created_ids: list[int] = []
+    backfill_suggested: bool = False
+
+
+class AiFillSubkindRequest(BaseModel):
+    movement_ids: list[int] = []
+
+
+class AiFillSubkindResult(BaseModel):
+    updated: int
+    skipped: int
+
+
+class ImportBackfillRequest(BaseModel):
+    movement_ids: list[int] = []
+    missing_fields: list[str] = []
+
+
+class ImportBackfillResult(BaseModel):
+    task_id: int
