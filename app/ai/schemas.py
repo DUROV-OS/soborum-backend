@@ -12,6 +12,12 @@ class AskRequest(BaseModel):
     message: str = ""
     file_ids: list[int] = Field(default_factory=list)  # ids from POST /ai/files, must belong to the caller
     mode: ChatMode = ChatMode.REQUIRE_APPROVAL  # only used when chat_id is absent (new chat)
+    # Extra context for the model about what's being discussed (e.g. "[client_id=6,
+    # Иванов И.]") - kept out of `message` so it never renders in the user's chat
+    # bubble. Stored as its own content block (type "context_note") and only
+    # unfolded into text when building the history sent to Claude - see
+    # app.ai.engine._resolve_content.
+    context_note: str | None = None
 
 
 class ChatModeUpdate(BaseModel):

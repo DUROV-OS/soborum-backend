@@ -99,7 +99,7 @@ def _ask(db: Session, user: User, domain: ChatDomain, payload: AskRequest) -> As
     if not settings.anthropic_api_key:
         raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
     chat = ai_service.get_or_create_chat(db, user, domain, payload.chat_id, payload.mode)
-    result = engine.run_turn(db, chat, user, payload.message, payload.file_ids)
+    result = engine.run_turn(db, chat, user, payload.message, payload.file_ids, payload.context_note)
     return AskResponse(
         chat_id=chat.id,
         status=result.status,
@@ -133,7 +133,7 @@ def _ask_stream(db: Session, user: User, domain: ChatDomain, payload: AskRequest
         raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
     chat = ai_service.get_or_create_chat(db, user, domain, payload.chat_id, payload.mode)
     # Preflight synchronously so a 400/409 is a real HTTP error, not a stream event.
-    engine.prepare_stream_turn(db, chat, user, payload.message, payload.file_ids)
+    engine.prepare_stream_turn(db, chat, user, payload.message, payload.file_ids, payload.context_note)
     chat_id, user_id = chat.id, user.id
     return _sse(engine.stream_turn(chat_id, user_id))
 
