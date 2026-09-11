@@ -4,6 +4,7 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from app.accounting.router import app as accounting_app
+from app.accounting.seed import ensure_accounting_seed
 from app.agents.loop import start_shift_loop
 from app.agents.router import app as agents_app
 from app.clients.reconcile import start_stage_task_reconcile_loop
@@ -55,6 +56,9 @@ def on_startup() -> None:
         # Idempotent: only actually creates anything the first time it runs
         # after a deploy, no-op on every restart after that (see the module).
         ensure_seed(db)
+        # Same contract: fills the accounting register with a mock set of
+        # money movements once, no-op if it already has rows.
+        ensure_accounting_seed(db)
     finally:
         db.close()
     start_shift_loop()
