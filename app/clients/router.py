@@ -202,6 +202,13 @@ def delete_note(
     db.commit()
 
 
+@app.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    client = client_service.get_client_or_404(db, client_id)
+    client_service.delete_client(db, client)
+    db.commit()
+
+
 @app.post("/reconcile-stage-tasks")
 def reconcile_stage_tasks(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """Ручной прогон сверки задач смены стадии с реальностью (та же, что раз в

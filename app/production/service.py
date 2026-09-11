@@ -2,10 +2,11 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
+from app.cycle.models import CycleStatus
 from app.production.models import MaterialRequest, MaterialRequestStatus, ModuleMaterial, Production, ProductionModule
 from app.production.schemas import ModuleCreate, ModuleMaterialCreate, ModuleUpdate
 from app.tasks import service as task_service
-from app.tasks.models import TaskLinkType
+from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
 from app.warehouse import service as warehouse_service
 from app.warehouse.models import StockMovementReason, WarehouseMaterial
@@ -37,6 +38,80 @@ def get_module_material_or_404(db: Session, module_material_id: int) -> ModuleMa
     if not material:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Материал модуля не найден")
     return material
+
+
+def delete_production(db: Session, production: Production) -> None:
+    """Удалить производство целиком (каскад на модули/материалы/заявки —
+    `ondelete=CASCADE` в БД). Отказ 409, если цикл ещё не завершён или есть
+    незавершённые заявки на материалы/задачи по его модулям — по умолчанию
+    запрет, а не тихий каскад (см. спеку 0030-b)."""
+    if production.cycle.status != CycleStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить производство: цикл ещё не завершён",
+        )
+    module_ids = [m.id for m in production.modules]
+    if module_ids:
+        pending = (
+            db.query(MaterialRequest.id)
+            .join(ModuleMaterial, MaterialRequest.module_material_id == ModuleMaterial.id)
+            .filter(
+                ModuleMaterial.module_id.in_(module_ids),
+                MaterialRequest.status == MaterialRequestStatus.PENDING,
+            )
+            .first()
+        )
+        if pending is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Нельзя удалить производство: есть незавершённые заявки на материалы",
+            )
+        open_task = (
+            db.query(Task.id).filter(Task.module_id.in_(module_ids), Task.status != TaskStatus.DONE).first()
+        )
+        if open_task is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Нельзя удалить производство: есть незавершённые задачи по модулям",
+            )
+        # Завершённые задачи остаются как история — снимаем ссылку на модуль,
+        # который вот-вот исчезнет (у tasks.module_id нет ondelete в БД).
+        db.query(Task).filter(Task.module_id.in_(module_ids)).update(
+            {"module_id": None}, synchronize_session="fetch"
+        )
+    db.delete(production)
+    db.flush()
+
+
+def delete_module(db: Session, module: ProductionModule) -> None:
+    """Удалить один модуль дома. Отказ 409, если по модулю уже выдавались
+    материалы со склада (реальная работа началась) или есть незавершённая
+    заявка/задача — по умолчанию запрет, а не тихий каскад."""
+    if any(float(m.quantity_provided) > 0 for m in module.materials):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить модуль: по нему уже выдавались материалы со склада",
+        )
+    pending = (
+        db.query(MaterialRequest.id)
+        .join(ModuleMaterial, MaterialRequest.module_material_id == ModuleMaterial.id)
+        .filter(ModuleMaterial.module_id == module.id, MaterialRequest.status == MaterialRequestStatus.PENDING)
+        .first()
+    )
+    if pending is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить модуль: есть незавершённая заявка на материалы",
+        )
+    open_task = db.query(Task.id).filter(Task.module_id == module.id, Task.status != TaskStatus.DONE).first()
+    if open_task is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить модуль: есть незавершённые задачи",
+        )
+    db.query(Task).filter(Task.module_id == module.id).update({"module_id": None}, synchronize_session="fetch")
+    db.delete(module)
+    db.flush()
 
 
 def create_module(db: Session, production_id: int, payload: ModuleCreate) -> ProductionModule:

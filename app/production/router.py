@@ -3,7 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_module
+from app.core.deps import require_admin, require_module
 from app.db.session import get_db
 from app.production import service as production_service
 from app.production.models import Production, ProductionModule
@@ -57,6 +57,13 @@ def get_production(production_id: int, db: Session = Depends(get_db), _: User = 
     return production_service.get_production_or_404(db, production_id)
 
 
+@app.delete("/{production_id}", status_code=204)
+def delete_production(production_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    production = production_service.get_production_or_404(db, production_id)
+    production_service.delete_production(db, production)
+    db.commit()
+
+
 @app.post("/{production_id}/modules", response_model=ModuleOut, status_code=201)
 def create_module(
     production_id: int,
@@ -87,6 +94,13 @@ def update_module(
     db.commit()
     db.refresh(module)
     return module
+
+
+@app.delete("/modules/{module_id}", status_code=204)
+def delete_module(module_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    module = production_service.get_module_or_404(db, module_id)
+    production_service.delete_module(db, module)
+    db.commit()
 
 
 @app.post("/modules/{module_id}/materials", response_model=ModuleMaterialOut, status_code=201)

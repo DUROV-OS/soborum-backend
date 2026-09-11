@@ -365,6 +365,21 @@ def get_supplier_or_404(db: Session, supplier_id: int) -> Supplier:
     return supplier
 
 
+def delete_supplier(db: Session, supplier: Supplier) -> None:
+    """Удалить поставщика. Прайс и заметки поставщика каскадятся на уровне БД
+    (`ondelete="CASCADE"`). Заказы поставщику (`app.accounting.SupplierOrder`)
+    ссылаются на него без `ondelete` — отказ 409 с понятным сообщением вместо
+    сырого `IntegrityError`, если такие заказы есть (0030-c)."""
+    has_orders = db.query(SupplierOrder.id).filter(SupplierOrder.supplier_id == supplier.id).first() is not None
+    if has_orders:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить поставщика — по нему есть заказы в разделе «Бухгалтерия»",
+        )
+    db.delete(supplier)
+    db.flush()
+
+
 def _price_item_or_404(supplier: Supplier, item_id: int) -> SupplierPriceItem:
     item = next((i for i in supplier.price_items if i.id == item_id), None)
     if not item:
