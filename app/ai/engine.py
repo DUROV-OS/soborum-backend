@@ -121,6 +121,18 @@ def _available_tools(chat: Chat, user: User) -> list[dict]:
     return tools
 
 
+def _drop_null_fields(block: dict) -> dict:
+    """The SDK's response content blocks carry response-only annotations
+    (e.g. `citations`, `parsed_output`) that come back as explicit `null`
+    when unused. Anthropic's *input* schema for replayed history doesn't
+    accept those keys at all ("Extra inputs are not permitted"), so a
+    second turn in the same chat 400s as soon as one gets persisted and
+    resent. Drop null-valued keys before every replay - self-heals chats
+    that already have a corrupted assistant message, same idea as
+    _prune_dangling_tool_blocks below."""
+    return {k: v for k, v in block.items() if v is not None}
+
+
 def _resolve_content(db: Session, content: list) -> list:
     resolved = []
     for block in content:
@@ -136,7 +148,7 @@ def _resolve_content(db: Session, content: list) -> list:
             # renders "text"/"tool_use"/"file_ref") never shows it to the user.
             resolved.append({"type": "text", "text": block["note"]})
         else:
-            resolved.append(block)
+            resolved.append(_drop_null_fields(block))
     return resolved
 
 
@@ -378,7 +390,7 @@ def _advance(db: Session, chat: Chat, user: User, *, voice_lead: bool = False) -
             logger.warning("AI provider call failed for chat %s: %s", chat.id, _describe_api_error(error))
             raise HTTPException(503, "Марина временно недоступна. Попробуйте позже.") from None
 
-        content_blocks = [block.model_dump(mode="json") for block in response.content]
+        content_blocks = [block.model_dump(mode="json", exclude_none=True) for block in response.content]
         assistant_message = _persist_assistant(db, chat, content_blocks)
 
         if response.stop_reason == "max_tokens":
@@ -512,7 +524,7 @@ def _advance_stream(db: Session, chat: Chat, user: User, *, voice_lead: bool = F
                     yield {"type": "block_end"}
             final = stream.get_final_message()
 
-        content_blocks = [block.model_dump(mode="json") for block in final.content]
+        content_blocks = [block.model_dump(mode="json", exclude_none=True) for block in final.content]
         assistant_message = _persist_assistant(db, chat, content_blocks)
 
         if final.stop_reason == "max_tokens":
