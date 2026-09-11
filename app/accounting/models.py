@@ -125,6 +125,11 @@ class MoneyMovement(Base):
         server_default=MoneyMovementStatus.DRAFT.name,
     )
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Дата платёжного документа (← moment МойСклад). Заполняется при импорте
+    # выпиской (0011-k); при ручном создании пусто. Реестр и период-фильтр
+    # используют её перед posted_at / created_at. Держим DateTime (а не Date)
+    # для однотипного coalesce со служебными датами.
+    doc_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     payment_purpose: Mapped[str | None] = mapped_column(String(500), nullable=True)

@@ -1,10 +1,10 @@
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.accounting import service as accounting_service
+from app.accounting import payment_import, service as accounting_service
 from app.accounting.models import (
     MoneyDirection,
     MoneyMovementStatus,
@@ -12,7 +12,12 @@ from app.accounting.models import (
     MoneySubkind,
 )
 from app.accounting.schemas import (
+    AiFillSubkindRequest,
+    AiFillSubkindResult,
+    ImportBackfillRequest,
+    ImportBackfillResult,
     MoneyMovementCreate,
+    MoneyMovementImportResult,
     MoneyMovementOut,
     MoneyMovementStatusChange,
     MoneyMovementUpdate,
@@ -45,6 +50,79 @@ def money_movement_enums(_: User = Depends(require_accounting)):
         "status": [e.value for e in MoneyMovementStatus],
         "source_kind": [e.value for e in MoneySourceKind],
     }
+
+
+@app.get("/money-movements/import/template")
+def download_import_template(_: User = Depends(require_accounting)):
+    """.xlsx-шаблон таблицы платежей для импорта."""
+    return Response(
+        content=payment_import.generate_template(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=payments_template.xlsx"},
+    )
+
+
+@app.post("/money-movements/import", response_model=MoneyMovementImportResult)
+def import_payments(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_accounting),
+):
+    """Импорт платежей таблицей (.xlsx/.csv). Колонки размечает ИИ (при
+    `ANTHROPIC_API_KEY`), иначе — словарь синонимов. Каждая строка → проводка в
+    `draft`. Без критичных колонок (сумма / направление / дата / контрагент /
+    НДС / номер документа) — отказ 400."""
+    headers, data = payment_import.read_table(file)
+    mapping = payment_import.resolve_mapping(headers, data)
+
+    missing_critical = mapping.missing_critical()
+    if missing_critical:
+        which = ", ".join(payment_import.CRITICAL_LABELS.get(m, m) for m in missing_critical)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Не удалось определить колонку {which}. Заголовки файла: {headers}",
+        )
+
+    outcome = accounting_service.import_payments(db, headers, data, mapping, user.id)
+    missing_optional = mapping.missing_optional()
+    return MoneyMovementImportResult(
+        imported=outcome.imported,
+        skipped=outcome.skipped,
+        ai_used=mapping.ai_used,
+        note=mapping.note,
+        column_mapping=mapping.as_dict(),
+        missing_fields=missing_optional,
+        unmatched_source=outcome.unmatched_source,
+        preliminary_subkind=outcome.preliminary_subkind,
+        created_ids=outcome.created_ids,
+        backfill_suggested=bool(outcome.imported)
+        and bool(outcome.preliminary_subkind or outcome.unmatched_source or missing_optional or outcome.skipped),
+    )
+
+
+@app.post("/money-movements/import/ai-fill-subkind", response_model=AiFillSubkindResult)
+def ai_fill_subkind(
+    payload: AiFillSubkindRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting),
+):
+    """ИИ уточняет вид (`subkind`) у черновых проводок по назначению платежа и
+    контрагенту. Меняет только `draft`. Без ключа ИИ — `updated = 0`."""
+    updated, skipped = accounting_service.ai_fill_subkinds(db, payload.movement_ids)
+    return AiFillSubkindResult(updated=updated, skipped=skipped)
+
+
+@app.post("/money-movements/import/backfill-task", response_model=ImportBackfillResult)
+def create_import_backfill_task(
+    payload: ImportBackfillRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting),
+):
+    """Одна задача «дозаполнить проводки после импорта» — по кнопке в отчёте."""
+    task_id = accounting_service.create_import_backfill_task(
+        db, payload.movement_ids, payload.missing_fields
+    )
+    return ImportBackfillResult(task_id=task_id)
 
 
 @app.get("/money-movements", response_model=list[MoneyMovementOut])
