@@ -194,6 +194,45 @@ def delete_note(db: Session, note: ClientNote) -> None:
     db.flush()
 
 
+def delete_client(db: Session, client: Client) -> None:
+    """Удалить клиента и его заметки (каскад на уровне БД). Отказ 409, если
+    цикл ещё не завершён, есть незакрытые задачи по клиенту или проводки,
+    ссылающиеся на него — по умолчанию запрет, а не тихий каскад (см. спеку
+    0030-a). Ни цикл, ни производство/монтаж под ним не трогаем — они остаются
+    как историческая запись."""
+    if client.cycle.status != CycleStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить клиента: цикл ещё не завершён",
+        )
+    open_task = (
+        db.query(Task)
+        .filter(
+            Task.link_type.in_([TaskLinkType.CLIENT_STAGE, TaskLinkType.CLIENT_BALANCE_PAYMENT]),
+            Task.link_id == client.id,
+            Task.status != TaskStatus.DONE,
+        )
+        .first()
+    )
+    if open_task is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить клиента: есть незавершённые задачи",
+        )
+    from app.accounting.models import MoneyMovement
+
+    has_money_movements = (
+        db.query(MoneyMovement.id).filter(MoneyMovement.client_id == client.id).first() is not None
+    )
+    if has_money_movements:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Нельзя удалить клиента: есть проводки по клиенту",
+        )
+    db.delete(client)
+    db.flush()
+
+
 _PROJECT_REQUIRED = ["order_type", "wishes_description", "estimated_price", "house_area", "layout_notes"]
 _DOCUMENTS_REQUIRED = ["final_price", "installation_address", "contract_file_id", "house_project_file_id"]
 
