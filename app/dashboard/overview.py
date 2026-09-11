@@ -28,6 +28,8 @@ METRICS = [
     ("tasks", "Просроченных задач", "overdue_tasks", True),
     ("users", "Активных сотрудников", "active_employees", False),
     ("users", "Сотрудников без доступа", "workers_without_module_access", True),
+    ("accounting", "Проводок в реестре", "total_movements", False),
+    ("accounting", "Черновиков без согласования", "draft_awaiting_approval", True),
 ]
 
 # Ordered by urgency, with labels describing what the facts actually establish.
@@ -41,6 +43,7 @@ ATTENTION = [
     ("clients", "leads_stuck_over_14_days", "Вернуться к зависшим обращениям", "Обращения остаются на этапе лида больше 14 дней.", "/clients", "warning"),
     ("marketing", "release_overdue", "Проверить план публикаций", "Плановая дата прошла, материалы ещё не выпущены.", "/marketing", "warning"),
     ("users", "workers_without_module_access", "Назначить доступ сотрудникам", "Активным сотрудникам не выдан доступ к рабочим разделам.", "/admin", "warning"),
+    ("accounting", "draft_awaiting_approval", "Проверить черновики проводок", "Проводки заведены, но ещё не согласованы.", "/accounting", "warning"),
 ]
 
 

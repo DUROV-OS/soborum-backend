@@ -6,6 +6,7 @@ from typing import Callable
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.accounting.models import MoneyMovement, MoneyMovementStatus
 from app.clients.models import Client, ClientStage, PaymentPlan
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
@@ -26,6 +27,7 @@ SECTION_LABELS: dict[str, str] = {
     "marketing": "Маркетинг",
     "tasks": "Задачи",
     "users": "Сотрудники",
+    "accounting": "Бухгалтерия",
 }
 
 
@@ -211,6 +213,15 @@ def _snapshot_users(db: Session) -> dict:
     }
 
 
+def _snapshot_accounting(db: Session) -> dict:
+    return {
+        "total_movements": db.query(MoneyMovement).count(),
+        "draft_awaiting_approval": db.query(MoneyMovement)
+        .filter(MoneyMovement.status == MoneyMovementStatus.DRAFT)
+        .count(),
+    }
+
+
 SECTION_BUILDERS: dict[str, tuple[Module, Callable[[Session], dict]]] = {
     "clients": (Module.CLIENTS, _snapshot_clients),
     "production": (Module.PRODUCTION, _snapshot_production),
@@ -219,6 +230,7 @@ SECTION_BUILDERS: dict[str, tuple[Module, Callable[[Session], dict]]] = {
     "warehouse": (Module.WAREHOUSE, _snapshot_warehouse),
     "marketing": (Module.MARKETING, _snapshot_marketing),
     "tasks": (Module.TASKS, _snapshot_tasks),
+    "accounting": (Module.ACCOUNTING, _snapshot_accounting),
 }
 
 

@@ -25,6 +25,7 @@ from app.installation.router import app as installation_app
 from app.marketing.router import app as marketing_app
 from app.max.router import app as max_app
 from app.production.router import app as production_app
+from app.tasks.demo_seed import ensure_demo_workforce_seed
 from app.tasks.router import app as tasks_app
 from app.users.router import app as auth_app
 from app.users.service import bootstrap_admin
@@ -60,6 +61,10 @@ def on_startup() -> None:
         # Same contract: fills the accounting register with a mock set of
         # money movements once, no-op if it already has rows.
         ensure_accounting_seed(db)
+        # Same contract again: demo workforce (mock employees + tasks they
+        # work through, plus a couple of salary movements) for local
+        # demos/acceptance — never in prod, no-op once real workers exist.
+        ensure_demo_workforce_seed(db)
         # Same contract again: a few demo clients (and their auto-created
         # cycles) so the "Актуальное" block on "Пульс" has activity to show
         # locally — never in prod, no-op once real clients exist.
