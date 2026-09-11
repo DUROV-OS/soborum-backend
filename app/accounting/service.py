@@ -6,16 +6,20 @@
 запись неизменяема; шаги `draft`/`approved` — процессный слой поверх `state`.
 """
 
+import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.accounting import payment_import
 from app.accounting.models import (
     EXPENSE_SUBKINDS,
     INCOME_SUBKINDS,
     SUBKIND_REQUIRED_SOURCE,
+    MoneyAssessment,
     MoneyDirection,
     MoneyMovement,
     MoneyMovementStatus,
@@ -24,6 +28,11 @@ from app.accounting.models import (
 )
 from app.accounting.schemas import MoneyMovementCreate, MoneyMovementUpdate
 from app.clients.models import Client
+from app.common.module_access import Module as AccessModule
+from app.core.config import settings
+from app.tasks import service as task_service
+from app.tasks.models import TaskLinkType
+from app.users import service as user_service
 from app.users.models import User
 from app.warehouse.models import Supply
 
@@ -270,3 +279,238 @@ def change_status(
     db.commit()
     db.refresh(mm)
     return mm
+
+
+# --------------------------------------------------------------------------- #
+# Импорт платежей таблицей (задача 0011-k)                                    #
+# --------------------------------------------------------------------------- #
+
+_PRELIMINARY = {
+    MoneyDirection.INCOME: MoneySubkind.OTHER_INCOME,
+    MoneyDirection.EXPENSE: MoneySubkind.OTHER_EXPENSE,
+}
+
+
+@dataclass
+class ImportOutcome:
+    imported: int = 0
+    skipped: int = 0
+    created_ids: list[int] = field(default_factory=list)
+    preliminary_subkind: int = 0  # проводок с «предварительным» видом
+    unmatched_source: int = 0  # строк с контрагентом, не сопоставленным клиенту
+    missing_payment_purpose: int = 0
+
+
+def _norm_name(value: str) -> str:
+    value = value.lower().replace("ё", "е")
+    value = re.sub(r'["«»\'`]', "", value)
+    value = re.sub(r"\b(ооо|оао|зао|пао|ип|ао)\b", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _match_client_by_name(db: Session, name: str | None) -> Client | None:
+    """Уверенное совпадение по имени: точное (без ОПФ/регистра/кавычек) или
+    единственное вхождение. Иначе None — гадать не будем."""
+    if not name or len(name.strip()) < 3:
+        return None
+    target = _norm_name(name)
+    if not target:
+        return None
+    clients = db.execute(select(Client)).scalars().all()
+    exact = [c for c in clients if _norm_name(c.full_name) == target]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return None
+    contained = [
+        c for c in clients
+        if _norm_name(c.full_name) and (_norm_name(c.full_name) in target or target in _norm_name(c.full_name))
+    ]
+    return contained[0] if len(contained) == 1 else None
+
+
+def import_payments(
+    db: Session,
+    headers: list[str],
+    data: list[list[str]],
+    mapping: payment_import.PaymentColumnMapping,
+    initiator_id: int,
+) -> ImportOutcome:
+    built = payment_import.build_rows(headers, data, mapping)
+    outcome = ImportOutcome(skipped=built.skipped)
+
+    for row in built.items:
+        subkind = row.subkind or _PRELIMINARY[row.direction]
+        preliminary = row.subkind is None
+
+        client = _match_client_by_name(db, row.counterparty)
+        source_kind = MoneySourceKind.NONE
+        client_id: int | None = None
+        comment = None
+        if client is not None:
+            client_id = client.id
+            source_kind = MoneySourceKind.CLIENT
+            if preliminary and row.direction is MoneyDirection.INCOME:
+                subkind = MoneySubkind.SALE_INCOME
+                preliminary = False
+        elif row.counterparty:
+            comment = f"Контрагент: {row.counterparty.strip()}"
+            outcome.unmatched_source += 1
+
+        mm = MoneyMovement(
+            direction=_direction_for(subkind),
+            subkind=subkind,
+            amount=row.amount,
+            currency="RUB",
+            tax=row.tax or 0,
+            assessment=MoneyAssessment.ACTUAL,
+            affects_profit=True,
+            initiator_id=initiator_id,
+            status=MoneyMovementStatus.DRAFT,
+            doc_date=row.doc_date,
+            payment_purpose=row.payment_purpose,
+            comment=comment,
+            external_number=row.external_number,
+            source_kind=source_kind,
+            client_id=client_id,
+        )
+        db.add(mm)
+        db.flush()
+        outcome.created_ids.append(mm.id)
+        outcome.imported += 1
+        if preliminary:
+            outcome.preliminary_subkind += 1
+        if not row.payment_purpose:
+            outcome.missing_payment_purpose += 1
+
+    db.commit()
+    return outcome
+
+
+_SUBKIND_TOOL = {
+    "name": "assign_subkinds",
+    "description": "Определить вид (подвид) проводки по назначению платежа и контрагенту.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "assignments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "subkind": {
+                            "type": "string",
+                            "description": "Строго одно из: sale_income, salary_payout, supply_payment, tax, rent, other_income, other_expense. Пусто, если не определяется.",
+                        },
+                    },
+                    "required": ["id", "subkind"],
+                },
+            }
+        },
+        "required": ["assignments"],
+    },
+}
+
+
+def ai_fill_subkinds(db: Session, movement_ids: list[int]) -> tuple[int, int]:
+    """ИИ проставляет точный `subkind` черновым проводкам по назначению платежа
+    и контрагенту. Меняет только draft; непроведённые/чужие статусы не трогает.
+    Без ключа ИИ — (0, сколько просили)."""
+    rows = (
+        db.execute(
+            select(MoneyMovement).where(
+                MoneyMovement.id.in_(movement_ids or [-1]),
+                MoneyMovement.status == MoneyMovementStatus.DRAFT,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return 0, 0
+    if not payment_import.ai_enabled():
+        return 0, len(rows)
+
+    from app.core.llm import anthropic_client
+
+    listing = "\n".join(
+        f"{r.id}. назначение: {r.payment_purpose or '—'} | контрагент: "
+        f"{(r.comment or '').replace('Контрагент: ', '') or (r.client.full_name if r.client else '—')} | "
+        f"направление: {r.direction.value}"
+        for r in rows
+    )
+    user = (
+        "Виды проводок: sale_income (доход от продажи), salary_payout (выплата "
+        "зарплаты), supply_payment (оплата поставки), tax (налоги и сборы), rent "
+        "(аренда), other_income (прочий доход), other_expense (прочий расход).\n\n"
+        "Проводки (id. назначение | контрагент | направление):\n" + listing + "\n\n"
+        "Для каждой выбери вид. Если не определяется однозначно — пустая строка."
+    )
+    try:
+        client = anthropic_client(timeout=45.0, max_retries=2)
+        response = client.messages.create(
+            model=settings.ai_model,
+            max_tokens=1024,
+            system="Ты классифицируешь платежи по видам. Отвечай только вызовом assign_subkinds.",
+            messages=[{"role": "user", "content": user}],
+            tools=[_SUBKIND_TOOL],
+            tool_choice={"type": "tool", "name": "assign_subkinds"},
+        )
+    except Exception:  # noqa: BLE001
+        return 0, len(rows)
+
+    block = next((b for b in response.content if b.type == "tool_use"), None)
+    if block is None:
+        return 0, len(rows)
+
+    by_id = {r.id: r for r in rows}
+    allowed = {m.value for m in MoneySubkind}
+    updated = 0
+    for item in (block.input or {}).get("assignments") or []:
+        try:
+            rid = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        val = str(item.get("subkind") or "").strip()
+        mm = by_id.get(rid)
+        if mm is None or val not in allowed:
+            continue
+        new_subkind = MoneySubkind(val)
+        # не навешиваем вид, требующий источник, которого у проводки нет
+        required = SUBKIND_REQUIRED_SOURCE.get(new_subkind)
+        if required is not None and mm.source_kind is not required:
+            continue
+        if mm.subkind != new_subkind:
+            mm.subkind = new_subkind
+            mm.direction = _direction_for(new_subkind)
+            updated += 1
+
+    db.commit()
+    return updated, len(rows) - updated
+
+
+_BACKFILL_LABEL = {
+    "subkind": "вид проводки",
+    "payment_purpose": "назначение платежа",
+    "source": "источник (контрагент)",
+}
+
+
+def create_import_backfill_task(
+    db: Session, movement_ids: list[int], missing_fields: list[str]
+) -> int:
+    """Одна задача «дозаполнить проводки после импорта» — по кнопке в отчёте."""
+    parts = [_BACKFILL_LABEL.get(m, m) for m in missing_fields] or ["проверить импортированные проводки"]
+    count = len(movement_ids)
+    assignees = user_service.users_with_access(db, AccessModule.ACCOUNTING)
+    task = task_service.create_link_task(
+        db,
+        title=f"Дозаполнить {count} проводок после импорта: {', '.join(parts)}",
+        link_type=TaskLinkType.MONEY_MOVEMENT_BACKFILL,
+        link_id=movement_ids[0] if movement_ids else 0,
+        assignees=assignees,
+        link_meta={"movement_ids": movement_ids, "missing": missing_fields},
+    )
+    db.commit()
+    return task.id
