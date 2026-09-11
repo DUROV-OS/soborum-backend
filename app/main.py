@@ -7,6 +7,7 @@ from app.accounting.router import app as accounting_app
 from app.accounting.seed import ensure_accounting_seed
 from app.agents.loop import start_shift_loop
 from app.agents.router import app as agents_app
+from app.clients.demo_seed import ensure_demo_clients_seed
 from app.clients.reconcile import start_stage_task_reconcile_loop
 from app.ai import mcp_auth
 from app.ai.router import app as ai_app
@@ -59,6 +60,10 @@ def on_startup() -> None:
         # Same contract: fills the accounting register with a mock set of
         # money movements once, no-op if it already has rows.
         ensure_accounting_seed(db)
+        # Same contract again: a few demo clients (and their auto-created
+        # cycles) so the "Актуальное" block on "Пульс" has activity to show
+        # locally — never in prod, no-op once real clients exist.
+        ensure_demo_clients_seed(db)
     finally:
         db.close()
     start_shift_loop()
