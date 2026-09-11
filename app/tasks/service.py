@@ -56,6 +56,23 @@ def is_mine_or_claimable(task: Task, user: User) -> bool:
     return is_claimable_for(task, user)
 
 
+def claim_task(db: Session, task: Task, user: User) -> Task:
+    if task.status != TaskStatus.READY or task.assignees:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Задачу нельзя взять: она уже не свободна",
+        )
+    section = task_section(task)
+    if section is not None and not user.has_access(section):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Нет доступа к разделу «{section.value}»",
+        )
+    task.assignees = [user]
+    db.flush()
+    return task
+
+
 def get_task_or_404(db: Session, task_id: int) -> Task:
     task = db.get(Task, task_id)
     if not task:

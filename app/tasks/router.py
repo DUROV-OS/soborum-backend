@@ -116,6 +116,15 @@ def update_task_status(
     return TaskOut.from_model(task)
 
 
+@app.post("/{task_id}/claim", response_model=TaskOut)
+def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depends(require_tasks)):
+    task = task_service.get_task_or_404(db, task_id)
+    task = task_service.claim_task(db, task, current)
+    db.commit()
+    db.refresh(task)
+    return TaskOut.from_model(task)
+
+
 @app.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks)):
     task = task_service.get_task_or_404(db, task_id)
