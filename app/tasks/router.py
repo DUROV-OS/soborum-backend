@@ -8,7 +8,7 @@ from app.core.deps import require_module
 from app.db.session import get_db
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
-from app.tasks.schemas import TaskCreate, TaskOut, TaskStatusUpdate, TaskUpdate
+from app.tasks.schemas import TaskCreate, TaskOut, TaskScope, TaskStatusUpdate, TaskUpdate
 from app.users.models import User
 
 app = FastAPI(
@@ -24,7 +24,8 @@ require_tasks = require_module(Module.TASKS)
 @app.get("/", response_model=list[TaskOut])
 def list_tasks(
     db: Session = Depends(get_db),
-    _: User = Depends(require_tasks),
+    current: User = Depends(require_tasks),
+    scope: TaskScope = TaskScope.MINE,
     assignee_id: int | None = None,
     reviewer_id: int | None = None,
     module_id: int | None = None,
@@ -32,6 +33,9 @@ def list_tasks(
     task_status: TaskStatus | None = Query(None, alias="status"),
     overdue: bool | None = None,
 ):
+    if scope == TaskScope.ALL and not current.has_access(Module.TASKS_ALL):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа к «Все задачи»")
+
     query = db.query(Task)
     if assignee_id is not None:
         query = query.filter(Task.assignees.any(User.id == assignee_id))
@@ -44,6 +48,12 @@ def list_tasks(
     if task_status is not None:
         query = query.filter(Task.status == task_status)
     tasks = query.order_by(Task.id.desc()).all()
+
+    if scope == TaskScope.MINE:
+        tasks = [t for t in tasks if task_service.is_mine_or_claimable(t, current)]
+    elif scope == TaskScope.CLAIMABLE:
+        tasks = [t for t in tasks if task_service.is_claimable_for(t, current)]
+
     if overdue:
         now = datetime.now(timezone.utc)
         tasks = [t for t in tasks if t.deadline and t.deadline < now and t.status != TaskStatus.DONE]

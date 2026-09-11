@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.common.files import FileAsset
+from app.common.module_access import Module
 from app.tasks import sync as task_sync
 from app.tasks import timelog
 from app.tasks.models import Task, TaskLinkType, TaskStatus
@@ -15,6 +16,44 @@ ALLOWED_MANUAL_TRANSITIONS = {
     (TaskStatus.IN_REVIEW, TaskStatus.IN_PROGRESS): "reviewer",
     (TaskStatus.IN_REVIEW, TaskStatus.DONE): "reviewer",
 }
+
+# Which access-controlled section a linked task belongs to - see task 0021.
+# Tasks not in this map (link_type NONE without a module_id) have no section
+# restriction: they are visible/claimable by anyone with access to `tasks`.
+_LINK_TYPE_SECTION: dict[TaskLinkType, Module] = {
+    TaskLinkType.CLIENT_STAGE: Module.CLIENTS,
+    TaskLinkType.CLIENT_BALANCE_PAYMENT: Module.CLIENTS,
+    TaskLinkType.CONTENT_STAGE: Module.MARKETING,
+    TaskLinkType.WAREHOUSE_REQUEST: Module.WAREHOUSE,
+    TaskLinkType.WAREHOUSE_SHORTAGE: Module.WAREHOUSE,
+    TaskLinkType.SUPPLIER_PRICE_BACKFILL: Module.WAREHOUSE,
+    TaskLinkType.MONEY_MOVEMENT_APPROVAL: Module.ACCOUNTING,
+    TaskLinkType.MONEY_MOVEMENT_BACKFILL: Module.ACCOUNTING,
+}
+
+
+def task_section(task: Task) -> Module | None:
+    """The section this task is bound to, if any (module_id set -> production;
+    otherwise looked up from link_type). None means unbound - open to everyone
+    with access to `tasks`."""
+    if task.module_id is not None:
+        return Module.PRODUCTION
+    return _LINK_TYPE_SECTION.get(task.link_type)
+
+
+def is_claimable_for(task: Task, user: User) -> bool:
+    """A "свободная задача": ready, no assignees yet, and either unbound or in
+    a section this user has access to."""
+    if task.status != TaskStatus.READY or task.assignees:
+        return False
+    section = task_section(task)
+    return section is None or user.has_access(section)
+
+
+def is_mine_or_claimable(task: Task, user: User) -> bool:
+    if user in task.assignees or user in task.reviewers:
+        return True
+    return is_claimable_for(task, user)
 
 
 def get_task_or_404(db: Session, task_id: int) -> Task:

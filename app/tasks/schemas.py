@@ -1,3 +1,4 @@
+import enum
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
@@ -5,6 +6,15 @@ from pydantic import BaseModel, ConfigDict
 from app.common.files import FileAssetOut
 from app.tasks.models import TaskLinkType, TaskStatus
 from app.users.schemas import UserOut
+
+
+class TaskScope(str, enum.Enum):
+    """`scope` query param of GET /api/tasks/ - see app.tasks.service for the
+    actual filtering logic and task 0021 for the spec."""
+
+    MINE = "mine"
+    CLAIMABLE = "claimable"
+    ALL = "all"
 
 
 class TaskCreate(BaseModel):
