@@ -9,6 +9,7 @@ from app.accounting.models import MoneyMovement, MoneyMovementStatus, MoneySourc
 from app.accounting.seed import ensure_accounting_seed
 from app.clients import service as client_service
 from app.clients.schemas import ClientCreate
+from app.core.config import settings
 from app.warehouse.models import Supply
 
 
@@ -74,5 +75,14 @@ def test_seed_skips_rows_without_their_source(db, make_user):
 
 
 def test_seed_noop_without_admin(db):
+    assert ensure_accounting_seed(db) == 0
+    assert db.query(MoneyMovement).count() == 0
+
+
+def test_seed_does_not_run_in_prod(db, make_user, monkeypatch):
+    """Критично: это мок-данные для локальной разработки/приёмки, никогда не
+    для боевой базы — на свежем проде реестр должен остаться пустым."""
+    make_user(admin=True)
+    monkeypatch.setattr(settings, "app_env", "prod")
     assert ensure_accounting_seed(db) == 0
     assert db.query(MoneyMovement).count() == 0
