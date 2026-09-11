@@ -37,7 +37,7 @@ def test_consult_ask_requires_login_not_ai_module(api, make_user, monkeypatch):
     user = make_user()  # worker without Module.AI
     monkeypatch.setattr("app.core.config.settings.anthropic_api_key", "sk-test")
 
-    def fake_turn(db, chat, owner, message, file_ids=None):
+    def fake_turn(db, chat, owner, message, file_ids=None, **_kwargs):
         from app.ai.engine import TurnResult
 
         return TurnResult(status="completed", reply="Кратко: смотрю факт.")

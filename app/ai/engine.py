@@ -19,7 +19,7 @@ from app.ai import attachments as ai_attachments
 from app.ai import mcp_auth
 from app.ai.guardian import authorize_tool, decision_record
 from app.ai.models import Chat, ChatDomain, ChatMode, Message, PendingAction, PendingActionStatus
-from app.ai.prompts import SYSTEM_PROMPTS
+from app.ai.prompts import SYSTEM_PROMPTS, VOICE_LEAD_INSTRUCTION
 from app.ai.tools import DOMAIN_TOOLS, TOOLS
 from app.common.files import FileAsset
 from app.core.config import settings
@@ -85,7 +85,7 @@ def _describe_api_error(error: BaseException) -> str:
     return " | ".join(parts)
 
 
-def _system_for(chat: Chat, db: Session | None = None) -> str:
+def _system_for(chat: Chat, db: Session | None = None, *, voice_lead: bool = False) -> str:
     text = SYSTEM_PROMPTS[chat.domain]
     if chat.domain != ChatDomain.GENERAL:
         return text
@@ -101,6 +101,11 @@ def _system_for(chat: Chat, db: Session | None = None) -> str:
             "\n\nЖивой срез базы DurovOS не собрался. "
             "Не утверждай числа по клиентам, складу, производству и задачам — данных нет."
         )
+    # Только «Совещание» и «Агенты → Консультация» реально озвучивают ответ —
+    # см. VOICE_LEAD_INSTRUCTION. Обычный текстовый чат «Марина» этот формат
+    # не разбирает и показал бы «Голосом: …» пользователю сырым текстом.
+    if voice_lead:
+        text += VOICE_LEAD_INSTRUCTION
     return text
 
 
@@ -273,7 +278,7 @@ def _execute_tool(db: Session, name: str, tool_input: dict, user: User, chat: Ch
 
 
 def run_turn(db: Session, chat: Chat, user: User, user_text: str, file_ids: list[int] | None = None,
-             context_note: str | None = None) -> TurnResult:
+             context_note: str | None = None, *, voice_lead: bool = False) -> TurnResult:
     if db.query(PendingAction).filter(PendingAction.chat_id == chat.id,
                                      PendingAction.status == PendingActionStatus.PENDING).first():
         raise HTTPException(409, "Сначала подтвердите или отклоните ожидающие действия")
@@ -288,7 +293,7 @@ def run_turn(db: Session, chat: Chat, user: User, user_text: str, file_ids: list
     db.add(Message(chat_id=chat.id, role="user", content=content))
     db.commit()
     db.refresh(chat)
-    return _advance(db, chat, user)
+    return _advance(db, chat, user, voice_lead=voice_lead)
 
 
 _MAX_TOKENS_NOTE = (
@@ -361,9 +366,9 @@ def _run_tool_round(
     return "continue", []
 
 
-def _advance(db: Session, chat: Chat, user: User) -> TurnResult:
+def _advance(db: Session, chat: Chat, user: User, *, voice_lead: bool = False) -> TurnResult:
     # Build system once: the DurovOS-database briefing must not re-fetch on every tool round.
-    system = _system_for(chat, db)
+    system = _system_for(chat, db, voice_lead=voice_lead)
     for _ in range(MAX_ITERATIONS):
         history = _build_history(db, chat)
         tools = _available_tools(chat, user)
@@ -459,7 +464,7 @@ def prepare_stream_turn(
     db.commit()
 
 
-def stream_turn(chat_id: int, user_id: int) -> Iterator[dict]:
+def stream_turn(chat_id: int, user_id: int, *, voice_lead: bool = False) -> Iterator[dict]:
     """Drive the tool-use loop on a dedicated session (the request session is
     gone by the time this generator is iterated by StreamingResponse) and yield
     event dicts: block_start / text / block_end / status / pending_approval /
@@ -471,7 +476,7 @@ def stream_turn(chat_id: int, user_id: int) -> Iterator[dict]:
         if chat is None or user is None:
             yield {"type": "error", "detail": "Чат недоступен."}
             return
-        yield from _advance_stream(db, chat, user)
+        yield from _advance_stream(db, chat, user, voice_lead=voice_lead)
     except anthropic.APIError as error:
         logger.warning("AI provider call failed mid-stream for chat %s: %s", chat_id, _describe_api_error(error))
         yield {"type": "error", "detail": "Марина временно недоступна. Попробуйте позже."}
@@ -482,8 +487,8 @@ def stream_turn(chat_id: int, user_id: int) -> Iterator[dict]:
         db.close()
 
 
-def _advance_stream(db: Session, chat: Chat, user: User) -> Iterator[dict]:
-    system = _system_for(chat, db)
+def _advance_stream(db: Session, chat: Chat, user: User, *, voice_lead: bool = False) -> Iterator[dict]:
+    system = _system_for(chat, db, voice_lead=voice_lead)
     for _ in range(MAX_ITERATIONS):
         history = _build_history(db, chat)
         tools = _available_tools(chat, user)
@@ -541,7 +546,9 @@ def _advance_stream(db: Session, chat: Chat, user: User) -> Iterator[dict]:
     yield {"type": "done", "chat_id": chat.id, "note": _STEP_LIMIT_NOTE}
 
 
-def resolve_pending_action(db: Session, pending_action: PendingAction, approve: bool, decided_by: User) -> TurnResult:
+def resolve_pending_action(
+    db: Session, pending_action: PendingAction, approve: bool, decided_by: User, *, voice_lead: bool = False,
+) -> TurnResult:
     # Serialize sibling decisions so their JSON resolutions cannot overwrite one another.
     chat = (db.query(Chat).filter(Chat.id == pending_action.chat_id)
             .populate_existing().with_for_update().one())
@@ -593,7 +600,7 @@ def resolve_pending_action(db: Session, pending_action: PendingAction, approve: 
     db.refresh(chat)
 
     try:
-        return _advance(db, chat, decided_by)
+        return _advance(db, chat, decided_by, voice_lead=voice_lead)
     except HTTPException as exc:
         if exc.status_code != 503:
             raise

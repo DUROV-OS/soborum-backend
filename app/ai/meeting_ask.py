@@ -59,7 +59,7 @@ def answer_meeting_question(db: Session, user: User, meeting: Meeting, question:
     db.commit()
     db.refresh(chat)
     try:
-        result = engine.run_turn(db, chat, user, message)
+        result = engine.run_turn(db, chat, user, message, voice_lead=True)
     finally:
         db.delete(chat)
         db.commit()
