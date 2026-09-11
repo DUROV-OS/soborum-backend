@@ -25,6 +25,7 @@ class StockMovementReason(str, enum.Enum):
     REQUIRED_ADJUSTED_UP = "required_adjusted_up"
     REQUEST_REJECTED_RETURN = "request_rejected_return"
     MANUAL_ADJUST = "manual_adjust"
+    WRITE_OFF = "write_off"
 
 
 class Warehouse(str, enum.Enum):
@@ -122,6 +123,10 @@ class StockMovement(Base):
         Enum(StockMovementReason, name="stock_movement_reason"), nullable=False
     )
     reference_id: Mapped[int | None] = mapped_column(nullable=True)
+    # Причина списания (StockMovementReason.WRITE_OFF) — свободный текст,
+    # например «брак», «недостача при инвентаризации». NULL для остальных
+    # причин движения — у них есть свой строгий смысл через reason/reference_id.
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
