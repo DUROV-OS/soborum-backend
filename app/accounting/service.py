@@ -25,8 +25,15 @@ from app.accounting.models import (
     MoneyMovementStatus,
     MoneySourceKind,
     MoneySubkind,
+    SupplierOrder,
+    SupplierOrderStatus,
 )
-from app.accounting.schemas import MoneyMovementCreate, MoneyMovementUpdate
+from app.accounting.schemas import (
+    MoneyMovementCreate,
+    MoneyMovementUpdate,
+    SupplierOrderCreate,
+    SupplierOrderUpdate,
+)
 from app.clients.models import Client
 from app.common.module_access import Module as AccessModule
 from app.core.config import settings
@@ -34,7 +41,8 @@ from app.tasks import service as task_service
 from app.tasks.models import TaskLinkType
 from app.users import service as user_service
 from app.users.models import User
-from app.warehouse.models import Supply
+from app.warehouse import service as warehouse_service
+from app.warehouse.models import Supplier
 
 # Разрешённые переходы статуса — только вперёд + отмена из любого «живого».
 _ALLOWED_TRANSITIONS: dict[MoneyMovementStatus, set[MoneyMovementStatus]] = {
@@ -112,8 +120,8 @@ def _assert_source_exists(
         raise _bad_request("Клиент-источник не найден")
     if kind is MoneySourceKind.EMPLOYEE and db.get(User, employee_id) is None:
         raise _bad_request("Сотрудник-источник не найден")
-    if kind is MoneySourceKind.SUPPLY and db.get(Supply, supply_id) is None:
-        raise _bad_request("Поставка-источник не найдена")
+    if kind is MoneySourceKind.SUPPLY and db.get(SupplierOrder, supply_id) is None:
+        raise _bad_request("Заказ у поставщика — источник не найден")
 
 
 def create_money_movement(
@@ -514,3 +522,124 @@ def create_import_backfill_task(
     )
     db.commit()
     return task.id
+
+
+# --- Заказы у поставщика (задача 0011-d) ---
+
+_ORDER_ALLOWED_TRANSITIONS: dict[SupplierOrderStatus, set[SupplierOrderStatus]] = {
+    SupplierOrderStatus.ORDERED: {SupplierOrderStatus.IN_TRANSIT},
+    SupplierOrderStatus.IN_TRANSIT: {SupplierOrderStatus.RECEIVED},
+    SupplierOrderStatus.RECEIVED: set(),
+}
+_ORDER_EDITABLE_STATUSES = {SupplierOrderStatus.ORDERED, SupplierOrderStatus.IN_TRANSIT}
+
+
+def _compute_order_total(items: list) -> float:
+    total = 0.0
+    for item in items:
+        quantity = item.quantity if hasattr(item, "quantity") else item["quantity"]
+        unit_price = item.unit_price if hasattr(item, "unit_price") else item["unit_price"]
+        total += float(quantity) * float(unit_price)
+    return total
+
+
+def _validate_order_items(items: list) -> None:
+    if not items:
+        raise _bad_request("Заказ должен содержать хотя бы одну позицию")
+    for item in items:
+        material = item.material if hasattr(item, "material") else item.get("material")
+        quantity = item.quantity if hasattr(item, "quantity") else item.get("quantity")
+        unit_price = item.unit_price if hasattr(item, "unit_price") else item.get("unit_price")
+        if not material:
+            raise _bad_request("У позиции заказа не указан материал")
+        if quantity is None or quantity <= 0:
+            raise _bad_request(f"Позиция «{material}» — количество должно быть положительным")
+        if unit_price is None or unit_price <= 0:
+            raise _bad_request(f"Позиция «{material}» — цена должна быть положительной")
+
+
+def get_supplier_order_or_404(db: Session, order_id: int) -> SupplierOrder:
+    order = db.get(SupplierOrder, order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказ не найден")
+    return order
+
+
+def list_supplier_orders(
+    db: Session,
+    *,
+    supplier_id: int | None = None,
+    status_: SupplierOrderStatus | None = None,
+) -> list[SupplierOrder]:
+    stmt = select(SupplierOrder)
+    if supplier_id is not None:
+        stmt = stmt.where(SupplierOrder.supplier_id == supplier_id)
+    if status_ is not None:
+        stmt = stmt.where(SupplierOrder.status == status_)
+    stmt = stmt.order_by(SupplierOrder.created_at.desc(), SupplierOrder.id.desc())
+    return list(db.execute(stmt).scalars().all())
+
+
+def create_supplier_order(db: Session, data: SupplierOrderCreate) -> SupplierOrder:
+    if db.get(Supplier, data.supplier_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Поставщик не найден")
+    _validate_order_items(data.items)
+
+    order = SupplierOrder(
+        supplier_id=data.supplier_id,
+        items=[item.model_dump() for item in data.items],
+        total_cost=_compute_order_total(data.items),
+        expected_at=data.expected_at,
+        comment=data.comment,
+        status=SupplierOrderStatus.ORDERED,
+    )
+    db.add(order)
+    db.commit()
+    warehouse_service.recalculate_supplier_totals(db, data.supplier_id)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrderUpdate) -> SupplierOrder:
+    if order.status not in _ORDER_EDITABLE_STATUSES:
+        raise _conflict(f"Заказ в статусе «{order.status.value}» редактировать нельзя")
+
+    payload = data.model_dump(exclude_unset=True)
+    if "items" in payload:
+        _validate_order_items(data.items)
+        order.items = [item.model_dump() for item in data.items]
+        order.total_cost = _compute_order_total(data.items)
+    if "expected_at" in payload:
+        order.expected_at = data.expected_at
+    if "comment" in payload:
+        order.comment = data.comment
+
+    db.commit()
+    warehouse_service.recalculate_supplier_totals(db, order.supplier_id)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+def delete_supplier_order(db: Session, order: SupplierOrder) -> None:
+    if order.status is not SupplierOrderStatus.ORDERED:
+        raise _conflict("Удалить можно только заказ в статусе «заказана»")
+    supplier_id = order.supplier_id
+    db.delete(order)
+    db.commit()
+    warehouse_service.recalculate_supplier_totals(db, supplier_id)
+    db.commit()
+
+
+def change_supplier_order_status(
+    db: Session, order: SupplierOrder, to: SupplierOrderStatus
+) -> SupplierOrder:
+    if to not in _ORDER_ALLOWED_TRANSITIONS[order.status]:
+        raise _conflict(f"Недопустимый переход статуса «{order.status.value}» → «{to.value}»")
+    order.status = to
+    if to is SupplierOrderStatus.RECEIVED:
+        order.received_at = _utcnow()
+    db.commit()
+    db.refresh(order)
+    return order

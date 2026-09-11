@@ -183,6 +183,11 @@ class SupplierOut(BaseModel):
     price_items: list[SupplierPriceItemOut] = []
     price_items_count: int = 0
     notes: list[SupplierNoteOut] = []
+    # Взаиморасчёты (0011-d): total_paid растёт при проведённой оплате
+    # поставки только начиная с 0011-f; balance = total_ordered - total_paid.
+    total_ordered: float = 0
+    total_paid: float = 0
+    balance: float = 0
 
 
 class LinkMaxChatIn(BaseModel):
