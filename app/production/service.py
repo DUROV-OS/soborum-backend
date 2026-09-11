@@ -77,7 +77,7 @@ def delete_production(db: Session, production: Production) -> None:
         # Завершённые задачи остаются как история — снимаем ссылку на модуль,
         # который вот-вот исчезнет (у tasks.module_id нет ondelete в БД).
         db.query(Task).filter(Task.module_id.in_(module_ids)).update(
-            {"module_id": None}, synchronize_session=False
+            {"module_id": None}, synchronize_session="fetch"
         )
     db.delete(production)
     db.flush()
@@ -109,7 +109,7 @@ def delete_module(db: Session, module: ProductionModule) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя удалить модуль: есть незавершённые задачи",
         )
-    db.query(Task).filter(Task.module_id == module.id).update({"module_id": None}, synchronize_session=False)
+    db.query(Task).filter(Task.module_id == module.id).update({"module_id": None}, synchronize_session="fetch")
     db.delete(module)
     db.flush()
 
