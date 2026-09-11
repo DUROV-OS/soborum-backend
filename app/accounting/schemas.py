@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -9,6 +9,7 @@ from app.accounting.models import (
     MoneyMovementStatus,
     MoneySourceKind,
     MoneySubkind,
+    SupplierOrderStatus,
 )
 
 
@@ -94,7 +95,58 @@ class MoneyMovementOut(BaseModel):
         elif mm.source_kind is MoneySourceKind.EMPLOYEE and mm.employee is not None:
             out.source_label = mm.employee.full_name
         elif mm.source_kind is MoneySourceKind.SUPPLY and mm.supply is not None:
-            out.source_label = mm.supply.supplier_name or f"Поставка №{mm.supply.id}"
+            supplier_name = mm.supply.supplier.name if mm.supply.supplier else None
+            out.source_label = f"{supplier_name} — заказ №{mm.supply.id}" if supplier_name else f"Заказ №{mm.supply.id}"
+        return out
+
+
+# --- Заказы у поставщика (задача 0011-d) ---
+
+
+class SupplierOrderItem(BaseModel):
+    material: str
+    category: str | None = None
+    quantity: float
+    unit_price: float
+
+
+class SupplierOrderCreate(BaseModel):
+    supplier_id: int
+    items: list[SupplierOrderItem]
+    expected_at: date | None = None
+    comment: str | None = None
+
+
+class SupplierOrderUpdate(BaseModel):
+    items: list[SupplierOrderItem] | None = None
+    expected_at: date | None = None
+    comment: str | None = None
+
+
+class SupplierOrderStatusChange(BaseModel):
+    to: SupplierOrderStatus
+
+
+class SupplierOrderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    supplier_id: int
+    supplier_name: str | None = None
+    items: list[SupplierOrderItem]
+    total_cost: float
+    currency: str
+    expected_at: date | None
+    status: SupplierOrderStatus
+    received_at: datetime | None
+    comment: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_order(cls, order) -> "SupplierOrderOut":
+        out = cls.model_validate(order)
+        out.supplier_name = order.supplier.name if order.supplier else None
         return out
 
 

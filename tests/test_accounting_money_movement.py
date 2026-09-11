@@ -8,10 +8,11 @@
 
 import pytest
 
+from app.accounting.models import SupplierOrder
 from app.clients import service as client_service
 from app.clients.schemas import ClientCreate
 from app.common.module_access import Module
-from app.warehouse.models import Supply
+from app.warehouse.models import Supplier
 
 
 @pytest.fixture
@@ -31,10 +32,17 @@ def _client(db, name="Клиент Тест"):
 
 
 def _supply(db, user):
-    supply = Supply(supplier_name="ООО Брус", created_by_id=user.id)
-    db.add(supply)
+    supplier = Supplier(name="ООО Брус", categories=[], contacts=[])
+    db.add(supplier)
+    db.flush()
+    order = SupplierOrder(
+        supplier_id=supplier.id,
+        items=[{"material": "Брус", "category": None, "quantity": 10, "unit_price": 5000}],
+        total_cost=50000,
+    )
+    db.add(order)
     db.commit()
-    return supply
+    return order
 
 
 def _create(api_client, **overrides):

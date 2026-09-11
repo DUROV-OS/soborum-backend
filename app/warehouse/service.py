@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.accounting.models import SupplierOrder
 from app.common.module_access import Module as AccessModule
 from app.production.models import MaterialRequest, MaterialRequestStatus, ModuleMaterial, ProductionModule
 from app.tasks import service as task_service
@@ -616,6 +618,24 @@ def delete_supplier_note(db: Session, supplier: Supplier, note_id: int) -> None:
     db.flush()
 
 
+def recalculate_supplier_totals(db: Session, supplier_id: int) -> None:
+    """Пересчитывает `Supplier.total_ordered` как сумму `total_cost` всех его
+    `SupplierOrder` (задача 0011-d). Полный пересчёт, а не инкремент/декремент —
+    не разъезжается при правке/удалении заказов. Вызывается сервисом заказов
+    после create/update/delete; `total_paid` эта функция не трогает (растёт
+    при проведении оплаты — 0011-f)."""
+    supplier = db.get(Supplier, supplier_id)
+    if supplier is None:
+        return
+    total = (
+        db.query(func.sum(SupplierOrder.total_cost))
+        .filter(SupplierOrder.supplier_id == supplier_id)
+        .scalar()
+    )
+    supplier.total_ordered = float(total or 0)
+    db.flush()
+
+
 def supplier_out(supplier: Supplier) -> SupplierOut:
     return SupplierOut(
         id=supplier.id,
@@ -638,4 +658,7 @@ def supplier_out(supplier: Supplier) -> SupplierOut:
             )
             for n in supplier.notes
         ],
+        total_ordered=float(supplier.total_ordered or 0),
+        total_paid=float(supplier.total_paid or 0),
+        balance=float(supplier.total_ordered or 0) - float(supplier.total_paid or 0),
     )

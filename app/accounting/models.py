@@ -17,9 +17,9 @@
 """
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, Text, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -81,6 +81,52 @@ SUBKIND_REQUIRED_SOURCE: dict[MoneySubkind, MoneySourceKind] = {
     MoneySubkind.SALARY_PAYOUT: MoneySourceKind.EMPLOYEE,
     MoneySubkind.SUPPLY_PAYMENT: MoneySourceKind.SUPPLY,
 }
+
+
+class SupplierOrderStatus(str, enum.Enum):
+    """Статус физического исполнения заказа. Только вперёд, без пропуска шага
+    (валидируется в service). Независим от оплаты — proведение
+    `MoneyMovement(supply_payment)` не меняет этот статус и наоборот (0011-f)."""
+
+    ORDERED = "ordered"
+    IN_TRANSIT = "in_transit"
+    RECEIVED = "received"
+
+
+class SupplierOrder(Base):
+    """Заказ у поставщика (`app.warehouse.Supplier`): материалы, стоимость,
+    срок, статус исполнения. Источник для `MoneyMovement.supply_id`
+    (подвид `supply_payment`) — задача 0011-d.
+
+    Не путать с `app.warehouse.Supply` — это отдельная, более старая сущность
+    «мгновенный приход материалов на склад» (без цены и статусов, привязана
+    к `warehouse_materials`), не связанная с этой фичей."""
+
+    __tablename__ = "supplier_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
+    # позиции заказа: [{"material", "category", "quantity", "unit_price"}] —
+    # цена на момент заказа, а не диапазон, как в SupplierPriceItem
+    items: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # сумма по items, считается сервисом при создании/правке — не приходит от клиента
+    total_cost: Mapped[float] = mapped_column(Numeric(14, 2, asdecimal=False), nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB", server_default="RUB")
+    expected_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[SupplierOrderStatus] = mapped_column(
+        Enum(SupplierOrderStatus, name="supplier_order_status"),
+        nullable=False,
+        default=SupplierOrderStatus.ORDERED,
+        server_default=SupplierOrderStatus.ORDERED.name,
+    )
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    supplier: Mapped["Supplier"] = relationship()  # noqa: F821
 
 
 class MoneyMovement(Base):
@@ -147,7 +193,9 @@ class MoneyMovement(Base):
     )
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
     employee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    supply_id: Mapped[int | None] = mapped_column(ForeignKey("supplies.id"), nullable=True)
+    # ссылается на SupplierOrder (эта же модель, задача 0011-d), а не на
+    # app.warehouse.Supply — см. докстринг SupplierOrder
+    supply_id: Mapped[int | None] = mapped_column(ForeignKey("supplier_orders.id"), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -157,4 +205,4 @@ class MoneyMovement(Base):
     initiator: Mapped["User"] = relationship(foreign_keys=[initiator_id])  # noqa: F821
     client: Mapped["Client"] = relationship(foreign_keys=[client_id])  # noqa: F821
     employee: Mapped["User"] = relationship(foreign_keys=[employee_id])  # noqa: F821
-    supply: Mapped["Supply"] = relationship(foreign_keys=[supply_id])  # noqa: F821
+    supply: Mapped["SupplierOrder"] = relationship(foreign_keys=[supply_id])
