@@ -82,6 +82,17 @@ SUBKIND_REQUIRED_SOURCE: dict[MoneySubkind, MoneySourceKind] = {
     MoneySubkind.SUPPLY_PAYMENT: MoneySourceKind.SUPPLY,
 }
 
+# Русский лейбл подвида — для заголовков задач на согласование (0011-f).
+MONEY_SUBKIND_LABELS: dict[MoneySubkind, str] = {
+    MoneySubkind.SALE_INCOME: "доход от продажи",
+    MoneySubkind.SALARY_PAYOUT: "выплата зарплаты",
+    MoneySubkind.SUPPLY_PAYMENT: "оплата поставки",
+    MoneySubkind.TAX: "налоги и сборы",
+    MoneySubkind.RENT: "аренда",
+    MoneySubkind.OTHER_INCOME: "прочий доход",
+    MoneySubkind.OTHER_EXPENSE: "прочий расход",
+}
+
 
 class SupplierOrderStatus(str, enum.Enum):
     """Статус физического исполнения заказа. Только вперёд, без пропуска шага

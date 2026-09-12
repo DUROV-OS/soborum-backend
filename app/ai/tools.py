@@ -278,7 +278,7 @@ def _update_client_documents(db: Session, user: User, client_id: int, **fields) 
 )
 def _update_client_payment(db: Session, user: User, client_id: int, is_paid: bool) -> dict:
     client = client_service.get_client_or_404(db, client_id)
-    client = client_service.update_payment(db, client, ClientPaymentUpdate(is_paid=is_paid))
+    client = client_service.update_payment(db, client, ClientPaymentUpdate(is_paid=is_paid), user.id)
     return _serialize_client(client)
 
 
@@ -292,7 +292,7 @@ def _update_client_payment(db: Session, user: User, client_id: int, is_paid: boo
 def _update_client_balance_payment(db: Session, user: User, client_id: int, balance_paid: bool) -> dict:
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.record_balance_payment(
-        db, client, ClientBalancePaymentUpdate(balance_paid=balance_paid)
+        db, client, ClientBalancePaymentUpdate(balance_paid=balance_paid), user.id
     )
     return _serialize_client(client)
 

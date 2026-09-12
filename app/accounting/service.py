@@ -18,6 +18,7 @@ from app.accounting import payment_import
 from app.accounting.models import (
     EXPENSE_SUBKINDS,
     INCOME_SUBKINDS,
+    MONEY_SUBKIND_LABELS,
     SUBKIND_REQUIRED_SOURCE,
     MoneyAssessment,
     MoneyDirection,
@@ -149,6 +150,21 @@ def _assert_no_open_salary_payout(db: Session, employee_id: int | None) -> None:
         raise _conflict("У сотрудника уже есть незакрытая зарплатная проводка")
 
 
+def _create_approval_task(db: Session, mm: MoneyMovement) -> None:
+    """0011-f: любая проводка в `draft` (авто- или вручную из 0011-e) порождает
+    задачу на согласование — закрывается в `change_status` при уходе из `draft`."""
+    assignees = user_service.users_with_access(db, AccessModule.ACCOUNTING)
+    label = MONEY_SUBKIND_LABELS.get(mm.subkind, mm.subkind.value)
+    task_service.create_link_task(
+        db,
+        title=f"Согласовать проводку «{label}» на {mm.amount:,.0f} ₽".replace(",", " "),
+        link_type=TaskLinkType.MONEY_MOVEMENT_APPROVAL,
+        link_id=mm.id,
+        assignees=assignees,
+        link_meta={"subkind": mm.subkind.value, "amount": mm.amount},
+    )
+
+
 def create_money_movement(
     db: Session, data: MoneyMovementCreate, initiator_id: int
 ) -> MoneyMovement:
@@ -186,7 +202,20 @@ def create_money_movement(
     db.add(mm)
     db.commit()
     db.refresh(mm)
+    _create_approval_task(db, mm)
+    db.commit()
     return mm
+
+
+def record_sale_income(
+    db: Session, *, client_id: int, amount: float, initiator_id: int
+) -> MoneyMovement:
+    """0011-f: авто-проводка «доход от продажи» на переходе `is_paid`/
+    `balance_paid` клиента в `True`. Побочный эффект флоу оплаты клиента —
+    исключения ловит и логирует вызывающий код (`app.clients.service`), чтобы
+    ошибка здесь не роняла основной запрос."""
+    data = MoneyMovementCreate(subkind=MoneySubkind.SALE_INCOME, amount=amount, client_id=client_id)
+    return create_money_movement(db, data, initiator_id=initiator_id)
 
 
 def get_money_movement(db: Session, mm_id: int) -> MoneyMovement:
@@ -321,6 +350,8 @@ def change_status(
     if to not in _ALLOWED_TRANSITIONS[mm.status]:
         raise _conflict(f"Недопустимый переход статуса «{mm.status.value}» → «{to.value}»")
 
+    was_draft = mm.status is MoneyMovementStatus.DRAFT
+
     if to is MoneyMovementStatus.POSTED:
         if mm.amount is None or mm.amount <= 0:
             raise _conflict("Нельзя провести проводку без положительной суммы")
@@ -339,6 +370,13 @@ def change_status(
     mm.status = to
     db.commit()
     db.refresh(mm)
+
+    # Задача на согласование (0011-f) закрывается, как только проводка
+    # покидает «черновик» — независимо от того, куда именно она перешла.
+    if was_draft:
+        task_service.close_open_link_task(db, TaskLinkType.MONEY_MOVEMENT_APPROVAL, mm.id)
+        db.commit()
+
     return mm
 
 

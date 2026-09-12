@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
@@ -18,6 +19,8 @@ from app.tasks import service as task_service
 from app.tasks import sync as task_sync
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
+
+logger = logging.getLogger(__name__)
 
 
 def _next_stage(stage: ClientStage) -> ClientStage | None:
@@ -122,15 +125,63 @@ def update_documents(db: Session, client: Client, payload: ClientDocumentsUpdate
     return client
 
 
-def update_payment(db: Session, client: Client, payload: ClientPaymentUpdate) -> Client:
+def _sale_income_amount_on_is_paid(client: Client) -> float | None:
+    """Сумма «дохода от продажи» на переходе `is_paid` → `True` — зависит от
+    формата расчёта (0011-f): `POST_PAYMENT` на этом шаге денег не даёт."""
+    if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
+        return client.final_price
+    if client.payment_plan == PaymentPlan.ADVANCE_THEN_BALANCE:
+        return client.advance_amount
+    return None
+
+
+def _sale_income_amount_on_balance_paid(client: Client) -> float | None:
+    """Сумма «дохода от продажи» на переходе `balance_paid` → `True`.
+    `FULL_PREPAYMENT` сюда не доходит — этот шаг для неё недоступен."""
+    if client.payment_plan == PaymentPlan.ADVANCE_THEN_BALANCE:
+        if client.final_price is None or client.advance_amount is None:
+            return None
+        return client.final_price - client.advance_amount
+    if client.payment_plan == PaymentPlan.POST_PAYMENT:
+        return client.final_price
+    return None
+
+
+def _record_sale_income(db: Session, client: Client, amount: float | None, initiator_id: int | None) -> None:
+    """Побочный эффект оплаты клиента — создаёт проводку «доход от продажи» в
+    «Бухгалтерии». Ошибка здесь не должна ронять основной флоу оплаты клиента
+    (0011-f) — логируем и продолжаем."""
+    if not amount or amount <= 0 or initiator_id is None:
+        return
+    from app.accounting import service as accounting_service
+
+    try:
+        accounting_service.record_sale_income(
+            db, client_id=client.id, amount=amount, initiator_id=initiator_id
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Не удалось создать проводку «доход от продажи» для клиента %s", client.id)
+
+
+def update_payment(
+    db: Session, client: Client, payload: ClientPaymentUpdate, initiator_id: int | None = None
+) -> Client:
     if client.payment_locked_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Статус оплаты уже зафиксирован")
+    was_paid = client.is_paid
     client.is_paid = payload.is_paid
     db.flush()
+    if payload.is_paid and not was_paid:
+        _record_sale_income(db, client, _sale_income_amount_on_is_paid(client), initiator_id)
     return client
 
 
-def record_balance_payment(db: Session, client: Client, payload: ClientBalancePaymentUpdate) -> Client:
+def record_balance_payment(
+    db: Session,
+    client: Client,
+    payload: ClientBalancePaymentUpdate,
+    initiator_id: int | None = None,
+) -> Client:
     """Отметить приём остатка «после получения». Осмысленно только на
     «постоплате» и только для планов с оплатой после получения дома —
     у полной предоплаты остаток погашен ещё на стадии «оплата»."""
@@ -144,11 +195,14 @@ def record_balance_payment(db: Session, client: Client, payload: ClientBalancePa
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Остаток «после получения» принимается на стадии «постоплата»",
         )
+    was_paid = client.balance_paid
     client.balance_paid = payload.balance_paid
     client.balance_paid_at = datetime.now(timezone.utc) if payload.balance_paid else None
     db.flush()
     if payload.balance_paid:
         task_service.close_open_link_task(db, TaskLinkType.CLIENT_BALANCE_PAYMENT, client.id)
+        if not was_paid:
+            _record_sale_income(db, client, _sale_income_amount_on_balance_paid(client), initiator_id)
     return client
 
 
