@@ -1,8 +1,8 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -51,6 +51,13 @@ class HouseModelCard(Base):
     confirmation_label: Mapped[str] = mapped_column(String(255), nullable=False)
 
     source_note_path: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # NULL там, где на сайте durov.house нет собственной страницы модели
+    # (индивидуальные проекты, barn-dh83) — см. 0043-c, никогда не выдумывается.
+    planning_image_id: Mapped[int | None] = mapped_column(
+        ForeignKey("file_assets.id"), nullable=True
+    )
+    planning_image: Mapped["FileAsset | None"] = relationship()  # noqa: F821
 
     characteristics_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     planning_md: Mapped[str | None] = mapped_column(Text, nullable=True)

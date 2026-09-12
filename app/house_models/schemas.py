@@ -44,6 +44,7 @@ class HouseModelDetailOut(BaseModel):
     confirmation: HouseModelConfirmation
     confirmation_label: str
     source_note_path: str
+    planning_image_id: int | None
 
     characteristics_md: str | None
     planning_md: str | None
