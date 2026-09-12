@@ -286,3 +286,16 @@ def change_supplier_order_status(
     order = accounting_service.get_supplier_order_or_404(db, order_id)
     order = accounting_service.change_supplier_order_status(db, order, payload.to)
     return SupplierOrderOut.from_order(order)
+
+
+@app.post("/supplier-orders/{order_id}/pay", response_model=MoneyMovementOut, status_code=201)
+def pay_supplier_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_accounting),
+):
+    """0011-f: создаёт проводку «оплата поставки» на полную сумму заказа.
+    Повторный вызов, пока заказ уже оплачивается/оплачен, — `409`."""
+    order = accounting_service.get_supplier_order_or_404(db, order_id)
+    mm = accounting_service.pay_supplier_order(db, order, initiator_id=user.id)
+    return MoneyMovementOut.from_movement(mm)

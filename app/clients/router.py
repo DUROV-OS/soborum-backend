@@ -90,10 +90,10 @@ def update_payment(
     client_id: int,
     payload: ClientPaymentUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    current_user: User = Depends(require_clients),
 ):
     client = client_service.get_client_or_404(db, client_id)
-    client = client_service.update_payment(db, client, payload)
+    client = client_service.update_payment(db, client, payload, current_user.id)
     db.commit()
     db.refresh(client)
     return client
@@ -104,10 +104,10 @@ def record_balance_payment(
     client_id: int,
     payload: ClientBalancePaymentUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    current_user: User = Depends(require_clients),
 ):
     client = client_service.get_client_or_404(db, client_id)
-    client = client_service.record_balance_payment(db, client, payload)
+    client = client_service.record_balance_payment(db, client, payload, current_user.id)
     db.commit()
     db.refresh(client)
     return client
