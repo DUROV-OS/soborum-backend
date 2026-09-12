@@ -16,7 +16,6 @@ from app.clients.schemas import (
     ClientCreate,
     ClientDocumentsUpdate,
     ClientPaymentUpdate,
-    ClientProjectUpdate,
 )
 from app.cycle.models import CycleStatus
 from app.installation import service as installation_service
@@ -24,23 +23,17 @@ from app.installation.models import InstallationStage
 from app.tasks import sync as task_sync
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 
-PROJECT = ClientProjectUpdate(
-    order_type="single", wishes_description="дом у озера", estimated_price=1_000_000,
-    house_area=120, layout_notes="две спальни",
-)
-
 
 def _make_client(db, plan=PaymentPlan.FULL_PREPAYMENT, advance_amount=None, final_price=2_000_000):
     client = client_service.create_client(
         db, ClientCreate(full_name="Иван Тест", phone="+70000000000", email="ivan@example.com")
     )
     client_service.transition_stage(db, client)  # LEAD -> DISCUSSION
-    client_service.update_project(db, client, PROJECT)
     client_service.transition_stage(db, client)  # DISCUSSION -> APPROVAL
     client.contract_file_id = 1
     client.house_project_file_id = 1
     client_service.update_documents(db, client, ClientDocumentsUpdate(
-        final_price=final_price, installation_address="г. Тест, ул. Тест, 1",
+        order_type="single", final_price=final_price, installation_address="г. Тест, ул. Тест, 1",
         payment_plan=plan, advance_amount=advance_amount,
     ))
     client_service.transition_stage(db, client)  # APPROVAL -> PAYMENT
@@ -99,12 +92,11 @@ def test_advance_plan_needs_advance_amount_before_payment_stage(db):
         db, ClientCreate(full_name="Аванс", phone="+7", email="a@example.com")
     )
     client_service.transition_stage(db, client)
-    client_service.update_project(db, client, PROJECT)
     client_service.transition_stage(db, client)
     client.contract_file_id = 1
     client.house_project_file_id = 1
     client_service.update_documents(db, client, ClientDocumentsUpdate(
-        final_price=2_000_000, installation_address="адрес",
+        order_type="single", final_price=2_000_000, installation_address="адрес",
         payment_plan=PaymentPlan.ADVANCE_THEN_BALANCE,
     ))
     with pytest.raises(HTTPException) as err:
