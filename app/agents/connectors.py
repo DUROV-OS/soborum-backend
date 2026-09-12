@@ -83,16 +83,15 @@ def _snapshot(db: Session | None = None) -> dict:
 
 
 def _finance_facts(db: Session) -> dict:
+    # 0044 removed estimated_price (rough pre-contract price) — there's no
+    # longer a "rough vs final" figure to compare, so the discount metric
+    # goes with it. Pipeline value now reflects only clients with a final,
+    # fixed price (final_price is set at APPROVAL, before it there's none).
     rows = db.query(Client).all()
-    priced = [c for c in rows if c.final_price or c.estimated_price]
-    pipeline = sum(float(c.final_price or c.estimated_price or 0) for c in rows)
-    discounts = [
-        (float(c.estimated_price) - float(c.final_price)) / float(c.estimated_price) * 100
-        for c in rows
-        if c.estimated_price and c.final_price and float(c.final_price) < float(c.estimated_price)
-    ]
+    priced = [c for c in rows if c.final_price]
+    pipeline = sum(float(c.final_price or 0) for c in rows)
     unpaid_pipeline = sum(
-        float(c.final_price or c.estimated_price or 0)
+        float(c.final_price or 0)
         for c in rows
         if c.stage == ClientStage.PAYMENT and c.is_paid is not True
     )
@@ -100,8 +99,6 @@ def _finance_facts(db: Session) -> dict:
         "clients_with_price": len(priced),
         "pipeline_value": pipeline,
         "unpaid_pipeline": unpaid_pipeline,
-        "discounts_over_5pct": sum(1 for pct in discounts if pct > 5),
-        "max_discount_pct": round(max(discounts), 1) if discounts else 0.0,
     }
 
 
@@ -248,8 +245,7 @@ def _finance_line(d: dict) -> tuple[str, str]:
         (
             f"Клиентов с ценой {d.get('clients_with_price', 0)}, портфель "
             f"{_money(d.get('pipeline_value', 0))}, не оплачено на стадии оплаты "
-            f"{_money(d.get('unpaid_pipeline', 0))}. Скидок сверх 5% в базе "
-            f"{d.get('discounts_over_5pct', 0)}, максимальная {d.get('max_discount_pct', 0)}%."
+            f"{_money(d.get('unpaid_pipeline', 0))}."
         ),
     )
 

@@ -21,8 +21,8 @@ from app.clients.models import Client, ClientStage, OrderType, parse_payment_pla
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientDocumentsUpdate,
+    ClientHousesCountUpdate,
     ClientPaymentUpdate,
-    ClientProjectUpdate,
 )
 from app.common.file_text import extract_asset_text, file_card
 from app.common.files import FileAsset, FilePurpose, save_text_file
@@ -104,7 +104,6 @@ def _attached_specs(client: Client) -> dict:
         "project_model": model,
         "must_use_attached_files": bool(client.house_project_file_id or client.contract_file_id),
         "field_warning": (
-            "Поля wishes_description / layout_notes / house_area часто тестовый мусор. "
             "Если project_spec или contract_spec есть — строй модули и задачи по ним. "
             "Не говори, что спецификации нет."
             if (client.house_project_file_id or client.contract_file_id)
@@ -123,12 +122,8 @@ def _serialize_client(c: Client) -> dict:
         "email": c.email,
         "contacts": c.contacts,
         "order_type": c.order_type.value if c.order_type else None,
+        "house_model_key": c.house_model_key,
         "houses_count": c.houses_count,
-        "wishes_description": c.wishes_description,
-        "estimated_price": c.estimated_price,
-        "house_area": c.house_area,
-        "layout_notes": c.layout_notes,
-        "project_locked": c.project_locked_at is not None,
         "final_price": c.final_price,
         "payment_plan": c.payment_plan.value,
         "advance_amount": c.advance_amount,
@@ -222,35 +217,18 @@ def _attach_generated_document(
 
 
 @register(
-    "update_client_project", "Заполнить/изменить проектные данные клиента (пока не зафиксированы).",
-    {
-        "client_id": {"type": "integer"},
-        "order_type": {"type": "string", "enum": [t.value for t in OrderType]},
-        "wishes_description": {"type": "string"},
-        "estimated_price": {"type": "number"},
-        "house_area": {"type": "number"},
-        "layout_notes": {"type": "string"},
-    },
-    ["client_id"],
-    required_module=Module.CLIENTS, domains=[ChatDomain.CLIENTS],
-)
-def _update_client_project(db: Session, user: User, client_id: int, **fields) -> dict:
-    client = client_service.get_client_or_404(db, client_id)
-    payload = ClientProjectUpdate(**{k: v for k, v in fields.items() if v is not None})
-    client = client_service.update_project(db, client, payload)
-    return _serialize_client(client)
-
-
-@register(
-    "update_client_documents", "Заполнить/изменить документные данные клиента (пока не зафиксированы). "
+    "update_client_documents", "Заполнить/изменить документные данные клиента (пока не зафиксированы): "
+    "тип заказа, модель дома из каталога типовых проектов, итоговая цена, адрес монтажа, формат расчёта, аванс. "
+    "house_model_key — ключ карточки каталога (например 'barn-dh96'), необязателен. "
     "payment_plan принимает значение enum ('full_prepayment', 'advance_then_balance', 'post_payment') "
     "или русский лейбл («Полная предоплата», «Аванс + оплата после получения», «Оплата после получения») "
     "— используй enum-значение, если знаешь его, иначе передай лейбл как есть.",
     {
         "client_id": {"type": "integer"},
+        "order_type": {"type": "string", "enum": [t.value for t in OrderType]},
+        "house_model_key": {"type": "string"},
         "final_price": {"type": "number"},
         "installation_address": {"type": "string"},
-        "houses_count": {"type": "integer"},
         "payment_plan": {"type": "string"},
         "advance_amount": {"type": "number"},
     },
@@ -266,6 +244,20 @@ def _update_client_documents(db: Session, user: User, client_id: int, **fields) 
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     payload = ClientDocumentsUpdate(**{k: v for k, v in fields.items() if v is not None})
     client = client_service.update_documents(db, client, payload)
+    return _serialize_client(client)
+
+
+@register(
+    "update_client_houses_count",
+    "Изменить количество домов у клиента с множественным заказом. В отличие от остальных "
+    "документных данных, редактируется в любой момент, даже после их фиксации.",
+    {"client_id": {"type": "integer"}, "houses_count": {"type": "integer"}},
+    ["client_id", "houses_count"],
+    required_module=Module.CLIENTS, domains=[ChatDomain.CLIENTS],
+)
+def _update_client_houses_count(db: Session, user: User, client_id: int, houses_count: int) -> dict:
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.update_houses_count(db, client, ClientHousesCountUpdate(houses_count=houses_count))
     return _serialize_client(client)
 
 
@@ -374,10 +366,7 @@ def _get_client_context(db: Session, user: User, cycle_id: int) -> dict:
     return {
         "cycle_id": cycle.id,
         "client_id": client.id,
-        "house_area": client.house_area,
-        "wishes_description": client.wishes_description,
-        "layout_notes": client.layout_notes,
-        "project_locked": client.project_locked_at is not None,
+        "house_model_key": client.house_model_key,
         "house_project_file_id": client.house_project_file_id,
         **specs,
     }
