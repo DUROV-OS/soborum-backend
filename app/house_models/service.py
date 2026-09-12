@@ -11,7 +11,10 @@ _SERIES_ORDER = ["barn", "flat"]
 
 
 def _area_sort_key(card: HouseModelCard) -> float:
-    return card.area_footprint_m2 or 0.0
+    # Модели без задокументированной площади застройки (например Barn_DH83 —
+    # в буклете нет точной цифры) идут в конец группы, а не путаются с самой
+    # маленькой моделью серии.
+    return card.area_footprint_m2 if card.area_footprint_m2 is not None else float("inf")
 
 
 def get_catalog(db: Session) -> HouseModelCatalogOut:
