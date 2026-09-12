@@ -12,10 +12,17 @@
 а не дублируются.
 """
 
+from pathlib import Path
+
 from sqlalchemy.orm import Session
 
+from app.common.files import FilePurpose, save_bytes_file
 from app.house_models.data import HOUSE_MODEL_CARDS
 from app.house_models.models import HouseModelCard
+from app.users.models import User, UserRole
+
+_ASSETS_DIR = Path(__file__).parent / "assets" / "planirovki"
+_CONTENT_TYPE = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 _FIELDS = [
     "title",
@@ -42,6 +49,23 @@ _FIELDS = [
 ]
 
 
+def _attach_planning_image(db: Session, card: HouseModelCard, asset_filename: str) -> None:
+    """Привязывает забандленное с кодом изображение планировки (скачано один
+    раз с durov.house, см. задачу 0043-c — приложение само к durov.house
+    больше не обращается). Не трогает уже привязанную карточку — иначе каждый
+    перезапуск плодил бы новый FileAsset и новый файл на диске."""
+    if card.planning_image_id is not None:
+        return
+    path = _ASSETS_DIR / asset_filename
+    admin = db.query(User).filter(User.role == UserRole.ADMIN).order_by(User.id).first()
+    if admin is None:
+        return
+    data = path.read_bytes()
+    content_type = _CONTENT_TYPE.get(path.suffix.lower(), "application/octet-stream")
+    asset = save_bytes_file(db, asset_filename, content_type, data, FilePurpose.HOUSE_MODEL_PLANNING, admin)
+    card.planning_image_id = asset.id
+
+
 def ensure_house_models_seed(db: Session) -> int:
     """Возвращает число вновь созданных карточек (0 при повторном запуске
     без изменений в датасете — существующие карточки лишь обновляются)."""
@@ -54,6 +78,8 @@ def ensure_house_models_seed(db: Session) -> int:
             created += 1
         for field in _FIELDS:
             setattr(card, field, entry[field])
+        if entry["planning_image_asset"]:
+            _attach_planning_image(db, card, entry["planning_image_asset"])
 
     db.commit()
     return created
