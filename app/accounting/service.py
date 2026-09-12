@@ -150,6 +150,26 @@ def _assert_no_open_salary_payout(db: Session, employee_id: int | None) -> None:
         raise _conflict("У сотрудника уже есть незакрытая зарплатная проводка")
 
 
+def _assert_no_open_supply_payment(db: Session, supply_id: int | None) -> None:
+    """0011-f: заказ у поставщика оплачивается один раз — повторный `pay` на
+    заказ, который уже оплачивается (draft/approved) или оплачен (posted),
+    отклоняется. Отменённая (`cancelled`) проводка оплату не блокирует."""
+    if supply_id is None:
+        return
+    has_active = (
+        db.query(MoneyMovement.id)
+        .filter(
+            MoneyMovement.subkind == MoneySubkind.SUPPLY_PAYMENT,
+            MoneyMovement.supply_id == supply_id,
+            MoneyMovement.status != MoneyMovementStatus.CANCELLED,
+        )
+        .first()
+        is not None
+    )
+    if has_active:
+        raise _conflict("Заказ уже оплачивается или оплачен")
+
+
 def _create_approval_task(db: Session, mm: MoneyMovement) -> None:
     """0011-f: любая проводка в `draft` (авто- или вручную из 0011-e) порождает
     задачу на согласование — закрывается в `change_status` при уходе из `draft`."""
@@ -179,6 +199,9 @@ def create_money_movement(
 
     if data.subkind is MoneySubkind.SALARY_PAYOUT:
         _assert_no_open_salary_payout(db, data.employee_id)
+
+    if data.subkind is MoneySubkind.SUPPLY_PAYMENT:
+        _assert_no_open_supply_payment(db, data.supply_id)
 
     mm = MoneyMovement(
         direction=_direction_for(data.subkind),
@@ -341,6 +364,18 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
     ]
 
 
+def _adjust_supplier_paid(db: Session, mm: MoneyMovement, delta: float) -> None:
+    """0011-f: `Supplier.total_paid` растёт при проведении оплаты поставки и
+    уменьшается обратно, если проведённую оплату отменили — `balance`
+    (`total_ordered - total_paid`) в ответе API остаётся консистентным."""
+    if mm.subkind is not MoneySubkind.SUPPLY_PAYMENT or mm.supply_id is None:
+        return
+    order = db.get(SupplierOrder, mm.supply_id)
+    if order is None or order.supplier is None:
+        return
+    order.supplier.total_paid = float(order.supplier.total_paid or 0) + delta
+
+
 def change_status(
     db: Session,
     mm: MoneyMovement,
@@ -351,6 +386,7 @@ def change_status(
         raise _conflict(f"Недопустимый переход статуса «{mm.status.value}» → «{to.value}»")
 
     was_draft = mm.status is MoneyMovementStatus.DRAFT
+    was_posted = mm.status is MoneyMovementStatus.POSTED
 
     if to is MoneyMovementStatus.POSTED:
         if mm.amount is None or mm.amount <= 0:
@@ -360,12 +396,15 @@ def change_status(
         if mm.initiator_id is None:
             raise _conflict("Нельзя провести проводку без инициатора")
         mm.posted_at = _utcnow()
+        _adjust_supplier_paid(db, mm, mm.amount)
 
     if to is MoneyMovementStatus.CANCELLED:
         cleaned = (reason or "").strip()
         if not cleaned:
             raise _bad_request("Отмена проводки требует указания причины")
         mm.cancel_reason = cleaned
+        if was_posted:
+            _adjust_supplier_paid(db, mm, -mm.amount)
 
     mm.status = to
     db.commit()
@@ -734,3 +773,14 @@ def change_supplier_order_status(
     db.commit()
     db.refresh(order)
     return order
+
+
+def pay_supplier_order(db: Session, order: SupplierOrder, initiator_id: int) -> MoneyMovement:
+    """0011-f: `POST /supplier-orders/{id}/pay` — создаёт проводку
+    `supply_payment` на полную сумму заказа (MVP, частичная оплата не
+    делается). Оплата не меняет статус физической приёмки заказа и наоборот —
+    независимые состояния (см. родителя 0011, п. 6)."""
+    data = MoneyMovementCreate(
+        subkind=MoneySubkind.SUPPLY_PAYMENT, amount=order.total_cost, supply_id=order.id
+    )
+    return create_money_movement(db, data, initiator_id=initiator_id)
