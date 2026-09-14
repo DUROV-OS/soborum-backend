@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 from fastapi import HTTPException, status
 
 from app.max.client import MediaError, session
@@ -201,6 +202,60 @@ def get_attachment_url(chat_id, message_id, file_id) -> str:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
+
+
+# Расширения, которые можно показать прямо в браузере (0031). Список — сами
+# content-type: MAX не отдаёт mime-type вложения, только имя файла, поэтому
+# тип определяем строго по этой карте, не через mimetypes.guess_type — так
+# эндпоинт не превращается в открытый прокси произвольного content-type по
+# присланному расширению.
+PREVIEWABLE_EXTENSIONS: dict[str, str] = {
+    "pdf": "application/pdf",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "txt": "text/plain; charset=utf-8",
+}
+
+# Крупный файл не тащим в браузер — сразу отдаём как для скачивания
+# (см. GET /attachment, одноразовая ссылка без прокси).
+PREVIEW_MAX_SIZE = 15 * 1024 * 1024
+
+
+def get_attachment_preview(chat_id, message_id, file_id, filename: str) -> tuple[bytes, str]:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    content_type = PREVIEWABLE_EXTENSIONS.get(ext)
+    if content_type is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Предпросмотр не поддерживается для .{ext or '?'} — скачайте файл",
+        )
+
+    url = get_attachment_url(chat_id, message_id, file_id)
+    try:
+        with httpx.stream("GET", url, timeout=30, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            content_length = resp.headers.get("content-length")
+            if content_length and int(content_length) > PREVIEW_MAX_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="Файл больше 15 МБ — скачайте вместо предпросмотра",
+                )
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_bytes():
+                total += len(chunk)
+                if total > PREVIEW_MAX_SIZE:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Файл больше 15 МБ — скачайте вместо предпросмотра",
+                    )
+                chunks.append(chunk)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    return b"".join(chunks), content_type
 
 
 def _best_mp4(payload: dict) -> str | None:
