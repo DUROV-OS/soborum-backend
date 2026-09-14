@@ -31,6 +31,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.PARTIAL,
         "confirmation_label": "⚠ частично",
         "source_note_path": "02_Business/13_Models/Barn_DH21.md",
+        "planning_image_asset": "barn-dh21.png",
         "characteristics_md": (
             "Площадь застройки 21,4 м², полезная 16 м² (второе число — жилая/"
             "полезная площадь, не «общая с террасой», как у большинства других "
@@ -78,6 +79,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "❌ нет",
         "source_note_path": "02_Business/13_Models/Barn_DH27.md",
+        "planning_image_asset": "barn-dh27.png",
         "characteristics_md": (
             "27,2 м² застройки, 21 м² полезной (жилая/полезная площадь, не "
             "«общая с террасой»). Габариты 2,9×3,4×8 м, потолки 2,9 м.\n\n"
@@ -111,6 +113,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "❌ нет",
         "source_note_path": "02_Business/13_Models/Barn_DH57.md",
+        "planning_image_asset": "barn-dh57.jpg",
         "characteristics_md": (
             "56,7 м² застройки, 48,3 м² с террасой. Габариты 3,3×6,1×9,3 м, "
             "потолки 3,3 м.\n\n«Дом с совмещённой кухней-гостиной и спальней».\n\n"
@@ -141,6 +144,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅ 3 ПЗ + файлы АР/КР (3 модуля, не подтв.) + реальные фото (буклет 2026-09-10)",
         "source_note_path": "02_Business/13_Models/Barn_DH64.md",
+        "planning_image_asset": "barn-dh64.png",
         "characteristics_md": (
             "64,57 м² застройки, 56,33 м² с террасой и крыльцом. Габариты "
             "2,9×7,3×8,6 м (буклет: 7,2×8,5 м), потолки 2,9 м.\n\n"
@@ -218,6 +222,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.PARTIAL,
         "confirmation_label": "⚠ не на сайте, только буклет, не построен",
         "source_note_path": "02_Business/13_Models/Barn_DH83.md",
+        "planning_image_asset": None,
         "characteristics_md": (
             "⚠ **Не входит в текущий каталог сайта** — существует только в "
             "маркетинговом буклете `Durov_House_DH64_DH83_DH96.pdf` (от "
@@ -286,6 +291,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.PARTIAL,
         "confirmation_label": "⚠ файлы найдены (Karkas196), связь не подтверждена",
         "source_note_path": "02_Business/13_Models/Barn_DH93.md",
+        "planning_image_asset": "barn-dh93.png",
         "characteristics_md": (
             "93 м² застройки, 76,08 м² с террасой. Габариты 3,3×9,3×10 м, "
             "потолки 3,3 м.\n\n«Дом с двумя просторными спальнями и "
@@ -320,6 +326,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅✅ сильно подтверждено (3 ПЗ + 3 сделки, тарифная сетка)",
         "source_note_path": "02_Business/13_Models/Barn_DH96.md",
+        "planning_image_asset": "barn-dh96.jpg",
         "characteristics_md": (
             "Флагманская, самая задокументированная модель линейки.\n\n"
             "96 м² застройки, 84,95 м² общая с террасой. Габариты 3×8×12 м, "
@@ -442,6 +449,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.PARTIAL,
         "confirmation_label": "⚠ 1 сделка «инд.»",
         "source_note_path": "02_Business/13_Models/Barn_DH156.md",
+        "planning_image_asset": "barn-dh156.jpg",
         "characteristics_md": (
             "Старшая модель линейки. 155,8 м² застройки, 127,52 м² общая с "
             "террасой. Габариты 3,3×9,5×16,4 м, потолки 3,3 м.\n\n"
@@ -489,6 +497,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "❌ нет",
         "source_note_path": "02_Business/13_Models/Flat_DH21.md",
+        "planning_image_asset": "flat-dh21.png",
         "characteristics_md": (
             "21,42 м² застройки, 16 м² полезной. Габариты 2,6×3,4×6,3 м, "
             "потолки 2,6 м.\n\n«Компактный одномодульный дом формата "
@@ -517,6 +526,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅ 1 клиент, файлы",
         "source_note_path": "02_Business/13_Models/Flat_DH27.md",
+        "planning_image_asset": "flat-dh27.png",
         "characteristics_md": (
             "27,2 м² застройки, 21 м² полезной. Габариты 2,6×3,4×8 м, "
             "потолки 2,6 м.\n\n«Гостевой дом с санузлом».\n\n"
@@ -562,6 +572,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅ 1 клиент, файлы",
         "source_note_path": "02_Business/13_Models/Flat_DH43.md",
+        "planning_image_asset": "flat-dh43.png",
         "characteristics_md": (
             "43,3 м² застройки, 25,2 м² полезной. Габариты 2,6×6,4×6,76 м, "
             "потолки 2,6 м.\n\n«Дом с совмещённой кухней-гостиной и "
@@ -612,6 +623,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "❌ нет",
         "source_note_path": "02_Business/13_Models/Flat_DH67.md",
+        "planning_image_asset": "flat-dh67.png",
         "characteristics_md": (
             "66,84 м² застройки, 57,16 м² полезной. Габариты 2,6×6,7×10,7 м, "
             "потолки 2,6 м.\n\n«Дом с одной спальней и кухней-гостиной».\n\n"
@@ -643,6 +655,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "❌ нет",
         "source_note_path": "02_Business/13_Models/Flat_DH89.md",
+        "planning_image_asset": "flat-dh89.png",
         "characteristics_md": (
             "89 м² застройки, 51 м² полезной. Габариты 2,6×9,1×9,75 м, "
             "потолки 2,6 м.\n\n«Дом с двумя спальнями и кухней-гостиной».\n\n"
@@ -675,6 +688,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "❌ нет",
         "source_note_path": "02_Business/13_Models/Flat_DH104.md",
+        "planning_image_asset": "flat-dh104.png",
         "characteristics_md": (
             "104 м² застройки, 87,5 м² полезной. Габариты 2,6×10×12 м, "
             "потолки 2,6 м.\n\n«Растущий дом с двумя спальнями и "
@@ -714,6 +728,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "❌ нет",
         "source_note_path": "02_Business/13_Models/Flat_DH124.md",
+        "planning_image_asset": "flat-dh124.png",
         "characteristics_md": (
             "Старшая Флэт-модель. 124 м² застройки, 108,2 м² с террасой. "
             "Габариты 2,6×12×13 м, потолки 2,6 м.\n\n"
@@ -752,6 +767,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅ договор, эскизный проект, КР, реальный объект (свайное поле, встроенная мебель)",
         "source_note_path": "02_Business/13_Models/Barn_DH59.md",
+        "planning_image_asset": None,
         "characteristics_md": (
             "⚠ Не в каталоге сайта (сайт перескакивает с DH57 на DH64).\n\n"
             "Площадь помещений 38,66 м², с террасой 45,85 м², застройка "
@@ -809,6 +825,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅ ПЗ 0004/DH-69Рура, производство 14.03–03.05.2026 (50 дней)",
         "source_note_path": "02_Business/13_Models/DH69.md",
+        "planning_image_asset": None,
         "characteristics_md": (
             "Не в каталоге сайта. Код 26КС03.01-МС-9,6×7-69, 2 блока. "
             "Проектная база «Сергей Петрович».\n\n"
@@ -851,6 +868,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅ ПЗ 0002/DH-77B, производство 10.01–10.06.2026 (152 дня)",
         "source_note_path": "02_Business/13_Models/DH77_DH84B.md",
+        "planning_image_asset": None,
         "characteristics_md": (
             "⚠ Не в каталоге, один код под тремя разными именами в разных "
             "системах (не сведено): в МойСклад — DH-77 (ПЗ 0002/DH-77B), в "
@@ -900,6 +918,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.PARTIAL,
         "confirmation_label": "⚠ на этапе проектирования, сумма сделки не подтверждена документом",
         "source_note_path": "02_Business/13_Models/BARN_DH87.md",
+        "planning_image_asset": None,
         "characteristics_md": (
             "⚠ Не в каталоге сайта (максимум каталога — DH156, но с другими "
             "пропорциями; 87 — отдельный индивидуальный код). Объём 355 м³.\n\n"
@@ -945,6 +964,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.CONFIRMED,
         "confirmation_label": "✅ сдан по акту приёма-передачи 29.10.2025 без замечаний",
         "source_note_path": "02_Business/13_Models/Flet_Balakirev_60_32.md",
+        "planning_image_asset": None,
         "characteristics_md": (
             "⚠ Не в каталоге. Трёхсекционный модульный дом, 60+32 м² "
             "(суммарно 92 м²), полный код "
@@ -985,6 +1005,7 @@ HOUSE_MODEL_CARDS: list[dict] = [
         "confirmation": Conf.NONE,
         "confirmation_label": "⚠ недостаточно данных для полноценных карточек",
         "source_note_path": "02_Business/13_Models/Individual_Projects_Thin_Registry.md",
+        "planning_image_asset": None,
         "characteristics_md": (
             "Держится одной группой «прочее», без отдельных полноценных "
             "карточек, пока данных не прибавится — по прямому указанию "

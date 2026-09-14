@@ -29,6 +29,7 @@ class FilePurpose(str, enum.Enum):
     MARKETING_FINAL = "marketing_final"
     AI_CHAT_ATTACHMENT = "ai_chat_attachment"
     MEETING_AUDIO = "meeting_audio"
+    HOUSE_MODEL_PLANNING = "house_model_planning"
 
 
 PURPOSE_MODULE = {
@@ -39,6 +40,7 @@ PURPOSE_MODULE = {
     FilePurpose.MARKETING_FINAL: Module.MARKETING,
     FilePurpose.AI_CHAT_ATTACHMENT: Module.AI,
     FilePurpose.MEETING_AUDIO: Module.AI,
+    FilePurpose.HOUSE_MODEL_PLANNING: Module.HOUSE_MODELS,
 }
 
 
@@ -90,6 +92,29 @@ def save_text_file(db: Session, filename: str, content: str, purpose: FilePurpos
     asset = FileAsset(
         filename=filename,
         content_type="text/plain; charset=utf-8",
+        path_on_disk=path_on_disk,
+        purpose=purpose,
+        uploaded_by_id=user.id,
+    )
+    db.add(asset)
+    db.flush()
+    return asset
+
+
+def save_bytes_file(
+    db: Session, filename: str, content_type: str, data: bytes, purpose: FilePurpose, user
+) -> FileAsset:
+    """Persist raw bytes (e.g. a file bundled with the code and attached by a
+    one-off import script, not an incoming request) as a FileAsset."""
+    storage = _writable_storage_dir()
+    disk_name = f"{uuid.uuid4().hex}_{filename}"
+    path_on_disk = os.path.join(storage, disk_name)
+    with open(path_on_disk, "wb") as f:
+        f.write(data)
+
+    asset = FileAsset(
+        filename=filename,
+        content_type=content_type,
         path_on_disk=path_on_disk,
         purpose=purpose,
         uploaded_by_id=user.id,

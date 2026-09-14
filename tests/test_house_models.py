@@ -4,6 +4,7 @@ read-only, гейт по Module.HOUSE_MODELS.
 Раздел смонтирован под /api/house-models.
 """
 
+from app.common.files import FileAsset
 from app.common.module_access import Module
 from app.house_models.data import HOUSE_MODEL_CARDS
 from app.house_models.import_kb import ensure_house_models_seed
@@ -79,3 +80,36 @@ def test_catalog_requires_house_models_module(api, make_user, db):
 
     resp = client.get("/api/house-models/catalog")
     assert resp.status_code == 403
+
+
+def test_planning_image_attached_only_where_it_exists_on_the_live_site(api, make_user, db):
+    # save_bytes_file needs an uploader — an admin, like every other seed
+    # that attaches files (see app.house_models.import_kb._attach_planning_image).
+    make_user(admin=True)
+    ensure_house_models_seed(db)
+    client = api(make_user(Module.HOUSE_MODELS))
+
+    dh96 = client.get("/api/house-models/catalog/barn-dh96").json()
+    assert dh96["planning_image_id"] is not None
+
+    # barn-dh83 has no page of its own on durov.house (see 0043-a) — no image, not a placeholder.
+    dh83 = client.get("/api/house-models/catalog/barn-dh83").json()
+    assert dh83["planning_image_id"] is None
+
+    # individual projects aren't on the site catalog at all.
+    dh59 = client.get("/api/house-models/catalog/barn-dh59").json()
+    assert dh59["planning_image_id"] is None
+
+    downloaded = client.get(f"/files/{dh96['planning_image_id']}")
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"] in ("image/jpeg", "image/jpeg; charset=utf-8")
+
+
+def test_planning_image_import_is_idempotent(make_user, db):
+    make_user(admin=True)
+    ensure_house_models_seed(db)
+    count_after_first = db.query(FileAsset).count()
+    assert count_after_first == sum(1 for c in HOUSE_MODEL_CARDS if c["planning_image_asset"])
+
+    ensure_house_models_seed(db)
+    assert db.query(FileAsset).count() == count_after_first
