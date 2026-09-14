@@ -5,7 +5,7 @@
 авторизованный пользователь; данные MAX общие для организации.
 """
 
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, Form, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -68,6 +68,26 @@ def send_message(payload: SendMessageIn, _: User = Depends(get_current_user)):
 
     ``chat_id=0`` — «Избранное» (заметки для себя)."""
     return max_service.send_message(payload.chat_id, payload.text, notify=payload.notify)
+
+
+@app.post("/messages/attachment", status_code=201)
+async def send_message_with_attachment(
+    chat_id: int = Form(..., description="ID чата MAX. 0 — «Избранное»."),
+    text: str = Form("", max_length=4000),
+    notify: bool = Form(True),
+    file: UploadFile | None = None,
+    _: User = Depends(get_current_user),
+):
+    """Отправить сообщение с файлом (0015): грузит вложение в MAX перед
+    MSG_SEND, отдельный эндпоинт (не `/messages`) — тот принимает чистый
+    JSON, здесь нужен multipart для файла. Текст необязателен, если есть
+    файл; без файла и текста — 422. Требует настроенный
+    `MAX_FILE_UPLOAD_OPCODE` (см. `Settings.max_file_upload_opcode`) — пока
+    не задан, отдаёт 503."""
+    upload = None
+    if file is not None:
+        upload = (await file.read(), file.filename or "file", file.content_type or "application/octet-stream")
+    return max_service.send_message(chat_id, text, notify=notify, file=upload)
 
 
 @app.get("/attachment")

@@ -2,8 +2,9 @@
 
 Протокол — простые JSON-кадры поверх wss: opcode 6 (HELLO) -> 19 (AUTH) ->
 49 (история чата) -> 88 (ссылка на вложение). Логика перенесена из
-исходного scraping-скрипта (Desktop/max_idi_nahuy/api.py); всё read-only,
-БД не трогаем.
+исходного scraping-скрипта (Desktop/max_idi_nahuy/api.py); в основном
+read-only, БД не трогаем — кроме upload_file (0015), которая реально
+загружает файл в MAX перед отправкой вложения.
 
 Токен берётся из настроек (``settings.max_token`` / переменная ``MAX_TOKEN``).
 Обновить: ``JSON.parse(localStorage.__oneme_auth).token`` на web.max.ru.
@@ -14,8 +15,10 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+import urllib.parse
 import uuid
 
+import httpx
 from fastapi import HTTPException, status
 
 try:  # websocket-client, необязателен для остального приложения
@@ -24,6 +27,15 @@ except ImportError:  # pragma: no cover
     websocket = None
 
 from app.core.config import settings
+
+# Больше — отклоняем ещё до попытки загрузки (см. UploadError в service.py).
+MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+
+
+class UploadError(RuntimeError):
+    """MAX отклонил загрузку файла, либо файл не прошёл локальную проверку
+    (см. MAX_UPLOAD_SIZE) — сообщение не уходит наполовину, роутер превращает
+    это в понятную ошибку до отправки MSG_SEND."""
 
 WS_URL = "wss://ws-api.oneme.ru/websocket"
 ORIGIN = "https://web.max.ru"
@@ -141,9 +153,10 @@ class MaxSession:
                 return msgs
         return []
 
-    def send_message(self, chat_id, text: str, notify: bool = True) -> dict:
-        """MSG_SEND (opcode 64). Отправляет текстовое сообщение и возвращает
-        payload ответа сервера ({chatId, message, unread, mark})."""
+    def send_message(self, chat_id, text: str, notify: bool = True, attaches: list[dict] | None = None) -> dict:
+        """MSG_SEND (opcode 64). Отправляет текстовое сообщение (опционально
+        с вложениями, полученными через upload_file) и возвращает payload
+        ответа сервера ({chatId, message, unread, mark})."""
         cid = int(time.time() * 1000)
         seq = self._send(64, {
             "chatId": chat_id,
@@ -151,7 +164,7 @@ class MaxSession:
                 "text": text,
                 "cid": cid,
                 "elements": [],
-                "attaches": [],
+                "attaches": attaches or [],
             },
             "notify": notify,
         })
@@ -160,6 +173,52 @@ class MaxSession:
         if reply.get("cmd") == 3:
             raise RuntimeError(f"MAX отклонил отправку: {reply.get('payload')}")
         return reply.get("payload", {}) or {}
+
+    def upload_file(self, data: bytes, filename: str, content_type: str) -> dict:
+        """Загружает файл как вложение FILE: запрашивает у MAX одноразовый
+        URL для загрузки (opcode `settings.max_file_upload_opcode`, см. его
+        докстринг про статус подтверждения), заливает байты, возвращает
+        `{"fileId": ..., "token": ...}` — этот словарь идёт в `attaches`
+        `send_message` как `{"_type": "FILE", "fileId": ..., "token": ...}`.
+
+        HTTP-часть (заголовки, raw-байты без multipart) разобрана по
+        клиентскому JS web.max.ru (`Desktop/max_idi_nahuy/archive`):
+        `Content-Type`, `Content-Disposition: attachment`, `Content-Range:
+        0-<size-1>/<size>` — так же в оригинале грузятся FILE/VIDEO (в
+        отличие от PHOTO, который уходит как multipart/form-data).
+        """
+        if settings.max_file_upload_opcode is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Загрузка вложений в MAX не настроена — не задан MAX_FILE_UPLOAD_OPCODE "
+                "(см. докстринг Settings.max_file_upload_opcode)",
+            )
+        if len(data) > MAX_UPLOAD_SIZE:
+            raise UploadError(f"Файл больше {MAX_UPLOAD_SIZE // (1024 * 1024)} МБ — MAX его не примет")
+
+        seq = self._send(settings.max_file_upload_opcode, {"count": 1})
+        try:
+            reply = self._wait(settings.max_file_upload_opcode, seq)
+        except TimeoutError as exc:
+            raise UploadError("MAX не ответил на запрос URL для загрузки") from exc
+        if reply.get("cmd") == 3:
+            raise UploadError(f"MAX отклонил запрос URL для загрузки: {reply.get('payload')}")
+        info = ((reply.get("payload") or {}).get("info") or [None])[0]
+        if not info or not info.get("url") or info.get("fileId") is None:
+            raise UploadError("MAX не вернул URL/fileId для загрузки")
+
+        headers = {
+            "Content-Type": content_type or "application/octet-stream",
+            "Content-Disposition": f"attachment; filename={urllib.parse.quote(filename)}",
+            "Content-Range": f"0-{len(data) - 1}/{len(data)}",
+        }
+        try:
+            resp = httpx.post(info["url"], content=data, headers=headers, timeout=60)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise UploadError(f"MAX отклонил загрузку файла: {exc}") from exc
+
+        return {"fileId": info["fileId"], "token": info.get("token")}
 
     def attach_url(self, file_id, chat_id, message_id) -> str:
         self._send(88, {"fileId": file_id, "chatId": chat_id, "messageId": message_id})
