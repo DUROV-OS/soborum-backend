@@ -5,10 +5,13 @@
 авторизованный пользователь; данные MAX общие для организации.
 """
 
-from fastapi import Depends, FastAPI, Form, UploadFile
+from fastapi import Depends, FastAPI, Form, Response, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from app.clients.models import Client
 from app.core.deps import get_current_user
+from app.db.session import get_db
 from app.max import service as max_service
 from app.users.models import User
 
@@ -26,10 +29,25 @@ app = FastAPI(
 
 
 @app.get("/chats")
-def list_chats(limit: int | None = None, _: User = Depends(get_current_user)):
+def list_chats(
+    limit: int | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
     """Список чатов с последним сообщением в каждом. ``limit`` — сколько
-    самых свежих вернуть (по умолчанию все)."""
-    return max_service.list_chats(limit)
+    самых свежих вернуть (по умолчанию все). Каждый чат дополнительно
+    аннотирован ``linkedClientId``/``linkedClientName``, если он привязан к
+    клиенту (app.clients) — для обратной привязки «из MAX к клиенту»."""
+    result = max_service.list_chats(limit)
+    linked = {
+        c.max_chat_id: (c.id, c.full_name)
+        for c in db.query(Client).filter(Client.max_chat_id.isnot(None))
+    }
+    for chat in result["chats"]:
+        client_id, client_name = linked.get(chat["id"], (None, None))
+        chat["linkedClientId"] = client_id
+        chat["linkedClientName"] = client_name
+    return result
 
 
 @app.get("/chats/{chat_id}")
@@ -85,6 +103,28 @@ def get_attachment(
     (``window.open`` / ``<a download>``), не для ``fetch``. Для фото берите
     ``attach.baseUrl`` напрямую, для видео/аудио — ``GET /media``."""
     return {"url": max_service.get_attachment_url(chat_id, message_id, file_id)}
+
+
+@app.get("/attachment/preview")
+def get_attachment_preview(
+    chat_id: int,
+    message_id: str,
+    file_id: int,
+    filename: str,
+    _: User = Depends(get_current_user),
+):
+    """Прокси вложения FILE для показа в приложении (0031), не для скачивания.
+
+    В отличие от `GET /attachment` (одноразовая ссылка на `fd.oneme.ru`, без
+    CORS — годится только для навигации), этот эндпоинт сам скачивает файл с
+    той ссылки и отдаёт его с фронта — с тем же CORS, что и весь `/api`, так
+    что подходит для `fetch`/`<img>`/`<embed>`. ``filename`` — только для
+    определения content-type по расширению (MAX его не сообщает); тип
+    ограничен списком в `max_service.PREVIEWABLE_EXTENSIONS`, остальное —
+    422, чтобы фронт откатился на кнопку «Скачать». Больше 15 МБ — 413,
+    без прокси, тоже откат на скачивание."""
+    data, content_type = max_service.get_attachment_preview(chat_id, message_id, file_id, filename)
+    return Response(content=data, media_type=content_type)
 
 
 @app.get("/media")

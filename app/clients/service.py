@@ -4,9 +4,18 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.clients.models import CLIENT_STAGE_ORDER, Client, ClientNote, ClientStage, OrderType, PaymentPlan
+from app.clients.models import (
+    CLIENT_STAGE_ORDER,
+    Client,
+    ClientChatState,
+    ClientNote,
+    ClientStage,
+    OrderType,
+    PaymentPlan,
+)
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
+    ClientChatStateUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
@@ -225,8 +234,34 @@ def set_house_project_file(db: Session, client: Client, file_id: int) -> Client:
 
 def set_max_chat_id(db: Session, client: Client, payload: ClientMaxChatUpdate) -> Client:
     """Привязать/отвязать чат MAX. Доступно на любой стадии — это не
-    документные данные, а служебная ссылка на переписку."""
+    документные данные, а служебная ссылка на переписку. Один чат — не более
+    одного клиента (по аналогии с app.warehouse.service.link_max_chat)."""
+    if payload.max_chat_id is not None:
+        taken = (
+            db.query(Client)
+            .filter(Client.max_chat_id == payload.max_chat_id, Client.id != client.id)
+            .first()
+        )
+        if taken:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Чат уже привязан к клиенту «{taken.full_name}» — сначала открепите его там",
+            )
     client.max_chat_id = payload.max_chat_id
+    if payload.max_chat_id is None:
+        # состояние переписки живёт на связи — без чата оно бессмысленно
+        client.max_chat_state = None
+    db.flush()
+    return client
+
+
+def set_chat_state(db: Session, client: Client, payload: ClientChatStateUpdate) -> Client:
+    if client.max_chat_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя задать состояние переписки без привязанного чата",
+        )
+    client.max_chat_state = ClientChatState(payload.state)
     db.flush()
     return client
 

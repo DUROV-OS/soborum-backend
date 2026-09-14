@@ -35,10 +35,20 @@ class TodayDashboardOut(BaseModel):
 
 class SectionSignalOut(BaseModel):
     """Один раздел «Работы» — то же действие, что попало бы в `actions` у
-    `TodayDashboardOut`, отдельным кэшируемым запросом (см. app.dashboard.overview)."""
+    `TodayDashboardOut`, отдельным кэшируемым запросом (см. app.dashboard.overview).
+
+    `checked` — по разделу вообще есть проверка в ATTENTION (список того, что
+    считается сигналом внимания): true, если `action is None` значит «реально
+    посчитали и проблем нет», false — если раздел просто не входит в ATTENTION
+    (или нет доступа/раздел неизвестен) и `action is None` не означает вообще
+    ничего, кроме «не проверяли»."""
 
     section: str
     action: DashboardAction | None = None
+    checked: bool = False
+    # Текст «что именно проверили и что там чисто» — заполнен только когда
+    # checked=true и action=None (см. ALL_CLEAR_TEXT в overview.py).
+    clear_text: str | None = None
     generated_at: datetime
 
 

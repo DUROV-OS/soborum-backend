@@ -1,7 +1,20 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -13,6 +26,15 @@ class ClientStage(str, enum.Enum):
     APPROVAL = "approval"
     PAYMENT = "payment"
     POSTPAYMENT = "postpayment"
+
+
+class ClientChatState(str, enum.Enum):
+    """Состояние переписки с клиентом в привязанном чате MAX. Осмысленно
+    только при привязанном `max_chat_id` — см. Client.max_chat_state."""
+
+    AGREEMENT = "agreement"
+    WAITING = "waiting"
+    ANALYSIS = "analysis"
 
 
 class OrderType(str, enum.Enum):
@@ -83,6 +105,7 @@ CLIENT_STAGE_ORDER = [
 
 class Client(Base):
     __tablename__ = "clients"
+    __table_args__ = (UniqueConstraint("max_chat_id", name="uq_clients_max_chat_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     cycle_id: Mapped[int] = mapped_column(ForeignKey("cycles.id"), unique=True, nullable=False)
@@ -104,6 +127,11 @@ class Client(Base):
     # 0 — «Избранное» (чат с самим собой); id групп/каналов бывают
     # отрицательными и большими, поэтому BigInteger.
     max_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Состояние переписки — хранится на связи, а не на клиенте: сбрасывается
+    # при отвязке чата (см. client_service.set_max_chat_id).
+    max_chat_state: Mapped["ClientChatState | None"] = mapped_column(
+        Enum(ClientChatState, name="client_chat_state"), nullable=True
+    )
 
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at

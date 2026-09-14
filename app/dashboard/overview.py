@@ -1,4 +1,5 @@
 """Deterministic operational overview. No model-generated counts or stale permission cache."""
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -36,6 +37,7 @@ METRICS = [
 # Ordered by urgency, with labels describing what the facts actually establish.
 ATTENTION = [
     ("tasks", "overdue_tasks", "Проверить просроченные задачи", "Уточните причину задержки и следующий срок.", "/tasks", "danger"),
+    ("cycle", "stuck_over_14_days", "Вернуться к зависшим циклам", "Цикл не продвигается дальше текущей стадии больше 14 дней.", "/cycles", "warning"),
     ("installation", "overdue_not_completed", "Проверить сроки монтажа", "Плановая дата прошла, этап проработки ещё не наступил.", "/montage", "danger"),
     ("production", "pending_material_requests", "Проверить заявки на материалы", "Заявки ожидают решения склада.", "/production", "warning"),
     ("warehouse", "materials_needing_supply", "Проверить пополнение склада", "Остатки и текущая потребность требуют внимания.", "/warehouse", "warning"),
@@ -46,6 +48,26 @@ ATTENTION = [
     ("users", "workers_without_module_access", "Назначить доступ сотрудникам", "Активным сотрудникам не выдан доступ к рабочим разделам.", "/admin", "warning"),
     ("accounting", "draft_awaiting_approval", "Проверить черновики проводок", "Проводки заведены, но ещё не согласованы.", "/accounting", "warning"),
 ]
+
+# Разделы, для которых вообще есть проверка на сигнал внимания — только для них
+# "action is None" означает "проверили, проблем нет", а не "не смотрели".
+ATTENTION_SECTIONS = {sec for sec, *_ in ATTENTION}
+
+# Текст для зелёного «всё в порядке» — что именно проверили и что там чисто.
+# Один на раздел (не на метрику): у раздела может быть несколько ATTENTION-
+# записей (например clients — 3), а "action is None" означает, что ни одна
+# из них не сработала, то есть чисто по всем сразу.
+ALL_CLEAR_TEXT: dict[str, str] = {
+    "tasks": "Просроченных задач нет.",
+    "cycle": "Зависших циклов нет.",
+    "installation": "Просроченных монтажей нет.",
+    "production": "Заявок на материалы, ожидающих решения, нет.",
+    "warehouse": "Позиций, требующих пополнения, нет.",
+    "clients": "Проблемных оплат и зависших обращений нет.",
+    "marketing": "Просроченных публикаций нет.",
+    "users": "Все активные сотрудники получили доступ.",
+    "accounting": "Черновиков без согласования нет.",
+}
 
 
 def generate_today(db: Session, user: User) -> TodayDashboardOut:
@@ -89,16 +111,17 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
 SECTION_CACHE_TTL = timedelta(hours=6)
 
 
-def _section_snapshot(db: Session, user: User, section: str) -> dict | None:
+def _section_builder(user: User, section: str) -> Callable[[Session], dict] | None:
     """None — раздела нет в METRICS/ATTENTION (например «Совещание»/MAX/«Поставщики»
-    сейчас без посчитанного сигнала) или у пользователя нет доступа к нему."""
+    сейчас без посчитанного сигнала) или у пользователя нет доступа к нему. Не
+    трогает базу — только определяет, есть ли смысл дальше идти в кэш/снепшот."""
     if section == "users":
-        return _snapshot_users(db) if user.role == UserRole.ADMIN else None
+        return _snapshot_users if user.role == UserRole.ADMIN else None
     entry = SECTION_BUILDERS.get(section)
     if entry is None:
         return None
     module, builder = entry
-    return builder(db) if user.has_access(module) else None
+    return builder if user.has_access(module) else None
 
 
 def generate_section_signal(db: Session, user: User, section: str, force: bool = False) -> SectionSignalOut:
@@ -106,11 +129,13 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
     в `TodayDashboardOut.actions`, но не держит остальные плитки, если этот
     раздел тяжело считать, и кэшируется на 6 часов (общий кеш на организацию —
     факт один и тот же для всех, кому раздел вообще доступен; неавторизованный
-    запрос до кеша не доходит вовсе, см. `_section_snapshot` выше)."""
+    запрос до кеша не доходит вовсе, см. `_section_builder` выше). Кэш
+    проверяется **до** пересчёта снепшота — попадание в кэш не должно стоить
+    того же похода в базу, что и промах."""
     now = datetime.now(timezone.utc)
-    snapshot = _section_snapshot(db, user, section)
-    if snapshot is None:
-        return SectionSignalOut(section=section, action=None, generated_at=now)
+    builder = _section_builder(user, section)
+    if builder is None:
+        return SectionSignalOut(section=section, action=None, checked=False, generated_at=now)
 
     cache_key = f"dashboard_section_signal:{section}"
     if not force:
@@ -118,6 +143,7 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
         if cached is not None:
             return SectionSignalOut.model_validate(cached)
 
+    snapshot = builder(db)
     action = None
     for sec, metric, title, description, href, tone in ATTENTION:
         if sec != section:
@@ -130,6 +156,8 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
             )
             break
 
-    out = SectionSignalOut(section=section, action=action, generated_at=now)
+    checked = section in ATTENTION_SECTIONS
+    clear_text = ALL_CLEAR_TEXT.get(section) if checked and action is None else None
+    out = SectionSignalOut(section=section, action=action, checked=checked, clear_text=clear_text, generated_at=now)
     ai_cache.set(db, cache_key, out.model_dump(mode="json"), now)
     return out
