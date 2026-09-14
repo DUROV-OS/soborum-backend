@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.clients.models import ClientStage, OrderType, PaymentPlan
 from app.common.files import FileAssetOut
+from app.house_models.schemas import HouseModelBriefOut
 
 
 class ClientContact(BaseModel):
@@ -28,20 +29,17 @@ class ClientMaxChatUpdate(BaseModel):
     max_chat_id: int | None = None
 
 
-class ClientProjectUpdate(BaseModel):
-    order_type: OrderType | None = None
-    wishes_description: str | None = None
-    estimated_price: float | None = None
-    house_area: float | None = None
-    layout_notes: str | None = None
-
-
 class ClientDocumentsUpdate(BaseModel):
+    order_type: OrderType | None = None
+    house_model_key: str | None = None
     final_price: float | None = None
     installation_address: str | None = None
-    houses_count: int | None = None
     payment_plan: PaymentPlan | None = None
     advance_amount: float | None = None
+
+
+class ClientHousesCountUpdate(BaseModel):
+    houses_count: int
 
 
 class ClientPaymentUpdate(BaseModel):
@@ -85,11 +83,8 @@ class ClientOut(BaseModel):
     max_chat_id: int | None
 
     order_type: OrderType | None
-    wishes_description: str | None
-    estimated_price: float | None
-    house_area: float | None
-    layout_notes: str | None
-    project_locked_at: datetime | None
+    house_model_key: str | None
+    house_model: HouseModelBriefOut | None
 
     houses_count: int
     final_price: float | None

@@ -95,9 +95,6 @@ def test_get_client_embeds_project_spec(db, make_user, monkeypatch, tmp_path):
         phone="+79001112233",
         email="test@example.com",
         stage=ClientStage.APPROVAL,
-        wishes_description="kdnkndkndk",
-        layout_notes="kdnkwndkw",
-        house_area=3,
         house_project_file_id=asset.id,
     )
     db.add(client)
@@ -107,4 +104,3 @@ def test_get_client_embeds_project_spec(db, make_user, monkeypatch, tmp_path):
     assert payload["project_model"] == "DH-96"
     assert payload["must_use_attached_files"] is True
     assert "DH-96" in payload["project_spec"]["text"]
-    assert "kdnkndkndk" in payload["wishes_description"]

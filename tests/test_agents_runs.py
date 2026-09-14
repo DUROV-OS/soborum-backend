@@ -13,12 +13,12 @@ from app.cycle.models import Cycle
 def _seed_company(db):
     """A few clients across stages so the DurovOS-database snapshot has real rows."""
     specs = [
-        (ClientStage.LEAD, None, None),
-        (ClientStage.DISCUSSION, 5_000_000, None),
-        (ClientStage.APPROVAL, 6_000_000, 5_400_000),  # 10% скидка — сверх лимита
-        (ClientStage.PAYMENT, 4_000_000, 4_000_000),  # ещё не оплачено
+        (ClientStage.LEAD, None),
+        (ClientStage.DISCUSSION, None),
+        (ClientStage.APPROVAL, 5_400_000),
+        (ClientStage.PAYMENT, 4_000_000),  # ещё не оплачено
     ]
-    for i, (stage, estimated, final) in enumerate(specs):
+    for i, (stage, final) in enumerate(specs):
         cycle = Cycle()
         db.add(cycle)
         db.flush()
@@ -30,7 +30,6 @@ def _seed_company(db):
                 phone=f"+7000000{i:04d}",
                 email=f"client{i}@example.com",
                 contacts=[],
-                estimated_price=estimated,
                 final_price=final,
             )
         )

@@ -8,13 +8,13 @@ from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
+    ClientHousesCountUpdate,
     ClientMaxChatUpdate,
     ClientNoteCreate,
     ClientNoteOut,
     ClientNoteUpdate,
     ClientOut,
     ClientPaymentUpdate,
-    ClientProjectUpdate,
 )
 from app.common.files import FilePurpose, save_upload_file
 from app.common.module_access import Module
@@ -57,20 +57,6 @@ def get_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(
     return client_service.get_client_or_404(db, client_id)
 
 
-@app.patch("/{client_id}/project", response_model=ClientOut)
-def update_project(
-    client_id: int,
-    payload: ClientProjectUpdate,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
-):
-    client = client_service.get_client_or_404(db, client_id)
-    client = client_service.update_project(db, client, payload)
-    db.commit()
-    db.refresh(client)
-    return client
-
-
 @app.patch("/{client_id}/documents", response_model=ClientOut)
 def update_documents(
     client_id: int,
@@ -80,6 +66,20 @@ def update_documents(
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_documents(db, client, payload)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.patch("/{client_id}/houses-count", response_model=ClientOut)
+def update_houses_count(
+    client_id: int,
+    payload: ClientHousesCountUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_clients),
+):
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.update_houses_count(db, client, payload)
     db.commit()
     db.refresh(client)
     return client

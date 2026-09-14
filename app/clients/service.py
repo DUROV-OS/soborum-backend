@@ -9,9 +9,9 @@ from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
+    ClientHousesCountUpdate,
     ClientMaxChatUpdate,
     ClientPaymentUpdate,
-    ClientProjectUpdate,
 )
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
@@ -95,32 +95,33 @@ def get_client_or_404(db: Session, client_id: int) -> Client:
     return client
 
 
-def update_project(db: Session, client: Client, payload: ClientProjectUpdate) -> Client:
-    if client.project_locked_at is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Проектные данные уже зафиксированы")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+def update_documents(db: Session, client: Client, payload: ClientDocumentsUpdate) -> Client:
+    if client.documents_locked_at is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("advance_amount") is not None and data["advance_amount"] <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Аванс должен быть положительным")
+    for field, value in data.items():
         setattr(client, field, value)
     db.flush()
     return client
 
 
-def update_documents(db: Session, client: Client, payload: ClientDocumentsUpdate) -> Client:
-    if client.documents_locked_at is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
-    data = payload.model_dump(exclude_unset=True)
-    if "houses_count" in data and data["houses_count"] is not None:
-        count = data["houses_count"]
-        if count < 1:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество домов не может быть меньше 1")
-        if client.order_type != OrderType.MULTIPLE and count != 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Количество домов > 1 доступно только для множественного заказа",
-            )
-    if data.get("advance_amount") is not None and data["advance_amount"] <= 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Аванс должен быть положительным")
-    for field, value in data.items():
-        setattr(client, field, value)
+def update_houses_count(db: Session, client: Client, payload: ClientHousesCountUpdate) -> Client:
+    """В отличие от остального в `update_documents`, не проверяет
+    `documents_locked_at` — количество домов редактируется в любой момент
+    (0044). Изменение после того, как на «Постоплате» уже заведены проекты
+    производства по старому количеству, задним числом их не пересчитывает —
+    это ручная правка данных, не автоматика."""
+    count = payload.houses_count
+    if count < 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество домов не может быть меньше 1")
+    if client.order_type != OrderType.MULTIPLE and count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Количество домов > 1 доступно только для множественного заказа",
+        )
+    client.houses_count = count
     db.flush()
     return client
 
@@ -287,8 +288,7 @@ def delete_client(db: Session, client: Client) -> None:
     db.flush()
 
 
-_PROJECT_REQUIRED = ["order_type", "wishes_description", "estimated_price", "house_area", "layout_notes"]
-_DOCUMENTS_REQUIRED = ["final_price", "installation_address", "contract_file_id", "house_project_file_id"]
+_DOCUMENTS_REQUIRED = ["order_type", "final_price", "installation_address", "contract_file_id", "house_project_file_id"]
 
 
 def transition_stage(db: Session, client: Client) -> Client:
@@ -296,16 +296,11 @@ def transition_stage(db: Session, client: Client) -> Client:
     if next_stage is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Клиент уже на последней стадии")
 
-    if client.stage == ClientStage.DISCUSSION:
-        missing = [f for f in _PROJECT_REQUIRED if getattr(client, f) is None]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Не заполнены проектные поля: {', '.join(missing)}",
-            )
-        client.project_locked_at = datetime.now(timezone.utc)
+    # DISCUSSION requires nothing (0044 removed the wishes/area/price/layout
+    # "project" group that used to be filled and locked here) — the stage
+    # still exists in the pipeline, it just no longer gates anything.
 
-    elif client.stage == ClientStage.APPROVAL:
+    if client.stage == ClientStage.APPROVAL:
         missing = [f for f in _DOCUMENTS_REQUIRED if getattr(client, f) is None]
         if missing:
             raise HTTPException(

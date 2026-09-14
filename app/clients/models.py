@@ -105,17 +105,18 @@ class Client(Base):
     # отрицательными и большими, поэтому BigInteger.
     max_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-    # --- Project info: appears at DISCUSSION, required before APPROVAL, then locked ---
-    order_type: Mapped[OrderType | None] = mapped_column(Enum(OrderType, name="order_type"), nullable=True)
-    wishes_description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    estimated_price: Mapped[float | None] = mapped_column(Numeric(14, 2, asdecimal=False), nullable=True)
-    house_area: Mapped[float | None] = mapped_column(Numeric(10, 2, asdecimal=False), nullable=True)
-    layout_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    project_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
+    # order_type/house_model_key used to live in a separate "project" group at
+    # DISCUSSION (with wishes/area/price/layout free-text fields) — removed by
+    # 0044, replaced by picking a real catalog model (app.house_models). Only
+    # order_type is required to leave APPROVAL (needed below); house_model_key
+    # is an optional reference — not every real house matches a catalog card.
+    order_type: Mapped[OrderType | None] = mapped_column(Enum(OrderType, name="order_type"), nullable=True)
+    house_model_key: Mapped[str | None] = mapped_column(ForeignKey("house_model_cards.key"), nullable=True)
     # houses_count is meaningful only for a MULTIPLE order; a SINGLE order is
-    # forced to 1. It fixes how many Production projects are spun up on POSTPAYMENT.
+    # forced to 1. It fixes how many Production projects are spun up on
+    # POSTPAYMENT. Unlike the rest of this group, it's never locked (0044) —
+    # editable any time, updated through its own endpoint/service function.
     houses_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     final_price: Mapped[float | None] = mapped_column(Numeric(14, 2, asdecimal=False), nullable=True)
     # Формат расчёта. Появляется на «согласовании», фиксируется вместе с
@@ -151,6 +152,9 @@ class Client(Base):
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     contract_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_file_id])  # noqa: F821
     house_project_file: Mapped["FileAsset"] = relationship(foreign_keys=[house_project_file_id])  # noqa: F821
+    # Read-only reference into the house_models catalog (0043) — this section
+    # doesn't own or manage that data, just points at it.
+    house_model: Mapped["HouseModelCard | None"] = relationship(viewonly=True)  # noqa: F821
 
 
 class ClientNote(Base):

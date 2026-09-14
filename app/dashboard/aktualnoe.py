@@ -133,7 +133,6 @@ def collect_cycle_activity(db: Session) -> list[CycleActivity]:
         stamps: list[tuple[str, datetime]] = []
         for name, value in (
             ("создан", client.created_at),
-            ("проект зафиксирован", client.project_locked_at),
             ("документы зафиксированы", client.documents_locked_at),
             ("оплата зафиксирована", client.payment_locked_at),
             ("остаток оплачен", client.balance_paid_at),
