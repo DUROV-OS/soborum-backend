@@ -141,6 +141,37 @@ class AgentActivity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class GrowthProposalStatus(str, enum.Enum):
+    OPEN = "open"
+    TASK_CREATED = "task_created"
+
+
+class GrowthProposal(Base):
+    """Одно предложение Марины по разделу «Развитие» в «Марине» (задача 0036) -
+    идея уровня «как сделать компанию лучше», которую можно превратить в
+    обычную задачу кнопкой «Подготовить задачу». Сама генерация предложений -
+    вне скоупа 0036: строки создаёт только демо-сид для localhost
+    (`app/ai/demo_seed.py`, по образцу AgentActivity из 0033)."""
+
+    __tablename__ = "ai_growth_proposals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    problem: Mapped[str] = mapped_column(Text, nullable=False)
+    checkable_result: Mapped[str] = mapped_column(Text, nullable=False)
+    executor_and_estimate: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_effect: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[GrowthProposalStatus] = mapped_column(
+        Enum(GrowthProposalStatus, name="ai_growth_proposal_status"),
+        nullable=False,
+        default=GrowthProposalStatus.OPEN,
+    )
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    task: Mapped["Task | None"] = relationship()  # noqa: F821
+
+
 class MeetingStatus(str, enum.Enum):
     RECORDING = "recording"
     FINISHED = "finished"
