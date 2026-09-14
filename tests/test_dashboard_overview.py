@@ -3,10 +3,14 @@
 сигнал внимания (используется разделом «Работа» вместо замоканного совета).
 """
 
+from sqlalchemy import event
+
 from app.accounting.schemas import MoneyMovementCreate
 from app.accounting.service import create_money_movement
 from app.common.module_access import Module
 from app.dashboard.overview import generate_section_signal, generate_today
+from app.dashboard.service import SECTION_BUILDERS, _snapshot_warehouse
+from app.warehouse.models import MaterialCategory, Warehouse, WarehouseMaterial
 
 
 def test_accounting_widget_and_action_reflect_real_drafts(db, make_user):
@@ -90,3 +94,52 @@ def test_section_signal_users_requires_admin_role(db, make_user):
     assert generate_section_signal(db, worker, "users").action is None
     # у свежесозданного admin нет workers без доступа выше нуля — просто не падает
     generate_section_signal(db, admin, "users")
+
+
+def test_cache_hit_does_not_recompute_section_snapshot(db, make_user, monkeypatch):
+    """0045: кэш должен экономить сам поход в builder, а не только сборку ответа —
+    раньше _section_snapshot вызывался до проверки кэша и пересчитывал раздел
+    заново на каждый запрос, кэш-хит или нет."""
+    user = make_user(Module.ACCOUNTING, admin=True)
+    generate_section_signal(db, user, "accounting", force=True)  # прогревает кэш реальным билдером
+
+    def boom(_db):
+        raise AssertionError("builder не должен вызываться при попадании в кэш")
+
+    monkeypatch.setitem(SECTION_BUILDERS, "accounting", (Module.ACCOUNTING, boom))
+    generate_section_signal(db, user, "accounting")  # кэш-хит — boom вызываться не должен
+
+
+def test_warehouse_snapshot_avoids_per_material_query(db):
+    """0045: _snapshot_warehouse раньше шёл через compute_breakdown на каждый
+    материал (N+1) — теперь число запросов не должно расти с числом материалов."""
+    for i in range(8):
+        db.add(WarehouseMaterial(
+            warehouse=Warehouse.TECHNOLOGY, category=MaterialCategory.NONE,
+            title=f"Материал {i}", code=f"M-{i}", unit="шт",
+            quantity_in_stock=10, threshold=5,
+        ))
+    db.add(WarehouseMaterial(
+        warehouse=Warehouse.TECHNOLOGY, category=MaterialCategory.NONE,
+        title="Дефицитный брус", code="M-shortage", unit="шт",
+        quantity_in_stock=1, threshold=100,
+    ))
+    db.commit()
+
+    queries: list[str] = []
+
+    def track(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", track)
+    try:
+        snapshot = _snapshot_warehouse(db)
+    finally:
+        event.remove(engine, "before_cursor_execute", track)
+
+    assert snapshot["total_materials"] == 9
+    assert snapshot["materials_needing_supply"] == 1
+    assert snapshot["top_shortage_materials"][0]["title"] == "Дефицитный брус"
+    # было бы 9+ запросов при N+1 (по одному на материал) — фиксируем, что не растёт с N
+    assert len(queries) <= 4
