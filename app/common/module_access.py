@@ -11,6 +11,7 @@ class Module(str, enum.Enum):
     CYCLE = "cycle"
     WAREHOUSE = "warehouse"
     MARKETING = "marketing"
+    HOUSE_MODELS = "house_models"
     TASKS = "tasks"
     AI = "ai"
     BOARD = "board"

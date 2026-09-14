@@ -22,6 +22,8 @@ from app.dashboard.router import app as dashboard_app
 from app.db import import_all_models  # noqa: F401  (registers all models with Base.metadata)
 from app.db.base import Base
 from app.db.session import engine, get_db, SessionLocal
+from app.house_models.import_kb import ensure_house_models_seed
+from app.house_models.router import app as house_models_app
 from app.installation.router import app as installation_app
 from app.marketing.router import app as marketing_app
 from app.max.router import app as max_app
@@ -75,6 +77,10 @@ def on_startup() -> None:
         # Runs after the demo clients/production/marketing seeds above so it
         # can link to real ids when they exist.
         ensure_agent_activity_seed(db)
+        # Не демо-сид: реальный каталог компании (задача 0043-a), должен
+        # присутствовать во всех окружениях, включая прод. Идемпотентно —
+        # upsert по key, повторный запуск не плодит дубликаты.
+        ensure_house_models_seed(db)
     finally:
         db.close()
     start_shift_loop()
@@ -105,6 +111,7 @@ app.mount("/api/installation", installation_app)
 app.mount("/api/cycles", cycle_app)
 app.mount("/api/warehouse", warehouse_app)
 app.mount("/api/marketing", marketing_app)
+app.mount("/api/house-models", house_models_app)
 app.mount("/api/max", max_app)
 app.mount("/api/tasks", tasks_app)
 app.mount("/api/ai", ai_app)
