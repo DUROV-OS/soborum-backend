@@ -37,6 +37,7 @@ METRICS = [
 # Ordered by urgency, with labels describing what the facts actually establish.
 ATTENTION = [
     ("tasks", "overdue_tasks", "Проверить просроченные задачи", "Уточните причину задержки и следующий срок.", "/tasks", "danger"),
+    ("cycle", "stuck_over_14_days", "Вернуться к зависшим циклам", "Цикл не продвигается дальше текущей стадии больше 14 дней.", "/cycles", "warning"),
     ("installation", "overdue_not_completed", "Проверить сроки монтажа", "Плановая дата прошла, этап проработки ещё не наступил.", "/montage", "danger"),
     ("production", "pending_material_requests", "Проверить заявки на материалы", "Заявки ожидают решения склада.", "/production", "warning"),
     ("warehouse", "materials_needing_supply", "Проверить пополнение склада", "Остатки и текущая потребность требуют внимания.", "/warehouse", "warning"),

@@ -3,11 +3,16 @@
 сигнал внимания (используется разделом «Работа» вместо замоканного совета).
 """
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import event
 
 from app.accounting.schemas import MoneyMovementCreate
 from app.accounting.service import create_money_movement
+import app.dashboard.overview as overview_module
+from app.clients.models import Client
 from app.common.module_access import Module
+from app.cycle.models import Cycle, CycleStatus
 from app.dashboard.overview import generate_section_signal, generate_today
 from app.dashboard.service import SECTION_BUILDERS, _snapshot_warehouse
 from app.warehouse.models import MaterialCategory, Warehouse, WarehouseMaterial
@@ -145,19 +150,16 @@ def test_warehouse_snapshot_avoids_per_material_query(db):
     assert len(queries) <= 4
 
 
-def test_section_signal_checked_only_for_sections_with_attention_entry(db, make_user):
+def test_section_signal_checked_only_for_sections_with_attention_entry(db, make_user, monkeypatch):
     """0045: «checked» — правда только там, где сигнал реально проверяется по
-    ATTENTION; для остального (например «cycle» — есть builder, но нет записи
-    в ATTENTION) action=None не значит «всё хорошо», значит «не проверяли»."""
-    user = make_user(Module.ACCOUNTING, Module.CYCLE, admin=True)
+    ATTENTION; для остального (неизвестный раздел, нет доступа, или раздел с
+    builder, но без записи в ATTENTION) action=None не значит «всё хорошо»,
+    значит «не проверяли»."""
+    user = make_user(Module.ACCOUNTING, admin=True)
 
     checked_and_clean = generate_section_signal(db, user, "accounting")
     assert checked_and_clean.action is None
     assert checked_and_clean.checked is True
-
-    has_builder_but_no_attention = generate_section_signal(db, user, "cycle")
-    assert has_builder_but_no_attention.action is None
-    assert has_builder_but_no_attention.checked is False
 
     unknown_section = generate_section_signal(db, user, "meetings")
     assert unknown_section.action is None
@@ -166,3 +168,39 @@ def test_section_signal_checked_only_for_sections_with_attention_entry(db, make_
     no_access = generate_section_signal(db, make_user(admin=False), "accounting")
     assert no_access.action is None
     assert no_access.checked is False
+
+    # Есть builder, но раздел исключён из ATTENTION — action=None не значит «чисто»
+    monkeypatch.setattr(overview_module, "ATTENTION_SECTIONS", set())
+    has_builder_but_no_attention = generate_section_signal(db, user, "accounting", force=True)
+    assert has_builder_but_no_attention.action is None
+    assert has_builder_but_no_attention.checked is False
+
+
+def test_cycle_stuck_over_14_days_is_a_real_attention_signal(db, make_user):
+    """0045 (по просьбе Арсения): «Цикл клиента» должен реально проверяться —
+    цикл считается зависшим, если не продвинулся дальше текущей стадии за
+    14 дней (created_at связанной по стадии записи)."""
+    user = make_user(Module.CYCLE, admin=True)
+
+    fresh_cycle = Cycle(status=CycleStatus.CLIENT)
+    db.add(fresh_cycle)
+    db.flush()
+    db.add(Client(
+        cycle_id=fresh_cycle.id, full_name="Свежий лид", phone="+7", email="fresh@example.com",
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    stuck_cycle = Cycle(status=CycleStatus.CLIENT)
+    db.add(stuck_cycle)
+    db.flush()
+    db.add(Client(
+        cycle_id=stuck_cycle.id, full_name="Зависший лид", phone="+7", email="stuck@example.com",
+        created_at=datetime.now(timezone.utc) - timedelta(days=15),
+    ))
+    db.commit()
+
+    empty = generate_section_signal(db, user, "cycle")
+    assert empty.checked is True
+    assert empty.action is not None
+    assert empty.action.count == 1
+    assert empty.action.id == "cycle:stuck_over_14_days"

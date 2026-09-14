@@ -69,10 +69,45 @@ def _snapshot_clients(db: Session) -> dict:
 
 
 def _snapshot_cycle(db: Session) -> dict:
+    """stuck_over_14_days: цикл не продвинулся дальше текущей стадии за 14 дней.
+    У Cycle самого нет отметки «когда вошёл в текущую стадию» — считаем по
+    created_at связанной по стадии записи (Client/Production/Installation),
+    та же логика, что и leads_stuck_over_14_days в _snapshot_clients. Для
+    PRODUCTION (может быть несколько домов) берём самую раннюю запись — момент
+    входа цикла в стадию, а не последнее добавление дома."""
+    now = datetime.now(timezone.utc)
+    stuck_threshold = now - timedelta(days=14)
+
     status_counts = dict.fromkeys([s.value for s in CycleStatus], 0)
     for cycle_status, count in db.query(Cycle.status, func.count(Cycle.id)).group_by(Cycle.status).all():
         status_counts[cycle_status.value] = count
-    return {"total_cycles": sum(status_counts.values()), "status_counts": status_counts}
+
+    stuck_client = (
+        db.query(func.count(Cycle.id))
+        .join(Client, Client.cycle_id == Cycle.id)
+        .filter(Cycle.status == CycleStatus.CLIENT, Client.created_at < stuck_threshold)
+        .scalar() or 0
+    )
+    stuck_production = (
+        db.query(Cycle.id)
+        .join(Production, Production.cycle_id == Cycle.id)
+        .filter(Cycle.status == CycleStatus.PRODUCTION)
+        .group_by(Cycle.id)
+        .having(func.min(Production.created_at) < stuck_threshold)
+        .count()
+    )
+    stuck_installation = (
+        db.query(func.count(Cycle.id))
+        .join(Installation, Installation.cycle_id == Cycle.id)
+        .filter(Cycle.status == CycleStatus.INSTALLATION, Installation.created_at < stuck_threshold)
+        .scalar() or 0
+    )
+
+    return {
+        "total_cycles": sum(status_counts.values()),
+        "status_counts": status_counts,
+        "stuck_over_14_days": stuck_client + stuck_production + stuck_installation,
+    }
 
 
 def _snapshot_installation(db: Session) -> dict:
