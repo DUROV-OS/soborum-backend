@@ -1,4 +1,5 @@
 """Deterministic operational overview. No model-generated counts or stale permission cache."""
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -89,16 +90,17 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
 SECTION_CACHE_TTL = timedelta(hours=6)
 
 
-def _section_snapshot(db: Session, user: User, section: str) -> dict | None:
+def _section_builder(user: User, section: str) -> Callable[[Session], dict] | None:
     """None — раздела нет в METRICS/ATTENTION (например «Совещание»/MAX/«Поставщики»
-    сейчас без посчитанного сигнала) или у пользователя нет доступа к нему."""
+    сейчас без посчитанного сигнала) или у пользователя нет доступа к нему. Не
+    трогает базу — только определяет, есть ли смысл дальше идти в кэш/снепшот."""
     if section == "users":
-        return _snapshot_users(db) if user.role == UserRole.ADMIN else None
+        return _snapshot_users if user.role == UserRole.ADMIN else None
     entry = SECTION_BUILDERS.get(section)
     if entry is None:
         return None
     module, builder = entry
-    return builder(db) if user.has_access(module) else None
+    return builder if user.has_access(module) else None
 
 
 def generate_section_signal(db: Session, user: User, section: str, force: bool = False) -> SectionSignalOut:
@@ -106,10 +108,12 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
     в `TodayDashboardOut.actions`, но не держит остальные плитки, если этот
     раздел тяжело считать, и кэшируется на 6 часов (общий кеш на организацию —
     факт один и тот же для всех, кому раздел вообще доступен; неавторизованный
-    запрос до кеша не доходит вовсе, см. `_section_snapshot` выше)."""
+    запрос до кеша не доходит вовсе, см. `_section_builder` выше). Кэш
+    проверяется **до** пересчёта снепшота — попадание в кэш не должно стоить
+    того же похода в базу, что и промах."""
     now = datetime.now(timezone.utc)
-    snapshot = _section_snapshot(db, user, section)
-    if snapshot is None:
+    builder = _section_builder(user, section)
+    if builder is None:
         return SectionSignalOut(section=section, action=None, generated_at=now)
 
     cache_key = f"dashboard_section_signal:{section}"
@@ -118,6 +122,7 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
         if cached is not None:
             return SectionSignalOut.model_validate(cached)
 
+    snapshot = builder(db)
     action = None
     for sec, metric, title, description, href, tone in ATTENTION:
         if sec != section:
