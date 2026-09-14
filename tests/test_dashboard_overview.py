@@ -143,3 +143,26 @@ def test_warehouse_snapshot_avoids_per_material_query(db):
     assert snapshot["top_shortage_materials"][0]["title"] == "Дефицитный брус"
     # было бы 9+ запросов при N+1 (по одному на материал) — фиксируем, что не растёт с N
     assert len(queries) <= 4
+
+
+def test_section_signal_checked_only_for_sections_with_attention_entry(db, make_user):
+    """0045: «checked» — правда только там, где сигнал реально проверяется по
+    ATTENTION; для остального (например «cycle» — есть builder, но нет записи
+    в ATTENTION) action=None не значит «всё хорошо», значит «не проверяли»."""
+    user = make_user(Module.ACCOUNTING, Module.CYCLE, admin=True)
+
+    checked_and_clean = generate_section_signal(db, user, "accounting")
+    assert checked_and_clean.action is None
+    assert checked_and_clean.checked is True
+
+    has_builder_but_no_attention = generate_section_signal(db, user, "cycle")
+    assert has_builder_but_no_attention.action is None
+    assert has_builder_but_no_attention.checked is False
+
+    unknown_section = generate_section_signal(db, user, "meetings")
+    assert unknown_section.action is None
+    assert unknown_section.checked is False
+
+    no_access = generate_section_signal(db, make_user(admin=False), "accounting")
+    assert no_access.action is None
+    assert no_access.checked is False

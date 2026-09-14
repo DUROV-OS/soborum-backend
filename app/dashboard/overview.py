@@ -48,6 +48,10 @@ ATTENTION = [
     ("accounting", "draft_awaiting_approval", "Проверить черновики проводок", "Проводки заведены, но ещё не согласованы.", "/accounting", "warning"),
 ]
 
+# Разделы, для которых вообще есть проверка на сигнал внимания — только для них
+# "action is None" означает "проверили, проблем нет", а не "не смотрели".
+ATTENTION_SECTIONS = {sec for sec, *_ in ATTENTION}
+
 
 def generate_today(db: Session, user: User) -> TodayDashboardOut:
     snapshot = build_snapshot(db, user)
@@ -114,7 +118,7 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
     now = datetime.now(timezone.utc)
     builder = _section_builder(user, section)
     if builder is None:
-        return SectionSignalOut(section=section, action=None, generated_at=now)
+        return SectionSignalOut(section=section, action=None, checked=False, generated_at=now)
 
     cache_key = f"dashboard_section_signal:{section}"
     if not force:
@@ -135,6 +139,6 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
             )
             break
 
-    out = SectionSignalOut(section=section, action=action, generated_at=now)
+    out = SectionSignalOut(section=section, action=action, checked=section in ATTENTION_SECTIONS, generated_at=now)
     ai_cache.set(db, cache_key, out.model_dump(mode="json"), now)
     return out
