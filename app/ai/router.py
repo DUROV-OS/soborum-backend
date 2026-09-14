@@ -19,6 +19,7 @@ from app.ai.models import (
     Chat,
     ChatDomain,
     ChatMode,
+    GrowthProposalStatus,
     McpCredential,
     Meeting,
     MeetingNotes,
@@ -35,6 +36,8 @@ from app.ai.schemas import (
     ChatOut,
     ChatTitleUpdate,
     ConsultAskResponse,
+    GrowthProposalOut,
+    GrowthProposalPrepareTaskOut,
     MeetingAskIn,
     MeetingAskOut,
     MeetingCreate,
@@ -55,6 +58,9 @@ from app.common.module_access import Module
 from app.core.config import settings
 from app.core.deps import get_current_user, require_admin, require_module
 from app.db.session import get_db
+from app.tasks import service as task_service
+from app.tasks.models import TaskLinkType
+from app.tasks.schemas import TaskOut
 from app.users.models import User
 
 app = FastAPI(
@@ -439,6 +445,42 @@ def list_agent_actions(limit: int = 30, db: Session = Depends(get_db), user: Use
     """Панель «Действия агента» справа от чата в «Марине» — общий (не по
     владельцу) лог, сейчас наполняется только демо-сидом на localhost (0033)."""
     return ai_service.list_agent_activity(db, limit=limit)
+
+
+@app.get("/growth-proposals", response_model=list[GrowthProposalOut])
+def list_growth_proposals(db: Session = Depends(get_db), user: User = Depends(require_ai)):
+    """Подраздел «Развитие» в «Марине» — предложения по улучшению бизнеса,
+    сейчас наполняется только демо-сидом на localhost (0036-a)."""
+    return ai_service.list_growth_proposals(db)
+
+
+@app.post("/growth-proposals/{proposal_id}/prepare-task", response_model=GrowthProposalPrepareTaskOut)
+def prepare_growth_proposal_task(
+    proposal_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)
+):
+    """Кнопка «Подготовить задачу» на карточке предложения — создаёт настоящую
+    задачу в разделе «Задачи» из полей предложения. Повторный вызов на уже
+    подготовленном предложении — 409."""
+    proposal = ai_service.get_growth_proposal_or_404(db, proposal_id)
+    if proposal.status == GrowthProposalStatus.TASK_CREATED:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Задача уже подготовлена")
+
+    task = task_service.create_task(
+        db,
+        title=proposal.title,
+        description=f"{proposal.problem}\n\nПроверяемый результат: {proposal.checkable_result}",
+        link_type=TaskLinkType.GROWTH_PROPOSAL,
+        link_id=proposal.id,
+    )
+    proposal.status = GrowthProposalStatus.TASK_CREATED
+    proposal.task_id = task.id
+    db.commit()
+    db.refresh(proposal)
+    db.refresh(task)
+    return GrowthProposalPrepareTaskOut(
+        proposal=GrowthProposalOut.model_validate(proposal),
+        task=TaskOut.from_model(task),
+    )
 
 
 #  --- Режим «Совещание» (0004-a): сессия + запись аудио, без ИИ ------------

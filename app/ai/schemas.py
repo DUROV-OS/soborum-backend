@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.ai.models import ChatDomain, ChatMode, MeetingStatus, PendingActionStatus
+from app.ai.models import ChatDomain, ChatMode, GrowthProposalStatus, MeetingStatus, PendingActionStatus
 from app.tasks.schemas import TaskOut
 
 
@@ -80,6 +80,25 @@ class AgentActivityOut(BaseModel):
     related_path: str | None
     related_label: str | None
     created_at: datetime
+
+
+class GrowthProposalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    problem: str
+    checkable_result: str
+    executor_and_estimate: str
+    expected_effect: str
+    status: GrowthProposalStatus
+    task_id: int | None
+    created_at: datetime
+
+
+class GrowthProposalPrepareTaskOut(BaseModel):
+    proposal: GrowthProposalOut
+    task: TaskOut
 
 
 class AskResponse(BaseModel):
