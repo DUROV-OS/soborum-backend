@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from app.max.client import MediaError, session
+from app.max.client import MediaError, UploadError, session
 
 
 def _sid(v: Any) -> str | None:
@@ -174,13 +174,28 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
     }
 
 
-def send_message(chat_id, text: str, notify: bool = True) -> dict[str, Any]:
+def send_message(
+    chat_id,
+    text: str,
+    notify: bool = True,
+    file: tuple[bytes, str, str] | None = None,
+) -> dict[str, Any]:
+    """Текст и/или файл (``file`` — ``(данные, имя, content_type)``). Пустой
+    текст допустим только вместе с файлом — иначе отправлять нечего."""
     text = (text or "").strip()
-    if not text:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой текст")
+    if not text and not file:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой текст или вложение")
     with session() as s:
+        attaches = None
+        if file is not None:
+            data, filename, content_type = file
+            try:
+                uploaded = s.upload_file(data, filename, content_type)
+            except UploadError as exc:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+            attaches = [{"_type": "FILE", "fileId": uploaded["fileId"], "token": uploaded["token"]}]
         try:
-            payload = s.send_message(chat_id, text, notify=notify)
+            payload = s.send_message(chat_id, text, notify=notify, attaches=attaches)
         except (TimeoutError, RuntimeError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
