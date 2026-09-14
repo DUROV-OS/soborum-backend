@@ -6,6 +6,7 @@ from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
+    ClientChatStateUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
@@ -122,6 +123,20 @@ def set_max_chat(
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.set_max_chat_id(db, client, payload)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.patch("/{client_id}/chat-state", response_model=ClientOut)
+def set_chat_state(
+    client_id: int,
+    payload: ClientChatStateUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_clients),
+):
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.set_chat_state(db, client, payload)
     db.commit()
     db.refresh(client)
     return client
