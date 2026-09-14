@@ -3,10 +3,19 @@
 сигнал внимания (используется разделом «Работа» вместо замоканного совета).
 """
 
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import event
+
 from app.accounting.schemas import MoneyMovementCreate
 from app.accounting.service import create_money_movement
+import app.dashboard.overview as overview_module
+from app.clients.models import Client
 from app.common.module_access import Module
+from app.cycle.models import Cycle, CycleStatus
 from app.dashboard.overview import generate_section_signal, generate_today
+from app.dashboard.service import SECTION_BUILDERS, _snapshot_warehouse
+from app.warehouse.models import MaterialCategory, Warehouse, WarehouseMaterial
 
 
 def test_accounting_widget_and_action_reflect_real_drafts(db, make_user):
@@ -90,3 +99,132 @@ def test_section_signal_users_requires_admin_role(db, make_user):
     assert generate_section_signal(db, worker, "users").action is None
     # у свежесозданного admin нет workers без доступа выше нуля — просто не падает
     generate_section_signal(db, admin, "users")
+
+
+def test_cache_hit_does_not_recompute_section_snapshot(db, make_user, monkeypatch):
+    """0045: кэш должен экономить сам поход в builder, а не только сборку ответа —
+    раньше _section_snapshot вызывался до проверки кэша и пересчитывал раздел
+    заново на каждый запрос, кэш-хит или нет."""
+    user = make_user(Module.ACCOUNTING, admin=True)
+    generate_section_signal(db, user, "accounting", force=True)  # прогревает кэш реальным билдером
+
+    def boom(_db):
+        raise AssertionError("builder не должен вызываться при попадании в кэш")
+
+    monkeypatch.setitem(SECTION_BUILDERS, "accounting", (Module.ACCOUNTING, boom))
+    generate_section_signal(db, user, "accounting")  # кэш-хит — boom вызываться не должен
+
+
+def test_warehouse_snapshot_avoids_per_material_query(db):
+    """0045: _snapshot_warehouse раньше шёл через compute_breakdown на каждый
+    материал (N+1) — теперь число запросов не должно расти с числом материалов."""
+    for i in range(8):
+        db.add(WarehouseMaterial(
+            warehouse=Warehouse.TECHNOLOGY, category=MaterialCategory.NONE,
+            title=f"Материал {i}", code=f"M-{i}", unit="шт",
+            quantity_in_stock=10, threshold=5,
+        ))
+    db.add(WarehouseMaterial(
+        warehouse=Warehouse.TECHNOLOGY, category=MaterialCategory.NONE,
+        title="Дефицитный брус", code="M-shortage", unit="шт",
+        quantity_in_stock=1, threshold=100,
+    ))
+    db.commit()
+
+    queries: list[str] = []
+
+    def track(conn, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", track)
+    try:
+        snapshot = _snapshot_warehouse(db)
+    finally:
+        event.remove(engine, "before_cursor_execute", track)
+
+    assert snapshot["total_materials"] == 9
+    assert snapshot["materials_needing_supply"] == 1
+    assert snapshot["top_shortage_materials"][0]["title"] == "Дефицитный брус"
+    # было бы 9+ запросов при N+1 (по одному на материал) — фиксируем, что не растёт с N
+    assert len(queries) <= 4
+
+
+def test_section_signal_checked_only_for_sections_with_attention_entry(db, make_user, monkeypatch):
+    """0045: «checked» — правда только там, где сигнал реально проверяется по
+    ATTENTION; для остального (неизвестный раздел, нет доступа, или раздел с
+    builder, но без записи в ATTENTION) action=None не значит «всё хорошо»,
+    значит «не проверяли»."""
+    user = make_user(Module.ACCOUNTING, admin=True)
+
+    checked_and_clean = generate_section_signal(db, user, "accounting")
+    assert checked_and_clean.action is None
+    assert checked_and_clean.checked is True
+    assert checked_and_clean.clear_text == "Черновиков без согласования нет."
+
+    unknown_section = generate_section_signal(db, user, "meetings")
+    assert unknown_section.action is None
+    assert unknown_section.checked is False
+    assert unknown_section.clear_text is None
+
+    no_access = generate_section_signal(db, make_user(admin=False), "accounting")
+    assert no_access.action is None
+    assert no_access.checked is False
+    assert no_access.clear_text is None
+
+    # Есть builder, но раздел исключён из ATTENTION — action=None не значит «чисто»
+    monkeypatch.setattr(overview_module, "ATTENTION_SECTIONS", set())
+    has_builder_but_no_attention = generate_section_signal(db, user, "accounting", force=True)
+    assert has_builder_but_no_attention.action is None
+    assert has_builder_but_no_attention.checked is False
+    assert has_builder_but_no_attention.clear_text is None
+
+
+def test_cycle_stuck_over_14_days_is_a_real_attention_signal(db, make_user):
+    """0045 (по просьбе Арсения): «Цикл клиента» должен реально проверяться —
+    цикл считается зависшим, если не продвинулся дальше текущей стадии за
+    14 дней (created_at связанной по стадии записи)."""
+    user = make_user(Module.CYCLE, admin=True)
+
+    fresh_cycle = Cycle(status=CycleStatus.CLIENT)
+    db.add(fresh_cycle)
+    db.flush()
+    db.add(Client(
+        cycle_id=fresh_cycle.id, full_name="Свежий лид", phone="+7", email="fresh@example.com",
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    stuck_cycle = Cycle(status=CycleStatus.CLIENT)
+    db.add(stuck_cycle)
+    db.flush()
+    db.add(Client(
+        cycle_id=stuck_cycle.id, full_name="Зависший лид", phone="+7", email="stuck@example.com",
+        created_at=datetime.now(timezone.utc) - timedelta(days=15),
+    ))
+    db.commit()
+
+    empty = generate_section_signal(db, user, "cycle")
+    assert empty.checked is True
+    assert empty.action is not None
+    assert empty.action.count == 1
+    assert empty.action.id == "cycle:stuck_over_14_days"
+    assert empty.clear_text is None  # есть проблема — не «всё в порядке»
+
+
+def test_cycle_clear_text_when_nothing_stuck(db, make_user):
+    """0045: зелёное «всё в порядке» несёт содержательный текст, что именно
+    проверили — не просто галочку."""
+    user = make_user(Module.CYCLE, admin=True)
+    fresh_cycle = Cycle(status=CycleStatus.CLIENT)
+    db.add(fresh_cycle)
+    db.flush()
+    db.add(Client(
+        cycle_id=fresh_cycle.id, full_name="Свежий лид", phone="+7", email="fresh2@example.com",
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+    signal = generate_section_signal(db, user, "cycle")
+    assert signal.action is None
+    assert signal.checked is True
+    assert signal.clear_text == "Зависших циклов нет."
