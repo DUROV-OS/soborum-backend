@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.accounting.router import app as accounting_app
 from app.accounting.seed import ensure_accounting_seed
 from app.agents.loop import start_shift_loop
-from app.ai.demo_seed import ensure_agent_activity_seed
+from app.ai.demo_seed import ensure_agent_activity_seed, ensure_growth_proposals_seed
 from app.agents.router import app as agents_app
 from app.clients.demo_seed import ensure_demo_clients_seed
 from app.clients.reconcile import start_stage_task_reconcile_loop
@@ -77,6 +77,9 @@ def on_startup() -> None:
         # Runs after the demo clients/production/marketing seeds above so it
         # can link to real ids when they exist.
         ensure_agent_activity_seed(db)
+        # Same contract again: demo rows for the "Развитие" list in "Марина"
+        # (0036-a) — never in prod, no-op once real proposals exist.
+        ensure_growth_proposals_seed(db)
         # Не демо-сид: реальный каталог компании (задача 0043-a), должен
         # присутствовать во всех окружениях, включая прод. Идемпотентно —
         # upsert по key, повторный запуск не плодит дубликаты.
