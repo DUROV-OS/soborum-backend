@@ -16,7 +16,7 @@ from app.production.models import MaterialRequest, MaterialRequestStatus, Module
 from app.tasks.models import Task, TaskStatus
 from app.users.models import User, UserRole
 from app.warehouse import service as warehouse_service
-from app.warehouse.models import Supply
+from app.warehouse.models import Supply, WarehouseMaterial
 
 SECTION_LABELS: dict[str, str] = {
     "clients": "Клиенты",
@@ -153,8 +153,21 @@ def _snapshot_production(db: Session) -> dict:
 
 
 def _snapshot_warehouse(db: Session) -> dict:
-    materials = warehouse_service.list_materials(db)
-    needs_supply = [m for m in materials if m.needs_supply]
+    """Только агрегаты для дашборд-сигнала — не через warehouse_service.list_materials
+    (тот на каждый материал отдельным запросом считает compute_breakdown, N+1 на
+    складе с десятками позиций). Запрошенное количество на материал — одним
+    GROUP BY, needs_supply — та же формула, что и в warehouse_service."""
+    materials = db.query(WarehouseMaterial).order_by(WarehouseMaterial.id).all()
+    requested_by_material = dict(
+        db.query(MaterialRequest.warehouse_material_id, func.sum(MaterialRequest.quantity))
+        .filter(MaterialRequest.status == MaterialRequestStatus.PENDING)
+        .group_by(MaterialRequest.warehouse_material_id)
+        .all()
+    )
+    needs_supply = [
+        m for m in materials
+        if warehouse_service.needs_supply(m, float(requested_by_material.get(m.id, 0)))
+    ]
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     top_shortage = sorted(needs_supply, key=lambda m: m.quantity_in_stock - m.threshold)[:5]
     return {
