@@ -5,7 +5,7 @@
 авторизованный пользователь; данные MAX общие для организации.
 """
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from pydantic import BaseModel, Field
 
 from app.core.deps import get_current_user
@@ -65,6 +65,28 @@ def get_attachment(
     (``window.open`` / ``<a download>``), не для ``fetch``. Для фото берите
     ``attach.baseUrl`` напрямую, для видео/аудио — ``GET /media``."""
     return {"url": max_service.get_attachment_url(chat_id, message_id, file_id)}
+
+
+@app.get("/attachment/preview")
+def get_attachment_preview(
+    chat_id: int,
+    message_id: str,
+    file_id: int,
+    filename: str,
+    _: User = Depends(get_current_user),
+):
+    """Прокси вложения FILE для показа в приложении (0031), не для скачивания.
+
+    В отличие от `GET /attachment` (одноразовая ссылка на `fd.oneme.ru`, без
+    CORS — годится только для навигации), этот эндпоинт сам скачивает файл с
+    той ссылки и отдаёт его с фронта — с тем же CORS, что и весь `/api`, так
+    что подходит для `fetch`/`<img>`/`<embed>`. ``filename`` — только для
+    определения content-type по расширению (MAX его не сообщает); тип
+    ограничен списком в `max_service.PREVIEWABLE_EXTENSIONS`, остальное —
+    422, чтобы фронт откатился на кнопку «Скачать». Больше 15 МБ — 413,
+    без прокси, тоже откат на скачивание."""
+    data, content_type = max_service.get_attachment_preview(chat_id, message_id, file_id, filename)
+    return Response(content=data, media_type=content_type)
 
 
 @app.get("/media")
