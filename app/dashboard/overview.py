@@ -53,6 +53,22 @@ ATTENTION = [
 # "action is None" означает "проверили, проблем нет", а не "не смотрели".
 ATTENTION_SECTIONS = {sec for sec, *_ in ATTENTION}
 
+# Текст для зелёного «всё в порядке» — что именно проверили и что там чисто.
+# Один на раздел (не на метрику): у раздела может быть несколько ATTENTION-
+# записей (например clients — 3), а "action is None" означает, что ни одна
+# из них не сработала, то есть чисто по всем сразу.
+ALL_CLEAR_TEXT: dict[str, str] = {
+    "tasks": "Просроченных задач нет.",
+    "cycle": "Зависших циклов нет.",
+    "installation": "Просроченных монтажей нет.",
+    "production": "Заявок на материалы, ожидающих решения, нет.",
+    "warehouse": "Позиций, требующих пополнения, нет.",
+    "clients": "Проблемных оплат и зависших обращений нет.",
+    "marketing": "Просроченных публикаций нет.",
+    "users": "Все активные сотрудники получили доступ.",
+    "accounting": "Черновиков без согласования нет.",
+}
+
 
 def generate_today(db: Session, user: User) -> TodayDashboardOut:
     snapshot = build_snapshot(db, user)
@@ -140,6 +156,8 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
             )
             break
 
-    out = SectionSignalOut(section=section, action=action, checked=section in ATTENTION_SECTIONS, generated_at=now)
+    checked = section in ATTENTION_SECTIONS
+    clear_text = ALL_CLEAR_TEXT.get(section) if checked and action is None else None
+    out = SectionSignalOut(section=section, action=action, checked=checked, clear_text=clear_text, generated_at=now)
     ai_cache.set(db, cache_key, out.model_dump(mode="json"), now)
     return out

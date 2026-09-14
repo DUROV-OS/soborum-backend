@@ -160,20 +160,24 @@ def test_section_signal_checked_only_for_sections_with_attention_entry(db, make_
     checked_and_clean = generate_section_signal(db, user, "accounting")
     assert checked_and_clean.action is None
     assert checked_and_clean.checked is True
+    assert checked_and_clean.clear_text == "Черновиков без согласования нет."
 
     unknown_section = generate_section_signal(db, user, "meetings")
     assert unknown_section.action is None
     assert unknown_section.checked is False
+    assert unknown_section.clear_text is None
 
     no_access = generate_section_signal(db, make_user(admin=False), "accounting")
     assert no_access.action is None
     assert no_access.checked is False
+    assert no_access.clear_text is None
 
     # Есть builder, но раздел исключён из ATTENTION — action=None не значит «чисто»
     monkeypatch.setattr(overview_module, "ATTENTION_SECTIONS", set())
     has_builder_but_no_attention = generate_section_signal(db, user, "accounting", force=True)
     assert has_builder_but_no_attention.action is None
     assert has_builder_but_no_attention.checked is False
+    assert has_builder_but_no_attention.clear_text is None
 
 
 def test_cycle_stuck_over_14_days_is_a_real_attention_signal(db, make_user):
@@ -204,3 +208,23 @@ def test_cycle_stuck_over_14_days_is_a_real_attention_signal(db, make_user):
     assert empty.action is not None
     assert empty.action.count == 1
     assert empty.action.id == "cycle:stuck_over_14_days"
+    assert empty.clear_text is None  # есть проблема — не «всё в порядке»
+
+
+def test_cycle_clear_text_when_nothing_stuck(db, make_user):
+    """0045: зелёное «всё в порядке» несёт содержательный текст, что именно
+    проверили — не просто галочку."""
+    user = make_user(Module.CYCLE, admin=True)
+    fresh_cycle = Cycle(status=CycleStatus.CLIENT)
+    db.add(fresh_cycle)
+    db.flush()
+    db.add(Client(
+        cycle_id=fresh_cycle.id, full_name="Свежий лид", phone="+7", email="fresh2@example.com",
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+    signal = generate_section_signal(db, user, "cycle")
+    assert signal.action is None
+    assert signal.checked is True
+    assert signal.clear_text == "Зависших циклов нет."

@@ -46,6 +46,9 @@ class SectionSignalOut(BaseModel):
     section: str
     action: DashboardAction | None = None
     checked: bool = False
+    # Текст «что именно проверили и что там чисто» — заполнен только когда
+    # checked=true и action=None (см. ALL_CLEAR_TEXT в overview.py).
+    clear_text: str | None = None
     generated_at: datetime
 
 
