@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.clients.models import ClientStage, OrderType, PaymentPlan
+from app.clients.models import ClientChatState, ClientStage, OrderType, PaymentPlan
 from app.common.files import FileAssetOut
 from app.house_models.schemas import HouseModelBriefOut
 
@@ -27,6 +27,13 @@ class ClientMaxChatUpdate(BaseModel):
     отвязывает; `0` — «Избранное»."""
 
     max_chat_id: int | None = None
+
+
+class ClientChatStateUpdate(BaseModel):
+    """Смена состояния переписки. Только для клиента с уже привязанным чатом
+    (см. client_service.set_chat_state)."""
+
+    state: ClientChatState
 
 
 class ClientDocumentsUpdate(BaseModel):
@@ -81,6 +88,7 @@ class ClientOut(BaseModel):
     email: str
     contacts: list[ClientContact] = []
     max_chat_id: int | None
+    max_chat_state: ClientChatState | None
 
     order_type: OrderType | None
     house_model_key: str | None

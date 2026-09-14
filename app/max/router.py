@@ -7,8 +7,11 @@
 
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from app.clients.models import Client
 from app.core.deps import get_current_user
+from app.db.session import get_db
 from app.max import service as max_service
 from app.users.models import User
 
@@ -26,10 +29,25 @@ app = FastAPI(
 
 
 @app.get("/chats")
-def list_chats(limit: int | None = None, _: User = Depends(get_current_user)):
+def list_chats(
+    limit: int | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
     """Список чатов с последним сообщением в каждом. ``limit`` — сколько
-    самых свежих вернуть (по умолчанию все)."""
-    return max_service.list_chats(limit)
+    самых свежих вернуть (по умолчанию все). Каждый чат дополнительно
+    аннотирован ``linkedClientId``/``linkedClientName``, если он привязан к
+    клиенту (app.clients) — для обратной привязки «из MAX к клиенту»."""
+    result = max_service.list_chats(limit)
+    linked = {
+        c.max_chat_id: (c.id, c.full_name)
+        for c in db.query(Client).filter(Client.max_chat_id.isnot(None))
+    }
+    for chat in result["chats"]:
+        client_id, client_name = linked.get(chat["id"], (None, None))
+        chat["linkedClientId"] = client_id
+        chat["linkedClientName"] = client_name
+    return result
 
 
 @app.get("/chats/{chat_id}")
