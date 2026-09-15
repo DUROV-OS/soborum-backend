@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.ai import analytics as ai_analytics
 from app.ai import attachments as ai_attachments
 from app.ai import engine
+from app.ai import growth_ideation as ai_growth_ideation
 from app.ai import mcp_auth
 from app.ai import meeting_ask as ai_meeting_ask
 from app.ai import meeting_notes as ai_meeting_notes
@@ -448,9 +449,15 @@ def list_agent_actions(limit: int = 30, db: Session = Depends(get_db), user: Use
 
 
 @app.get("/growth-proposals", response_model=list[GrowthProposalOut])
-def list_growth_proposals(db: Session = Depends(get_db), user: User = Depends(require_ai)):
-    """Подраздел «Развитие» в «Марине» — предложения по улучшению бизнеса,
-    сейчас наполняется только демо-сидом на localhost (0036-a)."""
+def list_growth_proposals(
+    reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai)
+):
+    """Подраздел «Развитие» в «Марине» — предложения по улучшению бизнеса.
+    reload=true запускает реальную генерацию через Claude (0050-a) и заменяет
+    открытые предложения новым набором; без reload — то что уже есть в базе
+    (демо-сид 0036-a на localhost без ключа, или ранее сгенерированное)."""
+    if reload:
+        ai_growth_ideation.regenerate_growth_proposals(db, user)
     return ai_service.list_growth_proposals(db)
 
 
