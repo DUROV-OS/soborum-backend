@@ -6,10 +6,17 @@
 набором. Уже подготовленные (status=task_created) предложения не трогает.
 """
 
+import json
+from datetime import datetime, timezone
+
 import anthropic
 from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
 
+from app.ai.models import GrowthProposal, GrowthProposalStatus
 from app.core.config import settings
+from app.dashboard.service import build_snapshot
+from app.users.models import User
 
 SUBMIT_TOOL_NAME = "submit_growth_proposals"
 
@@ -87,3 +94,50 @@ def _get_client() -> anthropic.Anthropic:
     from app.core.llm import anthropic_client
 
     return anthropic_client()
+
+
+def generate_growth_proposals(db: Session, user: User) -> list[GrowthProposal]:
+    """Строит срез компании и просит Claude предложить 3 идеи развития.
+    Не трогает БД — возвращает несохранённые объекты GrowthProposal, замену
+    существующих строк делает вызывающий код одной транзакцией."""
+    snapshot = build_snapshot(db, user)
+
+    client = _get_client()
+    response = client.messages.create(
+        model=settings.ai_model,
+        max_tokens=2048,
+        system=SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Срез компании на {datetime.now(timezone.utc).date().isoformat()}:\n\n"
+                + json.dumps(snapshot, ensure_ascii=False, default=str),
+            }
+        ],
+        tools=[TOOL_SCHEMA],
+        tool_choice={"type": "tool", "name": SUBMIT_TOOL_NAME},
+    )
+
+    tool_use = next((block for block in response.content if block.type == "tool_use"), None)
+    if tool_use is None:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ не вернул предложения")
+
+    proposals: list[GrowthProposal] = []
+    for item in tool_use.input.get("proposals", []):
+        if not all(str(item.get(field, "")).strip() for field in REQUIRED_FIELDS):
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ вернул неполное предложение")
+        proposals.append(
+            GrowthProposal(
+                title=item["title"],
+                problem=item["problem"],
+                checkable_result=item["checkable_result"],
+                executor_and_estimate=item["executor_and_estimate"],
+                expected_effect=item["expected_effect"],
+                status=GrowthProposalStatus.OPEN,
+            )
+        )
+
+    if not proposals:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ не вернул предложения")
+
+    return proposals
