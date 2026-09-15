@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.ai.models import AgentActivity, Chat, ChatDomain, ChatMode, PendingAction
+from app.ai.models import AgentActivity, Chat, ChatDomain, ChatMode, GrowthProposal, PendingAction
 from app.users.models import User
 
 
@@ -96,3 +96,16 @@ def list_agent_activity(db: Session, limit: int = 30) -> list[AgentActivity]:
     """Общий (не по владельцу) лог «Действия агента» — витрина, не привязана
     к конкретному чату. См. app/ai/demo_seed.py, задача 0033."""
     return db.query(AgentActivity).order_by(AgentActivity.id.desc()).limit(limit).all()
+
+
+def list_growth_proposals(db: Session) -> list[GrowthProposal]:
+    """Подраздел «Развитие» в «Марине» — витрина, не привязана к владельцу.
+    См. app/ai/demo_seed.py, задача 0036-a."""
+    return db.query(GrowthProposal).order_by(GrowthProposal.id.desc()).all()
+
+
+def get_growth_proposal_or_404(db: Session, proposal_id: int) -> GrowthProposal:
+    proposal = db.get(GrowthProposal, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Предложение не найдено")
+    return proposal

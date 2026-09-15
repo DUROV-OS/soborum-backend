@@ -44,6 +44,9 @@ class TaskLinkType(str, enum.Enum):
     # / нет назначения (см. app.accounting.payment_import, задача 0011-k).
     # link_meta = {movement_ids, missing_fields}.
     MONEY_MOVEMENT_BACKFILL = "money_movement_backfill"
+    # Задача, подготовленная из предложения Марины по развитию бизнеса (раздел
+    # «Марина» → «Развитие», задача 0036-a). link_id — id GrowthProposal.
+    GROWTH_PROPOSAL = "growth_proposal"
 
 
 task_assignees = Table(
