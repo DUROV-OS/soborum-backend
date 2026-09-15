@@ -141,3 +141,21 @@ def generate_growth_proposals(db: Session, user: User) -> list[GrowthProposal]:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ не вернул предложения")
 
     return proposals
+
+
+def regenerate_growth_proposals(db: Session, user: User) -> list[GrowthProposal]:
+    """Заменяет все открытые (status=open) предложения новым сгенерированным
+    набором в одной транзакции; уже подготовленные (task_created) не трогает.
+    Замена происходит только при успешном ответе ИИ — ошибка генерации не
+    удаляет то, что уже было в базе."""
+    new_proposals = generate_growth_proposals(db, user)
+
+    db.query(GrowthProposal).filter(GrowthProposal.status == GrowthProposalStatus.OPEN).delete(
+        synchronize_session=False
+    )
+    for proposal in new_proposals:
+        db.add(proposal)
+    db.commit()
+    for proposal in new_proposals:
+        db.refresh(proposal)
+    return new_proposals
