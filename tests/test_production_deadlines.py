@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.production import deadlines
-from app.production.models import MaterialRequest, MaterialRequestStatus, ModuleMaterial, Production, ProductionModule
+from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.tasks.models import Task, TaskStatus
 from app.warehouse.models import MaterialCategory, Warehouse, WarehouseMaterial
 
@@ -22,11 +22,11 @@ def _make_production(db):
     return production
 
 
-def _make_module(db, production, name="Каркас"):
-    module = ProductionModule(production_id=production.id, name=name)
-    db.add(module)
+def _make_block(db, production, name="Каркас"):
+    block = ProductionBlock(production_id=production.id, name=name)
+    db.add(block)
     db.flush()
-    return module
+    return block
 
 
 def _make_warehouse_material(db, title="Брус"):
@@ -48,12 +48,12 @@ def test_no_signals_means_on_schedule(db):
     assert result.impact == ""
 
 
-def test_overdue_task_fallback_names_the_module_and_task(db, make_user):
+def test_overdue_task_fallback_names_the_block_and_task(db, make_user):
     production = _make_production(db)
-    module = _make_module(db, production, name="Кровля")
+    block = _make_block(db, production, name="Кровля")
     assignee = make_user(Module.PRODUCTION)
     task = Task(
-        title="Смонтировать стропила", module_id=module.id, status=TaskStatus.READY,
+        title="Смонтировать стропила", block_id=block.id, status=TaskStatus.READY,
         deadline=datetime.now(timezone.utc) - timedelta(days=3),
     )
     task.assignees = [assignee]
@@ -69,22 +69,22 @@ def test_overdue_task_fallback_names_the_module_and_task(db, make_user):
 
 def test_pending_material_request_outranks_unrequested_shortfall(db, make_user):
     production = _make_production(db)
-    module = _make_module(db, production)
+    block = _make_block(db, production)
     requester = make_user(Module.PRODUCTION)
     warehouse_material = _make_warehouse_material(db)
 
-    requested = ModuleMaterial(
-        module_id=module.id, warehouse_material_id=warehouse_material.id,
+    requested = BlockMaterial(
+        block_id=block.id, warehouse_material_id=warehouse_material.id,
         inventory_number="INV-1", unit="шт", quantity_required=5, quantity_requested=5,
     )
-    unrequested = ModuleMaterial(
-        module_id=module.id, warehouse_material_id=warehouse_material.id,
+    unrequested = BlockMaterial(
+        block_id=block.id, warehouse_material_id=warehouse_material.id,
         inventory_number="INV-2", unit="шт", quantity_required=3,
     )
     db.add_all([requested, unrequested])
     db.flush()
     db.add(MaterialRequest(
-        module_material_id=requested.id, warehouse_material_id=warehouse_material.id,
+        block_material_id=requested.id, warehouse_material_id=warehouse_material.id,
         quantity=5, status=MaterialRequestStatus.PENDING, requested_by_id=requester.id,
     ))
     db.commit()
@@ -96,9 +96,9 @@ def test_pending_material_request_outranks_unrequested_shortfall(db, make_user):
 
 def test_ai_result_is_cached_until_ttl(db, monkeypatch):
     production = _make_production(db)
-    module = _make_module(db, production)
+    block = _make_block(db, production)
     task = Task(
-        title="Задача", module_id=module.id, status=TaskStatus.READY,
+        title="Задача", block_id=block.id, status=TaskStatus.READY,
         deadline=datetime.now(timezone.utc) - timedelta(days=1),
     )
     db.add(task)
@@ -122,9 +122,9 @@ def test_ai_result_is_cached_until_ttl(db, monkeypatch):
 
 def test_force_recomputes_bypassing_cache(db, monkeypatch):
     production = _make_production(db)
-    module = _make_module(db, production)
+    block = _make_block(db, production)
     task = Task(
-        title="Задача", module_id=module.id, status=TaskStatus.READY,
+        title="Задача", block_id=block.id, status=TaskStatus.READY,
         deadline=datetime.now(timezone.utc) - timedelta(days=1),
     )
     db.add(task)

@@ -10,7 +10,7 @@ from app.clients.models import Client
 from app.common.files import FileAsset, FilePurpose
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
-from app.production.models import MaterialRequest, MaterialRequestStatus, ModuleMaterial, Production, ProductionModule
+from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.tasks.models import Task, TaskStatus
 from app.warehouse.models import MaterialCategory, Warehouse, WarehouseMaterial
 
@@ -35,11 +35,11 @@ def _make_production_with_client(db, **client_fields):
     return production
 
 
-def _make_module(db, production):
-    module = ProductionModule(production_id=production.id, name="Модуль")
-    db.add(module)
+def _make_block(db, production):
+    block = ProductionBlock(production_id=production.id, name="Блок")
+    db.add(block)
     db.flush()
-    return module
+    return block
 
 
 def _make_warehouse_material(db):
@@ -69,23 +69,23 @@ def test_home_has_no_signals_for_clean_production(api, make_user, db):
 def test_home_reports_pending_material_request_of_this_production_only(api, make_user, db):
     production = _make_production_with_client(db)
     other_production = _make_production_with_client(db)
-    module = _make_module(db, production)
-    other_module = _make_module(db, other_production)
+    block = _make_block(db, production)
+    other_block = _make_block(db, other_production)
     warehouse_material = _make_warehouse_material(db)
     requester = make_user(Module.PRODUCTION)
 
-    material = ModuleMaterial(
-        module_id=module.id, warehouse_material_id=warehouse_material.id,
+    material = BlockMaterial(
+        block_id=block.id, warehouse_material_id=warehouse_material.id,
         inventory_number="INV-1", unit="шт", quantity_required=5,
     )
-    other_material = ModuleMaterial(
-        module_id=other_module.id, warehouse_material_id=warehouse_material.id,
+    other_material = BlockMaterial(
+        block_id=other_block.id, warehouse_material_id=warehouse_material.id,
         inventory_number="INV-2", unit="шт", quantity_required=0,
     )
     db.add_all([material, other_material])
     db.flush()
     db.add(MaterialRequest(
-        module_material_id=material.id, warehouse_material_id=warehouse_material.id,
+        block_material_id=material.id, warehouse_material_id=warehouse_material.id,
         quantity=3, status=MaterialRequestStatus.PENDING, requested_by_id=requester.id,
     ))
     db.commit()
@@ -102,10 +102,10 @@ def test_home_reports_pending_material_request_of_this_production_only(api, make
 
 def test_home_reports_overdue_task_of_this_production(api, make_user, db):
     production = _make_production_with_client(db)
-    module = _make_module(db, production)
+    block = _make_block(db, production)
     assignee = make_user(Module.PRODUCTION)
     overdue_task = Task(
-        title="Просроченная задача", module_id=module.id, status=TaskStatus.READY,
+        title="Просроченная задача", block_id=block.id, status=TaskStatus.READY,
         deadline=datetime(2020, 1, 1, tzinfo=timezone.utc),
     )
     overdue_task.assignees = [assignee]
