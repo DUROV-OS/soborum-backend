@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.common.module_access import Module as AccessModule
 from app.core.deps import require_admin, require_module
 from app.db.session import get_db
+from app.production import home as production_home
 from app.production import service as production_service
 from app.production.models import Production, ProductionModule
 from app.cycle.models import Cycle
@@ -17,6 +18,7 @@ from app.production.schemas import (
     ModuleMaterialUpdate,
     ModuleOut,
     ModuleUpdate,
+    ProductionHomeOut,
     ProductionOut,
     ProductionListOut,
 )
@@ -55,6 +57,14 @@ def list_productions(
 @app.get("/{production_id}", response_model=ProductionOut)
 def get_production(production_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
     return production_service.get_production_or_404(db, production_id)
+
+
+@app.get("/{production_id}/home", response_model=ProductionHomeOut)
+def get_production_home(
+    production_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)
+):
+    production = production_service.get_production_or_404(db, production_id)
+    return production_home.build_home(db, production)
 
 
 @app.delete("/{production_id}", status_code=204)
