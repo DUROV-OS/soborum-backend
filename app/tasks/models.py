@@ -90,8 +90,8 @@ class Task(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Set when this task belongs to a production module - see app/production/models.py.
-    module_id: Mapped[int | None] = mapped_column(ForeignKey("modules.id"), nullable=True)
+    # Set when this task belongs to a production block - see app/production/models.py.
+    block_id: Mapped[int | None] = mapped_column(ForeignKey("production_blocks.id"), nullable=True)
 
     link_type: Mapped[TaskLinkType] = mapped_column(
         Enum(TaskLinkType, name="task_link_type"), nullable=False, default=TaskLinkType.NONE
@@ -99,7 +99,7 @@ class Task(Base):
     link_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     link_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    module: Mapped["ProductionModule"] = relationship(back_populates="tasks")  # noqa: F821
+    block: Mapped["ProductionBlock"] = relationship(back_populates="tasks")  # noqa: F821
 
     assignees: Mapped[list["User"]] = relationship(secondary=task_assignees)  # noqa: F821
     reviewers: Mapped[list["User"]] = relationship(secondary=task_reviewers)  # noqa: F821
