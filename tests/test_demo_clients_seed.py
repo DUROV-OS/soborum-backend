@@ -61,3 +61,17 @@ def test_seed_does_not_run_in_prod(db, monkeypatch):
     monkeypatch.setattr(settings, "app_env", "prod")
     assert ensure_demo_clients_seed(db) == 0
     assert db.query(Client).count() == 0
+
+
+def test_seed_attaches_real_ar_kr_templates_to_first_client(db, make_user):
+    make_user(admin=True)
+    ensure_demo_clients_seed(db)
+
+    first_client = db.query(Client).order_by(Client.id).first()
+    assert first_client.ar_file_id is not None
+    assert first_client.kr_file_id is not None
+    assert first_client.ar_file.filename.endswith(".pdf")
+    assert first_client.kr_file.filename.endswith(".pdf")
+    # «Проект дома» намеренно не заполняется демо-сидом (0065-d) — среди
+    # присланных шаблонов нет отдельного файла с таким назначением.
+    assert first_client.house_project_file_id is None
