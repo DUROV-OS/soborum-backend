@@ -1,15 +1,18 @@
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.clients import service as client_service
 from app.common.module_access import Module as AccessModule
 from app.core.deps import require_admin, require_module
 from app.db.session import get_db
 from app.production import home as production_home
+from app.production import kr_extraction
 from app.production import service as production_service
 from app.production.models import Production, ProductionModule
 from app.cycle.models import Cycle
 from app.production.schemas import (
+    KrExtractionOut,
     MaterialRequestCreate,
     MaterialRequestOut,
     ModuleCreate,
@@ -152,3 +155,20 @@ def request_material(
     db.commit()
     db.refresh(request)
     return request
+
+
+@app.post("/kr-extraction/{client_id}", response_model=KrExtractionOut, status_code=201)
+def run_kr_extraction(client_id: int, db: Session = Depends(get_db), user: User = Depends(require_production)):
+    client = client_service.get_client_or_404(db, client_id)
+    record = kr_extraction.run_kr_extraction(db, client, user)
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+@app.get("/kr-extraction/{client_id}", response_model=KrExtractionOut)
+def get_kr_extraction(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
+    record = kr_extraction.get_kr_extraction(db, client_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Разбор КР ещё не запускался")
+    return record

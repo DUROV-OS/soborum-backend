@@ -133,3 +133,20 @@ class ProductionHomeOut(BaseModel):
     aktualnoe: ProductionAktualnoeOut | None
     deadlines: DeadlineInsightOut
     documents: ProductionHomeDocumentsOut
+
+
+# --------------------------------------------------------- разбор КР (0066-c) --
+
+
+class KrPageOut(BaseModel):
+    page_number: int
+    text: str
+    image_file_id: int
+
+
+class KrExtractionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    client_id: int
+    pages: list[KrPageOut]
+    extracted_at: datetime

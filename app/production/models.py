@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -89,3 +89,20 @@ class MaterialRequest(Base):
     warehouse_material: Mapped["WarehouseMaterial"] = relationship()  # noqa: F821
     requested_by: Mapped["User"] = relationship(foreign_keys=[requested_by_id])  # noqa: F821
     decided_by: Mapped["User"] = relationship(foreign_keys=[decided_by_id])  # noqa: F821
+
+
+class KrExtraction(Base):
+    """Постраничный разбор КР (0066-c) одного клиента — текст + ссылка на
+    рендер-изображение каждой страницы, сырьё для ИИ-генерации графа этапов
+    ([[0066-d]]). Одна запись на клиента (`client_id` уникален), перезаписывается
+    при повторном запуске (КР могли заменить) — не история версий."""
+
+    __tablename__ = "kr_extractions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, unique=True)
+    # [{"page_number": int, "text": str, "image_file_id": int}, ...]
+    pages: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    client: Mapped["Client"] = relationship()  # noqa: F821

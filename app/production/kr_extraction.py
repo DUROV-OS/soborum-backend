@@ -18,8 +18,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.clients.models import Client
 from app.common.files import FilePurpose, save_bytes_file
+from app.production.models import KrExtraction
 
 log = logging.getLogger("app.production.kr_extraction")
 
@@ -91,3 +97,30 @@ def extract_kr_pages(db, path_on_disk: str, client_id: int, uploaded_by) -> list
     finally:
         doc.close()
     return pages
+
+
+def run_kr_extraction(db: Session, client: Client, user) -> KrExtraction:
+    """Запускает разбор `client.kr_file` и сохраняет результат (одна запись на
+    клиента — перезаписывается, если разбор уже запускался, т.к. КР могли
+    заменить)."""
+    if not client.kr_file_id or client.kr_file is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="У клиента нет загруженного КР")
+
+    pages = extract_kr_pages(db, client.kr_file.path_on_disk, client.id, user)
+    pages_json = [
+        {"page_number": p.page_number, "text": p.text, "image_file_id": p.image_file_id} for p in pages
+    ]
+
+    record = get_kr_extraction(db, client.id)
+    if record is not None:
+        record.pages = pages_json
+        record.extracted_at = datetime.now(timezone.utc)
+    else:
+        record = KrExtraction(client_id=client.id, pages=pages_json)
+        db.add(record)
+    db.flush()
+    return record
+
+
+def get_kr_extraction(db: Session, client_id: int) -> KrExtraction | None:
+    return db.query(KrExtraction).filter(KrExtraction.client_id == client_id).one_or_none()
