@@ -4,12 +4,14 @@ from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
 from app.core.config import settings
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.users.models import User, UserModuleAccess, UserRole
 
 log = logging.getLogger("app.users.service")
 
 _INSECURE_ADMIN_PASSWORDS = {"", "admin123", "admin", "password"}
+
+DEFAULT_RESET_PASSWORD = "password1234"
 
 
 def bootstrap_admin(db: Session) -> None:
@@ -57,6 +59,18 @@ def create_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+def reset_password_to_default(db: Session, user: User) -> None:
+    user.hashed_password = hash_password(DEFAULT_RESET_PASSWORD)
+    db.commit()
+
+
+def change_password(db: Session, user: User, current_password: str, new_password: str) -> None:
+    if not verify_password(current_password, user.hashed_password):
+        raise ValueError("Текущий пароль указан неверно")
+    user.hashed_password = hash_password(new_password)
+    db.commit()
 
 
 def set_module_access(db: Session, user: User, module_access: list[Module]) -> None:

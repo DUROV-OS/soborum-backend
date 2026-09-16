@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.common.module_access import Module
 from app.users.models import UserRole
@@ -28,6 +28,11 @@ class UserUpdate(BaseModel):
 
 class UserAccessUpdate(BaseModel):
     module_access: list[Module]
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6)
 
 
 class UserOut(BaseModel):

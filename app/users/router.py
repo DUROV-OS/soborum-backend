@@ -6,8 +6,8 @@ from app.core.deps import get_current_user, require_admin
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.users.models import User
-from app.users.schemas import Token, UserAccessUpdate, UserCreate, UserOut, UserUpdate
-from app.users.service import create_user, set_module_access
+from app.users.schemas import PasswordChange, Token, UserAccessUpdate, UserCreate, UserOut, UserUpdate
+from app.users.service import change_password, create_user, reset_password_to_default, set_module_access
 
 app = FastAPI(
     title="Soborbum — Auth & Users",
@@ -29,6 +29,20 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 @app.get("/me", response_model=UserOut)
 def get_me(user: User = Depends(get_current_user)):
+    return UserOut.from_model(user)
+
+
+@app.post("/me/password", response_model=UserOut)
+def change_my_password(
+    payload: PasswordChange,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    try:
+        change_password(db, user, payload.current_password, payload.new_password)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    db.refresh(user)
     return UserOut.from_model(user)
 
 
@@ -74,6 +88,16 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
     if payload.role is not None:
         user.role = payload.role
     db.commit()
+    db.refresh(user)
+    return UserOut.from_model(user)
+
+
+@app.post("/users/{user_id}/reset-password", response_model=UserOut)
+def reset_user_password(user_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
+    reset_password_to_default(db, user)
     db.refresh(user)
     return UserOut.from_model(user)
 
