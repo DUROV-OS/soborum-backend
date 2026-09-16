@@ -143,15 +143,19 @@ def set_chat_state(
 
 
 @app.post("/{client_id}/contract-file", response_model=ClientOut)
-def upload_contract_file(
+def upload_contract_files(
     client_id: int,
-    file: UploadFile,
+    contract: UploadFile,
+    appendix: UploadFile,
     db: Session = Depends(get_db),
     user: User = Depends(require_clients),
 ):
+    """Договор и приложение к договору — одно действие (0061): нельзя
+    загрузить один без другого."""
     client = client_service.get_client_or_404(db, client_id)
-    asset = save_upload_file(db, file, FilePurpose.CONTRACT, user)
-    client = client_service.set_contract_file(db, client, asset.id)
+    contract_asset = save_upload_file(db, contract, FilePurpose.CONTRACT, user)
+    appendix_asset = save_upload_file(db, appendix, FilePurpose.CONTRACT_APPENDIX, user)
+    client = client_service.set_contract_files(db, client, contract_asset.id, appendix_asset.id)
     db.commit()
     db.refresh(client)
     return client
@@ -167,6 +171,36 @@ def upload_house_project_file(
     client = client_service.get_client_or_404(db, client_id)
     asset = save_upload_file(db, file, FilePurpose.HOUSE_PROJECT, user)
     client = client_service.set_house_project_file(db, client, asset.id)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.post("/{client_id}/ar-file", response_model=ClientOut)
+def upload_ar_file(
+    client_id: int,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_clients),
+):
+    client = client_service.get_client_or_404(db, client_id)
+    asset = save_upload_file(db, file, FilePurpose.ARCHITECTURAL_DECISIONS, user)
+    client = client_service.set_ar_file(db, client, asset.id)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.post("/{client_id}/kr-file", response_model=ClientOut)
+def upload_kr_file(
+    client_id: int,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_clients),
+):
+    client = client_service.get_client_or_404(db, client_id)
+    asset = save_upload_file(db, file, FilePurpose.CONSTRUCTIVE_DECISIONS, user)
+    client = client_service.set_kr_file(db, client, asset.id)
     db.commit()
     db.refresh(client)
     return client

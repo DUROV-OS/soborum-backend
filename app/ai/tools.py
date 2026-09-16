@@ -190,13 +190,21 @@ def _add_client_note(db: Session, user: User, client_id: int, text: str) -> dict
     return {"note_id": note.id, "text": note.text}
 
 
+_GENERATED_DOCUMENT_HANDLERS = {
+    "house_project": (FilePurpose.HOUSE_PROJECT, client_service.set_house_project_file),
+    "contract": (FilePurpose.CONTRACT, client_service.set_contract_file),
+    "contract_appendix": (FilePurpose.CONTRACT_APPENDIX, client_service.set_contract_appendix_file),
+}
+
+
 @register(
     "attach_generated_document",
-    "Сгенерировать и приложить клиенту документ (проект дома или договор). "
+    "Сгенерировать и приложить клиенту документ (проект дома, договор или приложение к договору). "
+    "Договор требует и приложение — гейт стадии «согласование» не пропустит клиента дальше без обоих. "
     "content - это ПОЛНЫЙ готовый текст документа, который ты сам пишешь.",
     {
         "client_id": {"type": "integer"},
-        "document_type": {"type": "string", "enum": ["house_project", "contract"]},
+        "document_type": {"type": "string", "enum": list(_GENERATED_DOCUMENT_HANDLERS)},
         "filename": {"type": "string"},
         "content": {"type": "string"},
     },
@@ -207,12 +215,9 @@ def _attach_generated_document(
     db: Session, user: User, client_id: int, document_type: str, filename: str, content: str
 ) -> dict:
     client = client_service.get_client_or_404(db, client_id)
-    purpose = FilePurpose.HOUSE_PROJECT if document_type == "house_project" else FilePurpose.CONTRACT
+    purpose, setter = _GENERATED_DOCUMENT_HANDLERS[document_type]
     asset = save_text_file(db, filename, content, purpose, user)
-    if document_type == "house_project":
-        client_service.set_house_project_file(db, client, asset.id)
-    else:
-        client_service.set_contract_file(db, client, asset.id)
+    setter(db, client, asset.id)
     return {"file_id": asset.id, "filename": asset.filename, "document_type": document_type}
 
 

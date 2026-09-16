@@ -49,6 +49,9 @@ def test_order_type_required_to_leave_approval_house_model_key_is_not(api, make_
     client_from_db = db.get(Client, client.id)
     client_from_db.contract_file_id = 1
     client_from_db.house_project_file_id = 1
+    client_from_db.contract_appendix_file_id = 1
+    client_from_db.ar_file_id = 1
+    client_from_db.kr_file_id = 1
     db.commit()
 
     missing_order_type = worker.post(f"/api/clients/{client.id}/transition")
@@ -74,6 +77,9 @@ def test_houses_count_editable_after_documents_locked(api, make_user, db):
     client_from_db = db.get(Client, client.id)
     client_from_db.contract_file_id = 1
     client_from_db.house_project_file_id = 1
+    client_from_db.contract_appendix_file_id = 1
+    client_from_db.ar_file_id = 1
+    client_from_db.kr_file_id = 1
     db.commit()
     worker.patch(
         f"/api/clients/{client.id}/documents",

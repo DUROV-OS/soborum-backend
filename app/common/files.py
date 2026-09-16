@@ -23,7 +23,10 @@ from app.db.session import get_db
 
 class FilePurpose(str, enum.Enum):
     CONTRACT = "contract"
+    CONTRACT_APPENDIX = "contract_appendix"
     HOUSE_PROJECT = "house_project"
+    ARCHITECTURAL_DECISIONS = "architectural_decisions"
+    CONSTRUCTIVE_DECISIONS = "constructive_decisions"
     TASK_IMAGE = "task_image"
     MARKETING_RAW = "marketing_raw"
     MARKETING_FINAL = "marketing_final"
@@ -34,7 +37,10 @@ class FilePurpose(str, enum.Enum):
 
 PURPOSE_MODULE = {
     FilePurpose.CONTRACT: Module.CLIENTS,
+    FilePurpose.CONTRACT_APPENDIX: Module.CLIENTS,
     FilePurpose.HOUSE_PROJECT: Module.CLIENTS,
+    FilePurpose.ARCHITECTURAL_DECISIONS: Module.CLIENTS,
+    FilePurpose.CONSTRUCTIVE_DECISIONS: Module.CLIENTS,
     FilePurpose.TASK_IMAGE: Module.TASKS,
     FilePurpose.MARKETING_RAW: Module.MARKETING,
     FilePurpose.MARKETING_FINAL: Module.MARKETING,

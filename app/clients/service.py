@@ -216,20 +216,47 @@ def record_balance_payment(
     return client
 
 
-def set_contract_file(db: Session, client: Client, file_id: int) -> Client:
+def _set_document_file(db: Session, client: Client, field: str, file_id: int) -> Client:
     if client.documents_locked_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
-    client.contract_file_id = file_id
+    setattr(client, field, file_id)
     db.flush()
     return client
+
+
+def set_contract_files(db: Session, client: Client, contract_file_id: int, appendix_file_id: int) -> Client:
+    """Обычный путь загрузки (0061): договор и приложение к договору одним
+    действием на фронте — нет эндпоинта на один без другого."""
+    if client.documents_locked_at is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
+    client.contract_file_id = contract_file_id
+    client.contract_appendix_file_id = appendix_file_id
+    db.flush()
+    return client
+
+
+def set_contract_file(db: Session, client: Client, file_id: int) -> Client:
+    """Точечная установка одного файла — для сценариев вроде генерации
+    документа Мариной по одному, где второй документ приходит отдельным
+    вызовом. Гейт стадии всё равно требует оба (contract_file_id и
+    contract_appendix_file_id) — см. _DOCUMENTS_REQUIRED."""
+    return _set_document_file(db, client, "contract_file_id", file_id)
+
+
+def set_contract_appendix_file(db: Session, client: Client, file_id: int) -> Client:
+    return _set_document_file(db, client, "contract_appendix_file_id", file_id)
 
 
 def set_house_project_file(db: Session, client: Client, file_id: int) -> Client:
-    if client.documents_locked_at is not None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
-    client.house_project_file_id = file_id
-    db.flush()
-    return client
+    return _set_document_file(db, client, "house_project_file_id", file_id)
+
+
+def set_ar_file(db: Session, client: Client, file_id: int) -> Client:
+    return _set_document_file(db, client, "ar_file_id", file_id)
+
+
+def set_kr_file(db: Session, client: Client, file_id: int) -> Client:
+    return _set_document_file(db, client, "kr_file_id", file_id)
 
 
 def set_max_chat_id(db: Session, client: Client, payload: ClientMaxChatUpdate) -> Client:
@@ -323,7 +350,17 @@ def delete_client(db: Session, client: Client) -> None:
     db.flush()
 
 
-_DOCUMENTS_REQUIRED = ["order_type", "final_price", "installation_address", "contract_file_id", "house_project_file_id"]
+_DOCUMENTS_REQUIRED = [
+    "order_type",
+    "final_price",
+    "installation_address",
+    "contract_file_id",
+    "contract_appendix_file_id",
+    "ar_file_id",
+    "kr_file_id",
+]
+# house_project_file_id сознательно не в списке — с 0061 необязателен: не у
+# каждого клиента он есть в системе.
 
 
 def transition_stage(db: Session, client: Client) -> Client:

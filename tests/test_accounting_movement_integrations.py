@@ -40,6 +40,9 @@ def _make_client(db, plan=PaymentPlan.FULL_PREPAYMENT, advance_amount=None, fina
     client_service.transition_stage(db, client)  # DISCUSSION -> APPROVAL
     client.contract_file_id = 1
     client.house_project_file_id = 1
+    client.contract_appendix_file_id = 1
+    client.ar_file_id = 1
+    client.kr_file_id = 1
     client_service.update_documents(db, client, ClientDocumentsUpdate(
         order_type="single", final_price=final_price, installation_address="г. Тест, ул. Тест, 1",
         payment_plan=plan, advance_amount=advance_amount,

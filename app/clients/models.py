@@ -160,7 +160,15 @@ class Client(Base):
     advance_amount: Mapped[float | None] = mapped_column(Numeric(14, 2, asdecimal=False), nullable=True)
     installation_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     contract_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
+    # Приложение к договору грузится вместе с самим договором одним действием
+    # (0061) — see client_service.set_contract_files. Не бывает одного без
+    # другого: оба обязательны для ухода со стадии APPROVAL.
+    contract_appendix_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
+    # house_project — опционален с 0061 (не у каждого клиента есть в системе);
+    # не входит в _DOCUMENTS_REQUIRED. АР/КР — обязательны с 0061.
     house_project_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
+    ar_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
+    kr_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
     documents_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # --- Payment: appears at PAYMENT, required before POSTPAYMENT, then locked ---
@@ -179,7 +187,10 @@ class Client(Base):
     cycle: Mapped["Cycle"] = relationship(back_populates="client")  # noqa: F821
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
     contract_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_file_id])  # noqa: F821
+    contract_appendix_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_appendix_file_id])  # noqa: F821
     house_project_file: Mapped["FileAsset"] = relationship(foreign_keys=[house_project_file_id])  # noqa: F821
+    ar_file: Mapped["FileAsset"] = relationship(foreign_keys=[ar_file_id])  # noqa: F821
+    kr_file: Mapped["FileAsset"] = relationship(foreign_keys=[kr_file_id])  # noqa: F821
     # Read-only reference into the house_models catalog (0043) — this section
     # doesn't own or manage that data, just points at it.
     house_model: Mapped["HouseModelCard | None"] = relationship(viewonly=True)  # noqa: F821
