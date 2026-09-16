@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.cycle.models import Cycle
 from app.dashboard.aktualnoe import _stage_of
+from app.production.deadlines import generate_deadline_insight
 from app.production.models import (
     MaterialRequest,
     MaterialRequestStatus,
@@ -145,10 +146,11 @@ def build_documents(cycle: Cycle) -> ProductionHomeDocumentsOut:
     )
 
 
-def build_home(db: Session, production: Production) -> ProductionHomeOut:
+def build_home(db: Session, production: Production, force_deadlines: bool = False) -> ProductionHomeOut:
     cycle = production.cycle
     return ProductionHomeOut(
         actions=build_attention(db, production),
         aktualnoe=build_aktualnoe(cycle),
+        deadlines=generate_deadline_insight(db, production, force=force_deadlines),
         documents=build_documents(cycle),
     )

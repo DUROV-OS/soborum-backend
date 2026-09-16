@@ -121,7 +121,15 @@ class ProductionHomeDocumentsOut(BaseModel):
     house_project_file: FileAssetOut | None
 
 
+class DeadlineInsightOut(BaseModel):
+    title: str
+    description: str
+    impact: str
+    source: str  # "ai" | "fallback" | "none"
+
+
 class ProductionHomeOut(BaseModel):
     actions: list[ProductionAttentionOut] = Field(default_factory=list)
     aktualnoe: ProductionAktualnoeOut | None
+    deadlines: DeadlineInsightOut
     documents: ProductionHomeDocumentsOut
