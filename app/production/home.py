@@ -18,11 +18,11 @@ from app.cycle.models import Cycle
 from app.dashboard.aktualnoe import _stage_of
 from app.production.deadlines import generate_deadline_insight
 from app.production.models import (
+    BlockMaterial,
     MaterialRequest,
     MaterialRequestStatus,
-    ModuleMaterial,
     Production,
-    ProductionModule,
+    ProductionBlock,
 )
 from app.production.schemas import (
     ProductionAktualnoeOut,
@@ -37,11 +37,11 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def _module_ids(db: Session, production: Production) -> list[int]:
+def _block_ids(db: Session, production: Production) -> list[int]:
     return [
-        module_id
-        for (module_id,) in db.query(ProductionModule.id)
-        .filter(ProductionModule.production_id == production.id)
+        block_id
+        for (block_id,) in db.query(ProductionBlock.id)
+        .filter(ProductionBlock.production_id == production.id)
         .all()
     ]
 
@@ -50,18 +50,18 @@ def build_attention(db: Session, production: Production) -> list[ProductionAtten
     """Сигналы внимания конкретно этого производства — та же логика, что
     `dashboard/service.py::_snapshot_production` и `dashboard/overview.py`
     (`pending_material_requests`, недостача материалов, просроченные задачи),
-    но с фильтром по модулям одного производства вместо всей БД."""
-    module_ids = _module_ids(db, production)
-    if not module_ids:
+    но с фильтром по блокам одного производства вместо всей БД."""
+    block_ids = _block_ids(db, production)
+    if not block_ids:
         return []
 
     actions: list[ProductionAttentionOut] = []
 
     pending_requests = (
         db.query(MaterialRequest)
-        .join(ModuleMaterial, MaterialRequest.module_material_id == ModuleMaterial.id)
+        .join(BlockMaterial, MaterialRequest.block_material_id == BlockMaterial.id)
         .filter(
-            ModuleMaterial.module_id.in_(module_ids),
+            BlockMaterial.block_id.in_(block_ids),
             MaterialRequest.status == MaterialRequestStatus.PENDING,
         )
         .count()
@@ -78,10 +78,10 @@ def build_attention(db: Session, production: Production) -> list[ProductionAtten
         )
 
     shortfall = (
-        db.query(ModuleMaterial)
+        db.query(BlockMaterial)
         .filter(
-            ModuleMaterial.module_id.in_(module_ids),
-            (ModuleMaterial.quantity_required > 0) | (ModuleMaterial.quantity_requested > 0),
+            BlockMaterial.block_id.in_(block_ids),
+            (BlockMaterial.quantity_required > 0) | (BlockMaterial.quantity_requested > 0),
         )
         .count()
     )
@@ -90,7 +90,7 @@ def build_attention(db: Session, production: Production) -> list[ProductionAtten
             ProductionAttentionOut(
                 id="production:material_shortfall",
                 title="Материала не хватает",
-                description="Есть материалы модулей, которые ещё не выданы полностью.",
+                description="Есть материалы блоков, которые ещё не выданы полностью.",
                 href="/production",
                 tone="warning",
             )
@@ -100,7 +100,7 @@ def build_attention(db: Session, production: Production) -> list[ProductionAtten
     open_tasks_with_deadline = (
         db.query(Task)
         .filter(
-            Task.module_id.in_(module_ids),
+            Task.block_id.in_(block_ids),
             Task.status != TaskStatus.DONE,
             Task.deadline.isnot(None),
         )
@@ -111,7 +111,7 @@ def build_attention(db: Session, production: Production) -> list[ProductionAtten
             ProductionAttentionOut(
                 id="production:overdue_tasks",
                 title="Проверить просроченные задачи",
-                description="По модулям этого дома есть задачи с истёкшим сроком.",
+                description="По блокам этого дома есть задачи с истёкшим сроком.",
                 href="/tasks",
                 tone="danger",
             )

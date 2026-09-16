@@ -25,7 +25,7 @@ class TaskCreate(BaseModel):
     reviewer_ids: list[int] = []
     depends_on_ids: list[int] = []
     image_ids: list[int] = []
-    module_id: int | None = None
+    block_id: int | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -51,7 +51,7 @@ class TaskOut(BaseModel):
     deadline: datetime | None
     status: TaskStatus
     created_at: datetime
-    module_id: int | None
+    block_id: int | None
     link_type: TaskLinkType
     link_id: int | None
     link_meta: dict | None
@@ -69,7 +69,7 @@ class TaskOut(BaseModel):
             deadline=task.deadline,
             status=task.status,
             created_at=task.created_at,
-            module_id=task.module_id,
+            block_id=task.block_id,
             link_type=task.link_type,
             link_id=task.link_id,
             link_meta=task.link_meta,

@@ -25,7 +25,7 @@ from app.users.models import User
 from app.clients.models import Client, ClientNote, ClientStage
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import InstallationStage
-from app.production.models import Production, ProductionModule
+from app.production.models import Production, ProductionBlock
 from app.tasks.models import Task, TaskLinkType, TaskStageEvent
 
 RECENT_WINDOW = timedelta(days=21)
@@ -81,18 +81,18 @@ def _stage_of(cycle: Cycle, client: Client) -> tuple[str, int]:
 
 def _task_activity(db: Session, cycle: Cycle, client: Client) -> tuple[datetime | None, int, int]:
     """Последнее событие статуса и число недавних событий по задачам цикла:
-    задачи модулей производства этого цикла + задачи стадий клиента."""
-    module_ids = [
-        m_id
-        for (m_id,) in db.query(ProductionModule.id)
-        .join(Production, Production.id == ProductionModule.production_id)
+    задачи блоков производства этого цикла + задачи стадий клиента."""
+    block_ids = [
+        b_id
+        for (b_id,) in db.query(ProductionBlock.id)
+        .join(Production, Production.id == ProductionBlock.production_id)
         .filter(Production.cycle_id == cycle.id)
         .all()
     ]
     q = db.query(TaskStageEvent).join(Task, Task.id == TaskStageEvent.task_id)
     conditions = [(Task.link_type == TaskLinkType.CLIENT_STAGE) & (Task.link_id == client.id)]
-    if module_ids:
-        conditions.append(Task.module_id.in_(module_ids))
+    if block_ids:
+        conditions.append(Task.block_id.in_(block_ids))
     q = q.filter(or_(*conditions))
 
     last = q.with_entities(func.max(TaskStageEvent.created_at)).scalar()

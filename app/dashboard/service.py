@@ -12,7 +12,7 @@ from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import Installation, InstallationStage
 from app.marketing.models import ContentItem, ContentStage
-from app.production.models import MaterialRequest, MaterialRequestStatus, ModuleMaterial, Production, ProductionModule
+from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.tasks.models import Task, TaskStatus
 from app.users.models import User, UserRole
 from app.warehouse import service as warehouse_service
@@ -170,17 +170,17 @@ def _snapshot_marketing(db: Session) -> dict:
 
 
 def _snapshot_production(db: Session) -> dict:
-    shortfall_module_ids = {
+    shortfall_block_ids = {
         row[0]
-        for row in db.query(ModuleMaterial.module_id)
-        .filter((ModuleMaterial.quantity_required > 0) | (ModuleMaterial.quantity_requested > 0))
+        for row in db.query(BlockMaterial.block_id)
+        .filter((BlockMaterial.quantity_required > 0) | (BlockMaterial.quantity_requested > 0))
         .distinct()
         .all()
     }
     return {
         "total_productions": db.query(Production).count(),
-        "total_modules": db.query(ProductionModule).count(),
-        "modules_with_material_shortfall": len(shortfall_module_ids),
+        "total_blocks": db.query(ProductionBlock).count(),
+        "blocks_with_material_shortfall": len(shortfall_block_ids),
         "pending_material_requests": db.query(MaterialRequest)
         .filter(MaterialRequest.status == MaterialRequestStatus.PENDING)
         .count(),

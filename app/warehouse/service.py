@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.accounting.models import SupplierOrder
 from app.common.module_access import Module as AccessModule
-from app.production.models import MaterialRequest, MaterialRequestStatus, ModuleMaterial, ProductionModule
+from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, ProductionBlock
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
@@ -71,10 +71,14 @@ def update_material(db: Session, material: WarehouseMaterial, payload: Warehouse
 
 
 def compute_breakdown(db: Session, material_id: int) -> list[RequestBreakdownItem]:
+    # NB: `RequestBreakdownItem` keeps its `module_id`/`module_name` field names
+    # (this warehouse-facing schema is out of scope for the модуль->блок rename
+    # of task 0066-a - only app/production/* and Task.block_id are renamed;
+    # frontend still reads these two field names as-is).
     rows = (
-        db.query(ModuleMaterial.module_id, ProductionModule.name, ProductionModule.production_id, MaterialRequest.quantity)
-        .join(MaterialRequest, MaterialRequest.module_material_id == ModuleMaterial.id)
-        .join(ProductionModule, ProductionModule.id == ModuleMaterial.module_id)
+        db.query(BlockMaterial.block_id, ProductionBlock.name, ProductionBlock.production_id, MaterialRequest.quantity)
+        .join(MaterialRequest, MaterialRequest.block_material_id == BlockMaterial.id)
+        .join(ProductionBlock, ProductionBlock.id == BlockMaterial.block_id)
         .filter(
             MaterialRequest.warehouse_material_id == material_id,
             MaterialRequest.status == MaterialRequestStatus.PENDING,
@@ -82,13 +86,13 @@ def compute_breakdown(db: Session, material_id: int) -> list[RequestBreakdownIte
         .all()
     )
     breakdown: dict[int, RequestBreakdownItem] = {}
-    for module_id, module_name, production_id, quantity in rows:
-        if module_id in breakdown:
-            breakdown[module_id].quantity_requested += float(quantity)
+    for block_id, block_name, production_id, quantity in rows:
+        if block_id in breakdown:
+            breakdown[block_id].quantity_requested += float(quantity)
         else:
-            breakdown[module_id] = RequestBreakdownItem(
-                module_id=module_id,
-                module_name=module_name,
+            breakdown[block_id] = RequestBreakdownItem(
+                module_id=block_id,
+                module_name=block_name,
                 production_id=production_id,
                 quantity_requested=float(quantity),
             )

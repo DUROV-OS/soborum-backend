@@ -19,7 +19,7 @@ from app.agents.types import ContextHit
 from app.clients.models import Client, ClientStage
 from app.dashboard import service as dashboard
 from app.db.session import SessionLocal
-from app.production.models import ProductionModule
+from app.production.models import ProductionBlock
 
 log = logging.getLogger("app.agents.connectors")
 
@@ -118,10 +118,10 @@ def _legal_facts(db: Session) -> dict:
 
 
 def _engineer_facts(db: Session) -> dict:
-    mods = db.query(ProductionModule).all()
+    blocks = db.query(ProductionBlock).all()
     return {
-        "modules_total": len(mods),
-        "modules_without_description": sum(1 for m in mods if not (m.description or "").strip()),
+        "blocks_total": len(blocks),
+        "blocks_without_description": sum(1 for b in blocks if not (b.description or "").strip()),
     }
 
 
@@ -202,8 +202,8 @@ def _production_line(d: dict) -> tuple[str, str]:
     return (
         "База DurovOS · Производство",
         (
-            f"Проектов {d.get('total_productions', 0)}, модулей {d.get('total_modules', 0)}. "
-            f"Модулей с нехваткой материала {d.get('modules_with_material_shortfall', 0)}, "
+            f"Проектов {d.get('total_productions', 0)}, блоков {d.get('total_blocks', 0)}. "
+            f"Блоков с нехваткой материала {d.get('blocks_with_material_shortfall', 0)}, "
             f"заявок на материалы в ожидании {d.get('pending_material_requests', 0)}."
         ),
     )
@@ -265,8 +265,8 @@ def _engineer_line(d: dict) -> tuple[str, str]:
     return (
         "База DurovOS · Инженерия",
         (
-            f"Модулей в производстве {d.get('modules_total', 0)}, из них без описания "
-            f"конструктива {d.get('modules_without_description', 0)}."
+            f"Блоков в производстве {d.get('blocks_total', 0)}, из них без описания "
+            f"конструктива {d.get('blocks_without_description', 0)}."
         ),
     )
 
@@ -375,7 +375,7 @@ def _production_charts(snap: dict) -> list[dict]:
     prod = snap.get("production", {})
     tasks = snap.get("tasks", {}).get("status_counts", {})
     bars = [
-        {"label": "Модули с нехваткой", "value": float(prod.get("modules_with_material_shortfall", 0))},
+        {"label": "Блоки с нехваткой", "value": float(prod.get("blocks_with_material_shortfall", 0))},
         {"label": "Задачи в работе", "value": float(tasks.get("in_progress", 0))},
     ]
     bars = [bar for bar in bars if bar["value"] > 0]
@@ -388,7 +388,7 @@ def _production_charts(snap: dict) -> list[dict]:
             "шт",
             bars,
             ["production"],
-            f"Модулей с нехваткой материала {prod.get('modules_with_material_shortfall', 0)}.",
+            f"Блоков с нехваткой материала {prod.get('blocks_with_material_shortfall', 0)}.",
             "brand",
         )
     ]
