@@ -100,7 +100,10 @@ class ClientOut(BaseModel):
     advance_amount: float | None
     installation_address: str | None
     contract_file: FileAssetOut | None
+    contract_appendix_file: FileAssetOut | None
     house_project_file: FileAssetOut | None
+    ar_file: FileAssetOut | None
+    kr_file: FileAssetOut | None
     documents_locked_at: datetime | None
 
     is_paid: bool | None
