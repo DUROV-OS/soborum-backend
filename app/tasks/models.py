@@ -93,6 +93,12 @@ class Task(Base):
     # Set when this task belongs to a production module - see app/production/models.py.
     module_id: Mapped[int | None] = mapped_column(ForeignKey("modules.id"), nullable=True)
 
+    # Один человек, который отвечает за задачу, когда исполнителей несколько —
+    # отдельно от assignees (кто делает) и reviewers (кто проверяет). Не обязан
+    # быть среди assignees (например начальник производства как ответственный
+    # за задачу подрядчика-исполнителя).
+    responsible_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
     link_type: Mapped[TaskLinkType] = mapped_column(
         Enum(TaskLinkType, name="task_link_type"), nullable=False, default=TaskLinkType.NONE
     )
@@ -103,6 +109,7 @@ class Task(Base):
 
     assignees: Mapped[list["User"]] = relationship(secondary=task_assignees)  # noqa: F821
     reviewers: Mapped[list["User"]] = relationship(secondary=task_reviewers)  # noqa: F821
+    responsible: Mapped["User | None"] = relationship(foreign_keys=[responsible_id])  # noqa: F821
     images: Mapped[list["FileAsset"]] = relationship(secondary=task_images)  # noqa: F821
 
     depends_on: Mapped[list["Task"]] = relationship(
