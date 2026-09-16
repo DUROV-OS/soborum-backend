@@ -1,5 +1,5 @@
 """ИИ-генерация шаблона графа этапов производства по постраничному разбору КР
-(0066-d).
+(0066-d) + правка и подтверждение инженером/начальником производства.
 
 Как и `production/deadlines.py::_ai_pick_bottleneck` — единственный сетевой
 вызов к Claude вынесен в отдельную функцию (`_call_ai`) с принудительным
@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -18,7 +19,13 @@ from sqlalchemy.orm import Session
 from app.clients.models import Client
 from app.core.config import settings
 from app.production import kr_extraction
-from app.production.stage_templates import ProductionStageTemplate, TemplateBlock, TemplateBlockMaterial, TemplateBlockTask, TemplateStatus
+from app.production.stage_templates import (
+    ProductionStageTemplate,
+    TemplateBlock,
+    TemplateBlockMaterial,
+    TemplateBlockTask,
+    TemplateStatus,
+)
 
 _MAX_PAGE_CHARS = 2000
 
@@ -237,3 +244,77 @@ def generate_or_reuse_template(db: Session, client: Client) -> ProductionStageTe
 
     graph = _call_ai(pages_payload)
     return _persist_draft(db, client, graph)
+
+
+def get_template_or_404(db: Session, template_id: int) -> ProductionStageTemplate:
+    template = db.get(ProductionStageTemplate, template_id)
+    if template is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Шаблон не найден")
+    return template
+
+
+def get_block_or_404(db: Session, template_id: int, block_id: int) -> TemplateBlock:
+    block = db.get(TemplateBlock, block_id)
+    if block is None or block.template_id != template_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Блок шаблона не найден")
+    return block
+
+
+def get_task_or_404(db: Session, block_id: int, task_id: int) -> TemplateBlockTask:
+    task = db.get(TemplateBlockTask, task_id)
+    if task is None or task.template_block_id != block_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача шаблона не найдена")
+    return task
+
+
+def get_material_or_404(db: Session, block_id: int, material_id: int) -> TemplateBlockMaterial:
+    material = db.get(TemplateBlockMaterial, material_id)
+    if material is None or material.template_block_id != block_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Материал шаблона не найден")
+    return material
+
+
+def _require_editable(template: ProductionStageTemplate) -> None:
+    if template.status == TemplateStatus.CONFIRMED:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Шаблон уже подтверждён — правки недоступны")
+
+
+def _mark_reviewed(db: Session, template: ProductionStageTemplate) -> None:
+    if template.status == TemplateStatus.DRAFT:
+        template.status = TemplateStatus.REVIEWED
+    db.flush()
+
+
+def update_block(db: Session, template: ProductionStageTemplate, block: TemplateBlock, payload) -> TemplateBlock:
+    _require_editable(template)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(block, field, value)
+    _mark_reviewed(db, template)
+    return block
+
+
+def update_task(db: Session, template: ProductionStageTemplate, task: TemplateBlockTask, payload) -> TemplateBlockTask:
+    _require_editable(template)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(task, field, value)
+    _mark_reviewed(db, template)
+    return task
+
+
+def update_material(
+    db: Session, template: ProductionStageTemplate, material: TemplateBlockMaterial, payload
+) -> TemplateBlockMaterial:
+    _require_editable(template)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(material, field, value)
+    _mark_reviewed(db, template)
+    return material
+
+
+def confirm_template(db: Session, template: ProductionStageTemplate, user) -> ProductionStageTemplate:
+    _require_editable(template)
+    template.status = TemplateStatus.CONFIRMED
+    template.confirmed_at = datetime.now(timezone.utc)
+    template.confirmed_by_id = user.id
+    db.flush()
+    return template

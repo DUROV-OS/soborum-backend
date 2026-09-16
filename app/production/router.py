@@ -9,6 +9,7 @@ from app.db.session import get_db
 from app.production import home as production_home
 from app.production import kr_extraction
 from app.production import service as production_service
+from app.production import stage_template_service
 from app.production.models import Production, ProductionModule
 from app.cycle.models import Cycle
 from app.production.schemas import (
@@ -24,6 +25,10 @@ from app.production.schemas import (
     ProductionHomeOut,
     ProductionOut,
     ProductionListOut,
+    ProductionStageTemplateOut,
+    TemplateBlockMaterialPatch,
+    TemplateBlockPatch,
+    TemplateBlockTaskPatch,
 )
 from app.users.models import User
 
@@ -172,3 +177,90 @@ def get_kr_extraction(client_id: int, db: Session = Depends(get_db), _: User = D
     if record is None:
         raise HTTPException(status_code=404, detail="Разбор КР ещё не запускался")
     return record
+
+
+# ------------------------------------------------- шаблон графа этапов (0066-d) --
+
+
+@app.post("/stage-templates/generate", response_model=ProductionStageTemplateOut, status_code=201)
+def generate_stage_template(
+    client_id: int, db: Session = Depends(get_db), user: User = Depends(require_production)
+):
+    client = client_service.get_client_or_404(db, client_id)
+    template = stage_template_service.generate_or_reuse_template(db, client)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@app.get("/stage-templates/{template_id}", response_model=ProductionStageTemplateOut)
+def get_stage_template(template_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
+    return stage_template_service.get_template_or_404(db, template_id)
+
+
+@app.patch("/stage-templates/{template_id}/blocks/{block_id}", response_model=ProductionStageTemplateOut)
+def update_stage_template_block(
+    template_id: int,
+    block_id: int,
+    payload: TemplateBlockPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_production),
+):
+    template = stage_template_service.get_template_or_404(db, template_id)
+    block = stage_template_service.get_block_or_404(db, template_id, block_id)
+    stage_template_service.update_block(db, template, block, payload)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@app.patch(
+    "/stage-templates/{template_id}/blocks/{block_id}/tasks/{task_id}", response_model=ProductionStageTemplateOut
+)
+def update_stage_template_task(
+    template_id: int,
+    block_id: int,
+    task_id: int,
+    payload: TemplateBlockTaskPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_production),
+):
+    template = stage_template_service.get_template_or_404(db, template_id)
+    stage_template_service.get_block_or_404(db, template_id, block_id)
+    task = stage_template_service.get_task_or_404(db, block_id, task_id)
+    stage_template_service.update_task(db, template, task, payload)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@app.patch(
+    "/stage-templates/{template_id}/blocks/{block_id}/materials/{material_id}",
+    response_model=ProductionStageTemplateOut,
+)
+def update_stage_template_material(
+    template_id: int,
+    block_id: int,
+    material_id: int,
+    payload: TemplateBlockMaterialPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_production),
+):
+    template = stage_template_service.get_template_or_404(db, template_id)
+    stage_template_service.get_block_or_404(db, template_id, block_id)
+    material = stage_template_service.get_material_or_404(db, block_id, material_id)
+    stage_template_service.update_material(db, template, material, payload)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@app.post("/stage-templates/{template_id}/confirm", response_model=ProductionStageTemplateOut)
+def confirm_stage_template(
+    template_id: int, db: Session = Depends(get_db), user: User = Depends(require_production)
+):
+    template = stage_template_service.get_template_or_404(db, template_id)
+    stage_template_service.confirm_template(db, template, user)
+    db.commit()
+    db.refresh(template)
+    return template

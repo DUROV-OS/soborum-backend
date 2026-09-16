@@ -203,3 +203,19 @@ class ProductionStageTemplateOut(BaseModel):
     confirmed_at: datetime | None
     confirmed_by_id: int | None
     blocks: list[TemplateBlockOut] = []
+
+
+class TemplateBlockPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class TemplateBlockTaskPatch(BaseModel):
+    title: str | None = None
+    description: str | None = None
+
+
+class TemplateBlockMaterialPatch(BaseModel):
+    name: str | None = None
+    unit: str | None = None
+    warehouse_material_id: int | None = None
