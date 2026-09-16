@@ -33,6 +33,7 @@ class FilePurpose(str, enum.Enum):
     AI_CHAT_ATTACHMENT = "ai_chat_attachment"
     MEETING_AUDIO = "meeting_audio"
     HOUSE_MODEL_PLANNING = "house_model_planning"
+    KR_PAGE_IMAGE = "kr_page_image"
 
 
 PURPOSE_MODULE = {
@@ -47,6 +48,7 @@ PURPOSE_MODULE = {
     FilePurpose.AI_CHAT_ATTACHMENT: Module.AI,
     FilePurpose.MEETING_AUDIO: Module.AI,
     FilePurpose.HOUSE_MODEL_PLANNING: Module.HOUSE_MODELS,
+    FilePurpose.KR_PAGE_IMAGE: Module.PRODUCTION,
 }
 
 

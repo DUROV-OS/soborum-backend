@@ -6,6 +6,8 @@
 На каждую страницу PDF: текстовый слой через `pymupdf`, при пустом слое —
 OCR через `pytesseract` по растру страницы (тот же подход, что
 `app.common.file_text` использует для целого документа, здесь — постранично).
+Плюс рендер страницы в PNG, сохранённый как FileAsset (`FilePurpose.KR_PAGE_IMAGE`) —
+это и есть «чертёж» для ссылок «стр. N».
 
 Без претензии на универсальность для произвольного стороннего КР — критерий
 готовности - непустой постраничный результат на реальном образце из
@@ -17,15 +19,19 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from app.common.files import FilePurpose, save_bytes_file
+
 log = logging.getLogger("app.production.kr_extraction")
 
 _MIN_NATIVE_CHARS = 20
+_RENDER_DPI = 150
 
 
 @dataclass
 class KrPage:
     page_number: int
     text: str
+    image_file_id: int
 
 
 def _tesseract_langs() -> str:
@@ -53,9 +59,10 @@ def _ocr_pixmap(pix) -> str:
         return ""
 
 
-def extract_kr_pages(path_on_disk: str) -> list[KrPage]:
-    """Постраничный текст PDF: нативный слой, при пустом слое — OCR по растру
-    страницы (`_MIN_NATIVE_CHARS` — порог "слой практически пуст")."""
+def extract_kr_pages(db, path_on_disk: str, client_id: int, uploaded_by) -> list[KrPage]:
+    """Разбирает PDF по `path_on_disk` постранично и сохраняет рендер каждой
+    страницы как отдельный FileAsset. Не пишет строку `kr_extractions` —
+    вызывающий код (`run_kr_extraction`) решает, как её сохранить/перезаписать."""
     import pymupdf
 
     pages: list[KrPage] = []
@@ -65,12 +72,22 @@ def extract_kr_pages(path_on_disk: str) -> list[KrPage]:
             page = doc[index]
             page_number = index + 1
             text = (page.get_text() or "").strip()
+            pix = page.get_pixmap(dpi=_RENDER_DPI, alpha=False)
             if len(text) < _MIN_NATIVE_CHARS:
-                pix = page.get_pixmap(alpha=False)
                 ocr_text = _ocr_pixmap(pix)
                 if len(ocr_text) > len(text):
                     text = ocr_text
-            pages.append(KrPage(page_number=page_number, text=text))
+
+            image_bytes = pix.tobytes("png")
+            image_asset = save_bytes_file(
+                db,
+                filename=f"kr-{client_id}-page-{page_number}.png",
+                content_type="image/png",
+                data=image_bytes,
+                purpose=FilePurpose.KR_PAGE_IMAGE,
+                user=uploaded_by,
+            )
+            pages.append(KrPage(page_number=page_number, text=text, image_file_id=image_asset.id))
     finally:
         doc.close()
     return pages
