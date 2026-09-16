@@ -27,10 +27,12 @@
 --   4. ШАГ 4 (опционально, закомментирован) — удалить сами демо-клиентов
 --      целиком, если решите, что их тоже быть не должно.
 --
--- Пример подключения на проде:
+-- Пример подключения на проде (файл виден только на хосте — контейнер db
+-- не монтирует репозиторий, поэтому содержимое передаётся через stdin,
+-- а не путём -f внутри контейнера):
 --   ssh durov@89.207.254.32
 --   cd /srv/soborbum-backend
---   docker compose exec db psql -U soborbum -d soborbum -f scripts/cleanup_demo_seed_2026_09_17.sql
+--   docker compose exec -T db psql -U soborbum -d soborbum < scripts/cleanup_demo_seed_2026_09_17.sql
 
 -- ШАГ 1: посмотреть, что будет удалено (ничего не меняет)
 SELECT c.id AS client_id, c.full_name, c.email, c.cycle_id,
