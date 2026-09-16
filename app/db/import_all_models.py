@@ -14,6 +14,7 @@ from app.house_models import models as _house_models_models  # noqa: F401
 from app.installation import models as _installation_models  # noqa: F401
 from app.marketing import models as _marketing_models  # noqa: F401
 from app.production import models as _production_models  # noqa: F401
+from app.production import stage_templates as _production_stage_templates  # noqa: F401
 from app.tasks import models as _tasks_models  # noqa: F401
 from app.users import models as _users_models  # noqa: F401
 from app.warehouse import models as _warehouse_models  # noqa: F401
