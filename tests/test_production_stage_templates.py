@@ -4,12 +4,17 @@
 после confirm, детерминированный отказ без ANTHROPIC_API_KEY.
 """
 
+from pathlib import Path
+
 from app.clients.models import Client
 from app.common.module_access import Module
 from app.core.config import settings
 from app.cycle.models import Cycle
+from app.production import kr_extraction as kr_extraction_module
 from app.production import stage_template_service
 from app.production.stage_templates import ProductionStageTemplate, TemplateStatus
+
+SAMPLE_KR = Path(__file__).resolve().parents[2] / "sources" / "АР КР и Договор" / "КР_1 блок6.pdf"
 
 FAKE_GRAPH = {
     "blocks": [
@@ -225,3 +230,45 @@ def test_generate_requires_kr_extraction_first(db, make_user, monkeypatch):
         assert False, "без разбора КР генерация должна отказать явно"
     except Exception as error:
         assert getattr(error, "status_code", None) == 400
+
+
+def test_generate_on_real_kr_sample_sends_extracted_text_to_ai(db, make_user, monkeypatch):
+    """Сквозной путь на реальном образце (0066-c → 0066-d): постраничный разбор
+    настоящего PDF из sources/, затем генерация шаблона с мокнутым Anthropic-
+    клиентом — payload, отправляемый в ИИ, должен состоять из реально
+    извлечённого из файла текста, не из придуманных данных."""
+    assert SAMPLE_KR.is_file(), "реальный образец КР должен лежать в sources/"
+
+    from app.common.files import FileAsset, FilePurpose
+
+    admin = make_user(admin=True)
+    client = _make_client(db)
+    asset = FileAsset(
+        filename=SAMPLE_KR.name, content_type="application/pdf", path_on_disk=str(SAMPLE_KR),
+        purpose=FilePurpose.CONSTRUCTIVE_DECISIONS, uploaded_by_id=admin.id,
+    )
+    db.add(asset)
+    db.flush()
+    client.kr_file_id = asset.id
+    db.commit()
+
+    kr_extraction_module.run_kr_extraction(db, client, admin)
+    db.commit()
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
+    captured_payload = {}
+
+    def fake_call_ai(pages_payload):
+        captured_payload["pages"] = pages_payload
+        return FAKE_GRAPH
+
+    monkeypatch.setattr(stage_template_service, "_call_ai", fake_call_ai)
+
+    template = stage_template_service.generate_or_reuse_template(db, client)
+    db.commit()
+
+    assert template.status == TemplateStatus.DRAFT
+    assert len(captured_payload["pages"]) > 0
+    # Текст в payload реально пришёл из файла (не выдуман) — например, штамп
+    # титульного листа КР этого образца.
+    assert any("Конструктивный раздел" in p["text"] for p in captured_payload["pages"])
