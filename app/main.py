@@ -27,7 +27,6 @@ from app.house_models.router import app as house_models_app
 from app.installation.router import app as installation_app
 from app.marketing.router import app as marketing_app
 from app.max.router import app as max_app
-from app.production.demo_seed import ensure_demo_production_seed
 from app.production.router import app as production_app
 from app.tasks.demo_seed import ensure_demo_workforce_seed
 from app.tasks.router import app as tasks_app
@@ -73,11 +72,6 @@ def on_startup() -> None:
         # cycles) so the "Актуальное" block on "Пульс" has activity to show
         # locally — never in prod, no-op once real clients exist.
         ensure_demo_clients_seed(db)
-        # Same contract again: one of the demo clients above (the one with a
-        # real АР/КР attached) gets a production going — "Главная" tab of a
-        # production (0065) needs a real cycle/module/signal to show locally.
-        # Never in prod, no-op once a real production exists.
-        ensure_demo_production_seed(db)
         # Same contract again: demo rows for the "Действия агента" panel in
         # "Марина" (0033) — never in prod, no-op once real activity exists.
         # Runs after the demo clients/production/marketing seeds above so it
