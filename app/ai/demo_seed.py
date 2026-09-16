@@ -27,8 +27,8 @@ from app.production.models import ProductionModule
 
 def ensure_agent_activity_seed(db: Session) -> int:
     """Возвращает число созданных демо-записей (0, если сидер уже срабатывал
-    раньше, в базе уже есть свои записи, или мы в prod)."""
-    if settings.is_prod:
+    раньше, в базе уже есть свои записи, или без явного ENABLE_DEMO_SEED=1)."""
+    if not settings.should_seed_demo_data:
         return 0
     if db.query(AgentActivity).first() is not None:
         return 0
@@ -197,8 +197,8 @@ def ensure_growth_proposals_seed(db: Session) -> int:
     и не запускается в prod — по образцу `ensure_agent_activity_seed` выше.
 
     Возвращает число созданных демо-записей (0, если сидер уже срабатывал
-    раньше, в базе уже есть свои записи, или мы в prod)."""
-    if settings.is_prod:
+    раньше, в базе уже есть свои записи, или без явного ENABLE_DEMO_SEED=1)."""
+    if not settings.should_seed_demo_data:
         return 0
     if db.query(GrowthProposal).first() is not None:
         return 0

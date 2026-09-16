@@ -74,8 +74,9 @@ _SALARY_DEMO: list[tuple[str, float, MoneyMovementStatus]] = [
 
 def ensure_demo_workforce_seed(db: Session) -> int:
     """Возвращает число созданных демо-сотрудников (0, если сидер уже
-    срабатывал раньше или в базе уже есть свои сотрудники)."""
-    if settings.is_prod:
+    срабатывал раньше, в базе уже есть свои сотрудники, или без явного
+    ENABLE_DEMO_SEED=1)."""
+    if not settings.should_seed_demo_data:
         return 0
     if db.query(User).filter(User.role == UserRole.WORKER).first() is not None:
         return 0

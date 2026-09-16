@@ -30,6 +30,10 @@ services:
       STORAGE_DIR: /app/storage
       # Required. Set these in .env — no insecure defaults, prod boot fails without them.
       APP_ENV: ${APP_ENV:-prod}
+      # Demo/mock data now needs this EXPLICIT opt-in on top of a non-prod
+      # APP_ENV (see app/core/config.py::should_seed_demo_data) — after
+      # 2026-09-17 incident where demo data reached a real deployment.
+      ENABLE_DEMO_SEED: ${ENABLE_DEMO_SEED:-false}
       JWT_SECRET: ${JWT_SECRET:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@soborbum.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}

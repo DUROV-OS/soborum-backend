@@ -31,8 +31,9 @@ _CLIENTS: list[tuple[str, str, str, str | None]] = [
 
 def ensure_demo_clients_seed(db: Session) -> int:
     """Возвращает число созданных демо-клиентов (0, если сидер уже
-    срабатывал раньше, в базе уже есть свои клиенты, или мы в prod)."""
-    if settings.is_prod:
+    срабатывал раньше, в базе уже есть свои клиенты, или без явного
+    ENABLE_DEMO_SEED=1 — см. Settings.should_seed_demo_data)."""
+    if not settings.should_seed_demo_data:
         return 0
     if db.query(Client).first() is not None:
         return 0

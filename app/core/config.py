@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     def is_prod(self) -> bool:
         return self.app_env.strip().lower() not in {"dev", "development", "local", "test"}
 
+    # Belt-and-suspenders after 2026-09-17: demo/mock data reached a real
+    # deployment because that deployment's APP_ENV was not recognized as
+    # prod, and every demo_seed module only checked `is_prod`. Demo data now
+    # requires this EXPLICIT opt-in on top of `not is_prod` — a
+    # misconfigured or unset APP_ENV alone can no longer turn it on.
+    enable_demo_seed: bool = False
+
+    @property
+    def should_seed_demo_data(self) -> bool:
+        return self.enable_demo_seed and not self.is_prod
+
     @model_validator(mode="after")
     def _reject_insecure_defaults(self) -> "Settings":
         problems: list[str] = []

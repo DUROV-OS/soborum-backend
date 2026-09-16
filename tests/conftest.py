@@ -2,6 +2,7 @@ import os
 
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["APP_ENV"] = "dev"
+os.environ["ENABLE_DEMO_SEED"] = "true"
 os.environ["JWT_SECRET"] = "isolated-regression-test-secret-never-use-in-production"
 os.environ["ADMIN_PASSWORD"] = ""
 os.environ["CORS_ALLOWED_ORIGINS"] = "http://localhost:5173"

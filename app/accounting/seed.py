@@ -64,9 +64,9 @@ _SPECS: list[tuple] = [
 
 
 def ensure_accounting_seed(db: Session) -> int:
-    """Возвращает число созданных проводок (0 в prod, если реестр уже был не
-    пуст, или если не хватило сущностей для привязок)."""
-    if settings.is_prod:
+    """Возвращает число созданных проводок (0 без явного ENABLE_DEMO_SEED=1,
+    если реестр уже был не пуст, или если не хватило сущностей для привязок)."""
+    if not settings.should_seed_demo_data:
         return 0
     if db.query(MoneyMovement).first() is not None:
         return 0
