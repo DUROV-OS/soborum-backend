@@ -1,9 +1,12 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.production.models import MaterialRequestStatus
+from app.common.files import FileAssetOut
 from app.cycle.models import CycleStatus
+from app.dashboard.schemas import WidgetTone
+from app.house_models.schemas import HouseModelBriefOut
+from app.production.models import MaterialRequestStatus
 
 
 class ModuleCreate(BaseModel):
@@ -88,3 +91,37 @@ class ProductionListOut(BaseModel):
     cycle_status: CycleStatus
     created_at: datetime
     module_count: int
+
+
+# --------------------------------------------------------------- «Главная» --
+# Вкладка «Главная» одного производства (0065-a) — те же виджеты, что на
+# «Пульсе» («Требует внимания», «Актуальное»), но пересчитанные по одному
+# циклу/дому, плюс урезанный набор документов клиента (без цены/контактов —
+# право production не должно их раскрывать, см. router.py).
+
+
+class ProductionAttentionOut(BaseModel):
+    id: str
+    title: str
+    description: str
+    href: str
+    tone: WidgetTone = "warning"
+
+
+class ProductionAktualnoeOut(BaseModel):
+    stage: str
+    percent: int = Field(ge=0, le=100)
+    phrase: str = ""
+
+
+class ProductionHomeDocumentsOut(BaseModel):
+    house_model: HouseModelBriefOut | None
+    ar_file: FileAssetOut | None
+    kr_file: FileAssetOut | None
+    house_project_file: FileAssetOut | None
+
+
+class ProductionHomeOut(BaseModel):
+    actions: list[ProductionAttentionOut] = Field(default_factory=list)
+    aktualnoe: ProductionAktualnoeOut | None
+    documents: ProductionHomeDocumentsOut
