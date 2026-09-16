@@ -1,0 +1,239 @@
+"""ИИ-генерация шаблона графа этапов производства по постраничному разбору КР
+(0066-d).
+
+Как и `production/deadlines.py::_ai_pick_bottleneck` — единственный сетевой
+вызов к Claude вынесен в отдельную функцию (`_call_ai`) с принудительным
+`tool_choice`, системный промпт явно запрещает выдумывать этапы/задачи/
+материалы сверх переданного текста страниц и требует ссылку на страницу КР
+у каждой составляющей. Тесты монки-патчат `_call_ai`, а не сеть.
+"""
+
+from __future__ import annotations
+
+import json
+
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.clients.models import Client
+from app.core.config import settings
+from app.production import kr_extraction
+from app.production.stage_templates import ProductionStageTemplate, TemplateBlock, TemplateBlockMaterial, TemplateBlockTask, TemplateStatus
+
+_MAX_PAGE_CHARS = 2000
+
+SUBMIT_TOOL_NAME = "submit_stage_template"
+
+SYSTEM_PROMPT = (
+    "Ты — инженер-технолог производства модульных домов «Soborbum». Тебе передан "
+    "постраничный текст КР (конструктивных решений) одного дома — JSON-список "
+    "{page_number, text}.\n\n"
+    "Разбей производство этого дома на последовательные и (где это верно по КР) "
+    "параллельные блоки-этапы. Для каждого блока укажи задачи и материалы. "
+    "СТРОГО следуй правилам:\n"
+    "1. Не выдумывай ничего, чего нет в переданном тексте — ни этапов, ни "
+    "материалов, ни количеств. Если факта в тексте нет — не включай его.\n"
+    "2. У КАЖДОГО блока, задачи и материала обязательна ссылка на номер "
+    "страницы (kr_page_ref / kr_page_refs), с которой это взято.\n"
+    "3. Зависимости блока (depends_on_sequence) указывай через sequence "
+    "других блоков ЭТОГО ЖЕ ответа, только если КР явно подразумевает порядок "
+    "(нельзя начать одно, не закончив другое).\n"
+    "Отвечай ТОЛЬКО вызовом инструмента submit_stage_template, без текста."
+)
+
+TOOL_SCHEMA = {
+    "name": SUBMIT_TOOL_NAME,
+    "description": "Отправить предложенный граф этапов производства по КР.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "blocks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "sequence": {"type": "integer"},
+                        "depends_on_sequence": {"type": "array", "items": {"type": "integer"}},
+                        "kr_page_refs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "page_number": {"type": "integer"},
+                                    "note": {"type": "string"},
+                                },
+                                "required": ["page_number"],
+                            },
+                        },
+                        "tasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "kr_page_ref": {
+                                        "type": "object",
+                                        "properties": {
+                                            "page_number": {"type": "integer"},
+                                            "note": {"type": "string"},
+                                        },
+                                        "required": ["page_number"],
+                                    },
+                                },
+                                "required": ["title", "kr_page_ref"],
+                            },
+                        },
+                        "materials": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "unit": {"type": "string"},
+                                    "kr_page_ref": {
+                                        "type": "object",
+                                        "properties": {
+                                            "page_number": {"type": "integer"},
+                                            "note": {"type": "string"},
+                                        },
+                                        "required": ["page_number"],
+                                    },
+                                },
+                                "required": ["name", "unit", "kr_page_ref"],
+                            },
+                        },
+                    },
+                    "required": ["name", "sequence", "kr_page_refs", "tasks", "materials"],
+                },
+            },
+        },
+        "required": ["blocks"],
+    },
+}
+
+
+def _find_existing_template(db: Session, house_model_key: str | None) -> ProductionStageTemplate | None:
+    """Шаблон уже есть для этой модели дома (в любом статусе) — переиспользуем
+    без обращения к ИИ. Индивидуальные проекты (`house_model_key is None`) не
+    переиспользуются — каждый раз строятся заново и остаются одноразовыми."""
+    if not house_model_key:
+        return None
+    return (
+        db.query(ProductionStageTemplate)
+        .filter(ProductionStageTemplate.house_model_key == house_model_key)
+        .order_by(ProductionStageTemplate.id.desc())
+        .first()
+    )
+
+
+def _kr_payload(extraction) -> list[dict]:
+    payload = []
+    for page in extraction.pages:
+        text = (page.get("text") or "").strip()
+        if not text:
+            continue
+        payload.append({"page_number": page["page_number"], "text": text[:_MAX_PAGE_CHARS]})
+    return payload
+
+
+def _call_ai(pages_payload: list[dict]) -> dict:
+    """Единственная точка сетевого вызова Claude — вынесена отдельно, чтобы
+    тесты монки-патчили именно её (как `deadlines._ai_pick_bottleneck`),
+    не поднимая реальную сеть, и считали число вызовов."""
+    from app.core.llm import anthropic_client
+
+    response = anthropic_client().messages.create(
+        model=settings.ai_model,
+        max_tokens=4096,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": json.dumps(pages_payload, ensure_ascii=False)}],
+        tools=[TOOL_SCHEMA],
+        tool_choice={"type": "tool", "name": SUBMIT_TOOL_NAME},
+    )
+    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use is None:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ не вернул структурированный ответ")
+    return tool_use.input
+
+
+def _persist_draft(db: Session, client: Client, graph: dict) -> ProductionStageTemplate:
+    template = ProductionStageTemplate(
+        house_model_key=client.house_model_key,
+        status=TemplateStatus.DRAFT,
+        source_client_id=client.id,
+    )
+    db.add(template)
+    db.flush()
+
+    blocks_by_sequence: dict[int, TemplateBlock] = {}
+    for raw_block in graph.get("blocks", []):
+        block = TemplateBlock(
+            template_id=template.id,
+            name=raw_block["name"],
+            description=raw_block.get("description"),
+            sequence=raw_block["sequence"],
+            kr_page_refs=raw_block.get("kr_page_refs", []),
+        )
+        db.add(block)
+        db.flush()
+        blocks_by_sequence[raw_block["sequence"]] = block
+
+        for raw_task in raw_block.get("tasks", []):
+            db.add(
+                TemplateBlockTask(
+                    template_block_id=block.id,
+                    title=raw_task["title"],
+                    description=raw_task.get("description"),
+                    kr_page_ref=raw_task.get("kr_page_ref"),
+                )
+            )
+        for raw_material in raw_block.get("materials", []):
+            db.add(
+                TemplateBlockMaterial(
+                    template_block_id=block.id,
+                    name=raw_material["name"],
+                    unit=raw_material["unit"],
+                    kr_page_ref=raw_material.get("kr_page_ref"),
+                )
+            )
+    db.flush()
+
+    for raw_block in graph.get("blocks", []):
+        block = blocks_by_sequence.get(raw_block["sequence"])
+        if block is None:
+            continue
+        for dep_sequence in raw_block.get("depends_on_sequence", []):
+            dep_block = blocks_by_sequence.get(dep_sequence)
+            if dep_block is not None and dep_block.id != block.id:
+                block.depends_on.append(dep_block)
+    db.flush()
+    return template
+
+
+def generate_or_reuse_template(db: Session, client: Client) -> ProductionStageTemplate:
+    existing = _find_existing_template(db, client.house_model_key)
+    if existing is not None:
+        return existing
+
+    extraction = kr_extraction.get_kr_extraction(db, client.id)
+    if extraction is None or not extraction.pages:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сначала запустите постраничный разбор КР этого клиента",
+        )
+
+    if not settings.anthropic_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Нужен ключ ИИ (ANTHROPIC_API_KEY) для первой генерации шаблона графа этапов",
+        )
+
+    pages_payload = _kr_payload(extraction)
+    if not pages_payload:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="В разборе КР нет текста ни на одной странице")
+
+    graph = _call_ai(pages_payload)
+    return _persist_draft(db, client, graph)
