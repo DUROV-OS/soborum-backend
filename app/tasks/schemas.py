@@ -23,6 +23,7 @@ class TaskCreate(BaseModel):
     deadline: datetime | None = None
     assignee_ids: list[int] = []
     reviewer_ids: list[int] = []
+    responsible_id: int | None = None
     depends_on_ids: list[int] = []
     image_ids: list[int] = []
     block_id: int | None = None
@@ -34,6 +35,7 @@ class TaskUpdate(BaseModel):
     deadline: datetime | None = None
     assignee_ids: list[int] | None = None
     reviewer_ids: list[int] | None = None
+    responsible_id: int | None = None
     depends_on_ids: list[int] | None = None
     image_ids: list[int] | None = None
 
@@ -57,6 +59,7 @@ class TaskOut(BaseModel):
     link_meta: dict | None
     assignees: list[UserOut]
     reviewers: list[UserOut]
+    responsible: UserOut | None
     images: list[FileAssetOut]
     depends_on_ids: list[int]
 
@@ -75,6 +78,7 @@ class TaskOut(BaseModel):
             link_meta=task.link_meta,
             assignees=[UserOut.from_model(u) for u in task.assignees],
             reviewers=[UserOut.from_model(u) for u in task.reviewers],
+            responsible=UserOut.from_model(task.responsible) if task.responsible else None,
             images=[FileAssetOut.model_validate(f) for f in task.images],
             depends_on_ids=[t.id for t in task.depends_on],
         )

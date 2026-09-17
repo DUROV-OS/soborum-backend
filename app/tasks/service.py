@@ -98,6 +98,14 @@ def _resolve_tasks(db: Session, ids: list[int]) -> list[Task]:
     return tasks
 
 
+def _validate_responsible(db: Session, responsible_id: int | None) -> None:
+    # Ответственный не обязан быть среди assignees (например начальник
+    # производства как ответственный за задачу подрядчика-исполнителя) —
+    # проверяем только то, что такой пользователь вообще существует.
+    if responsible_id is not None and db.get(User, responsible_id) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ответственный не найден")
+
+
 def _initial_status(depends_on: list[Task]) -> TaskStatus:
     if not depends_on:
         return TaskStatus.READY
@@ -114,6 +122,7 @@ def create_task(
     deadline: datetime | None = None,
     assignee_ids: list[int] = (),
     reviewer_ids: list[int] = (),
+    responsible_id: int | None = None,
     depends_on_ids: list[int] = (),
     image_ids: list[int] = (),
     block_id: int | None = None,
@@ -121,12 +130,14 @@ def create_task(
     link_id: int | None = None,
     link_meta: dict | None = None,
 ) -> Task:
+    _validate_responsible(db, responsible_id)
     depends_on = _resolve_tasks(db, list(depends_on_ids))
     task = Task(
         title=title,
         description=description,
         deadline=deadline,
         block_id=block_id,
+        responsible_id=responsible_id,
         link_type=link_type,
         link_id=link_id,
         link_meta=link_meta,
@@ -152,6 +163,7 @@ def update_task(
     deadline: datetime | None,
     assignee_ids: list[int] | None,
     reviewer_ids: list[int] | None,
+    responsible_id: int | None = None,
     depends_on_ids: list[int] | None,
     image_ids: list[int] | None,
 ) -> Task:
@@ -165,6 +177,9 @@ def update_task(
         task.assignees = _resolve_users(db, assignee_ids)
     if reviewer_ids is not None:
         task.reviewers = _resolve_users(db, reviewer_ids)
+    if responsible_id is not None:
+        _validate_responsible(db, responsible_id)
+        task.responsible_id = responsible_id
     if depends_on_ids is not None:
         task.depends_on = _resolve_tasks(db, depends_on_ids)
         if task.status == TaskStatus.NOT_READY:

@@ -69,6 +69,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db), _: User = De
         deadline=payload.deadline,
         assignee_ids=payload.assignee_ids,
         reviewer_ids=payload.reviewer_ids,
+        responsible_id=payload.responsible_id,
         depends_on_ids=payload.depends_on_ids,
         image_ids=payload.image_ids,
         block_id=payload.block_id,
@@ -94,6 +95,7 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
         deadline=payload.deadline,
         assignee_ids=payload.assignee_ids,
         reviewer_ids=payload.reviewer_ids,
+        responsible_id=payload.responsible_id,
         depends_on_ids=payload.depends_on_ids,
         image_ids=payload.image_ids,
     )
