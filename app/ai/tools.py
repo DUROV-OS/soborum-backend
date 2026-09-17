@@ -802,4 +802,103 @@ def _accept_task(db: Session, user: User, task_id: int) -> dict:
     return _serialize_task(task)
 
 
+# --------------------------------------------------------------- jarvis --
+
+# Держим в синхронизации с frontend/src/shared/sections.ts (SECTIONS) — id/
+# label/path раздела, на который умеет переходить `navigate_to` ниже. Только
+# разделы без параметра в пути: детальные карточки (клиент, производство…)
+# резолвятся отдельно, по своей сущности, не по этому статическому списку.
+_NAVIGABLE_SECTIONS = [
+    {"id": "today", "label": "Пульс", "path": "/today"},
+    {"id": "work", "label": "Работа", "path": "/work"},
+    {"id": "cycle", "label": "Цикл клиента", "path": "/cycles"},
+    {"id": "clients", "label": "Клиенты", "path": "/clients"},
+    {"id": "production", "label": "Производство", "path": "/production"},
+    {"id": "installation", "label": "Монтаж", "path": "/montage"},
+    {"id": "warehouse", "label": "Склад", "path": "/warehouse"},
+    {"id": "marketing", "label": "Маркетинг", "path": "/marketing"},
+    {"id": "house_models", "label": "Типовые проекты домов", "path": "/house-models"},
+    {"id": "tasks", "label": "Задачи", "path": "/tasks"},
+    {"id": "board", "label": "Совет директоров", "path": "/board"},
+    {"id": "agents", "label": "Агенты", "path": "/agents"},
+    {"id": "chats", "label": "MAX", "path": "/chats"},
+    {"id": "ai", "label": "Марина", "path": "/ai"},
+    {"id": "meetings", "label": "Совещание", "path": "/meetings"},
+    {"id": "accounting", "label": "Бухгалтерия", "path": "/accounting"},
+    {"id": "suppliers", "label": "Поставщики", "path": "/suppliers"},
+]
+
+
+def _match_sections(query: str) -> list[dict]:
+    q = query.strip().lower()
+    if not q:
+        return []
+    exact = [s for s in _NAVIGABLE_SECTIONS if s["id"] == q or s["label"].lower() == q]
+    if exact:
+        return exact
+    return [s for s in _NAVIGABLE_SECTIONS if q in s["label"].lower() or s["label"].lower() in q]
+
+
+def _match_clients_by_name(db: Session, query: str) -> list[Client]:
+    q = query.strip()
+    if not q:
+        return []
+    return (
+        db.query(Client)
+        .filter(Client.full_name.ilike(f"%{q}%"))
+        .order_by(Client.id.desc())
+        .limit(5)
+        .all()
+    )
+
+
+@register(
+    "navigate_to",
+    "Найти раздел системы или карточку клиента и вернуть путь фронта, чтобы РЕАЛЬНО "
+    "переключить экран пользователя (SPA-навигация) — а не просто рассказать о разделе или "
+    "клиенте. Используй, когда просят «перейди», «покажи», «открой» какой-то раздел или "
+    "карточку клиента. entity_type='client' ищет клиента по имени (query — часть имени, "
+    "например «Иванов»), entity_type='section' ищет раздел по названию (query — например "
+    "«склад», «клиенты», «производство»). Если found=false — сам переспроси пользователя "
+    "уточнение (по reason/candidates), не выбирай наугад один из candidates и не выдумывай "
+    "path/id мимо этого инструмента — для карточек сотрудников подходящего раздела фронта "
+    "пока нет, честно сообщи об этом, если попросят.",
+    {
+        "entity_type": {"type": "string", "enum": ["client", "section"]},
+        "query": {"type": "string"},
+    },
+    ["entity_type", "query"],
+    required_module=Module.AI,
+    read_only=True,
+    domains=[ChatDomain.GENERAL],
+)
+def _navigate_to(db: Session, user: User, entity_type: str, query: str) -> dict:
+    if entity_type == "section":
+        matches = _match_sections(query)
+        if len(matches) == 1:
+            return {"found": True, "path": matches[0]["path"], "label": matches[0]["label"]}
+        if not matches:
+            return {"found": False, "reason": f"Раздел «{query}» не найден"}
+        return {
+            "found": False,
+            "reason": "Нашлось несколько подходящих разделов, уточните",
+            "candidates": [{"label": m["label"], "path": m["path"]} for m in matches],
+        }
+
+    if entity_type == "client":
+        clients = _match_clients_by_name(db, query)
+        if len(clients) == 1:
+            client = clients[0]
+            return {"found": True, "path": f"/clients/{client.id}", "label": client.full_name}
+        if not clients:
+            return {"found": False, "reason": f"Клиент «{query}» не найден"}
+        return {
+            "found": False,
+            "reason": "Нашлось несколько клиентов с похожим именем, уточните",
+            "candidates": [{"label": c.full_name, "path": f"/clients/{c.id}"} for c in clients],
+        }
+
+    return {"found": False, "reason": f"Неизвестный entity_type «{entity_type}»"}
+
+
 from app.ai import live_tools as _live_tools  # noqa: E402,F401
