@@ -1,6 +1,7 @@
-"""Удаление поставщика (0030-c):
+"""Удаление поставщика (0030-c; уровень доступа — 0052-b):
 
-- только администратор (`DELETE /api/warehouse/suppliers/{id}`);
+- нужен уровень `full` на WAREHOUSE (`DELETE /api/warehouse/suppliers/{id}`) —
+  грант `full` либо роль `ADMIN`; обычный грант (`edit`) — 403;
 - отказ 409 (не сырой IntegrityError), если у поставщика есть заказы
   (`app.accounting.SupplierOrder`);
 - при отсутствии заказов поставщик удаляется вместе с прайсом/заметками
@@ -8,7 +9,7 @@
 """
 
 from app.accounting.models import SupplierOrder
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.warehouse.models import Supplier, SupplierPriceItem
 
 
@@ -19,13 +20,23 @@ def _make_supplier(db, name="Поставщик"):
     return supplier
 
 
-def test_delete_requires_admin(api, make_user, db):
+def test_delete_requires_full_level(api, make_user, db):
     supplier = _make_supplier(db)
     db.commit()
-    worker = api(make_user(Module.WAREHOUSE))
+    worker = api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT))
     resp = worker.delete(f"/api/warehouse/suppliers/{supplier.id}")
     assert resp.status_code == 403
     assert db.get(Supplier, supplier.id) is not None
+
+
+def test_delete_allowed_with_full_level_without_admin_role(api, make_user, db):
+    supplier = _make_supplier(db)
+    db.commit()
+    supplier_id = supplier.id
+    worker = api(make_user(Module.WAREHOUSE, level=AccessLevel.FULL))
+    resp = worker.delete(f"/api/warehouse/suppliers/{supplier_id}")
+    assert resp.status_code == 204
+    assert db.get(Supplier, supplier_id) is None
 
 
 def test_delete_rejected_with_supplier_orders(api, make_user, db):

@@ -1,12 +1,13 @@
-"""Списание материалов со склада (0030-e):
+"""Списание материалов со склада (0030-e; уровень доступа — 0052-b):
 
-- доступно ADMIN и сотруднику с доступом к модулю WAREHOUSE, никому другому;
+- разрушительное действие раздела — нужен уровень `full` на WAREHOUSE (грант
+  `full` либо роль `ADMIN`); `edit` (обычный грант) — 403;
 - причина обязательна;
 - нельзя увести остаток в минус;
 - списание уменьшает остаток и попадает в историю движений с причиной.
 """
 
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.warehouse.models import MaterialCategory, StockMovementReason, Warehouse, WarehouseMaterial
 
 
@@ -42,10 +43,10 @@ def test_write_off_by_admin(api, make_user, db):
     assert resp.json()["quantity_in_stock"] == 7
 
 
-def test_write_off_by_warehouse_worker(api, make_user, db):
+def test_write_off_by_warehouse_worker_with_full_level(api, make_user, db):
     material = _make_material(db)
     db.commit()
-    worker = api(make_user(Module.WAREHOUSE))
+    worker = api(make_user(Module.WAREHOUSE, level=AccessLevel.FULL))
     resp = worker.post(
         f"/api/warehouse/materials/{material.id}/write-off",
         json={"quantity": 2, "reason": "недостача при инвентаризации"},
@@ -58,6 +59,17 @@ def test_write_off_by_warehouse_worker(api, make_user, db):
     assert history[0]["reason"] == "write_off"
     assert history[0]["delta"] == -2
     assert history[0]["note"] == "недостача при инвентаризации"
+
+
+def test_write_off_rejected_for_edit_level(api, make_user, db):
+    material = _make_material(db)
+    db.commit()
+    worker = api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT))
+    resp = worker.post(
+        f"/api/warehouse/materials/{material.id}/write-off", json={"quantity": 1, "reason": "брак"}
+    )
+    assert resp.status_code == 403
+    assert float(db.get(WarehouseMaterial, material.id).quantity_in_stock) == 10
 
 
 def test_write_off_requires_reason(api, make_user, db):
