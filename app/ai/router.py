@@ -55,9 +55,9 @@ from app.ai.schemas import (
     TranscriptSpeakerUpdate,
 )
 from app.common.files import FileAssetOut
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.core.config import settings
-from app.core.deps import get_current_user, require_admin, require_module
+from app.core.deps import get_current_user, require_edit, require_full, require_view
 from app.db.session import get_db
 from app.tasks import service as task_service
 from app.tasks.models import TaskLinkType
@@ -71,15 +71,27 @@ app = FastAPI(
     version="0.3",
 )
 
-require_ai = require_module(Module.AI)
+require_ai_view = require_view(Module.AI)
+require_ai_edit = require_edit(Module.AI)
+require_ai_full = require_full(Module.AI)
 
 
-def require_ai_and(module: Module):
-    def dependency(user: User = Depends(require_ai)) -> User:
-        if not user.has_access(module):
+def require_ai_and(module: Module, *, ai_level: AccessLevel = AccessLevel.EDIT, other_level: AccessLevel = AccessLevel.VIEW):
+    """Совместный доступ «ИИ + другой раздел» (0052-b): Марина только читает
+    данные `module`, чтобы ответить, поэтому там достаточно `view`
+    (по умолчанию); на самом AI по умолчанию нужен `edit` — POST .../ask[/stream]
+    создаёт/продолжает чат. Аналитика (GET .../analytics, .../priorities)
+    вызывается с `ai_level=AccessLevel.VIEW` — там ничего не создаётся."""
+    def dependency(user: User = Depends(get_current_user)) -> User:
+        if user.access_level(Module.AI) < ai_level:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Нет доступа к разделу «{module.value}»",
+                detail=f"Недостаточно прав в разделе «{Module.AI.value}»",
+            )
+        if user.access_level(module) < other_level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Недостаточно прав в разделе «{module.value}»",
             )
         return user
 
@@ -177,7 +189,7 @@ def ask_tasks(payload: AskRequest, db: Session = Depends(get_db), user: User = D
 
 
 @app.post("/chat/ask", response_model=AskResponse)
-def ask_general(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def ask_general(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     return _ask(db, user, ChatDomain.GENERAL, payload)
 
 
@@ -216,7 +228,7 @@ def ask_tasks_stream(payload: AskRequest, db: Session = Depends(get_db), user: U
 
 
 @app.post("/chat/ask/stream")
-def ask_general_stream(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def ask_general_stream(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     return _ask_stream(db, user, ChatDomain.GENERAL, payload)
 
 
@@ -328,47 +340,47 @@ def consult_reject(pending_action_id: int, db: Session = Depends(get_db), user: 
 
 
 @app.get("/clients/analytics", response_model=SectionAnalyticsOut)
-def analytics_clients(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.CLIENTS))):
+def analytics_clients(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.CLIENTS, ai_level=AccessLevel.VIEW))):
     return ai_analytics.generate_section_analytics(db, user, "clients", force=reload)
 
 
 @app.get("/production/analytics", response_model=SectionAnalyticsOut)
-def analytics_production(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.PRODUCTION))):
+def analytics_production(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.PRODUCTION, ai_level=AccessLevel.VIEW))):
     return ai_analytics.generate_section_analytics(db, user, "production", force=reload)
 
 
 @app.get("/installation/analytics", response_model=SectionAnalyticsOut)
-def analytics_installation(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.INSTALLATION))):
+def analytics_installation(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.INSTALLATION, ai_level=AccessLevel.VIEW))):
     return ai_analytics.generate_section_analytics(db, user, "installation", force=reload)
 
 
 @app.get("/cycle/analytics", response_model=SectionAnalyticsOut)
-def analytics_cycle(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.CYCLE))):
+def analytics_cycle(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.CYCLE, ai_level=AccessLevel.VIEW))):
     return ai_analytics.generate_section_analytics(db, user, "cycle", force=reload)
 
 
 @app.get("/warehouse/analytics", response_model=SectionAnalyticsOut)
-def analytics_warehouse(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.WAREHOUSE))):
+def analytics_warehouse(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.WAREHOUSE, ai_level=AccessLevel.VIEW))):
     return ai_analytics.generate_section_analytics(db, user, "warehouse", force=reload)
 
 
 @app.get("/marketing/analytics", response_model=SectionAnalyticsOut)
-def analytics_marketing(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.MARKETING))):
+def analytics_marketing(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.MARKETING, ai_level=AccessLevel.VIEW))):
     return ai_analytics.generate_section_analytics(db, user, "marketing", force=reload)
 
 
 @app.get("/tasks/analytics", response_model=SectionAnalyticsOut)
-def analytics_tasks(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.TASKS))):
+def analytics_tasks(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.TASKS, ai_level=AccessLevel.VIEW))):
     return ai_analytics.generate_section_analytics(db, user, "tasks", force=reload)
 
 
 @app.get("/tasks/priorities", response_model=TaskPrioritiesOut)
-def task_priorities(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.TASKS))):
+def task_priorities(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.TASKS, ai_level=AccessLevel.VIEW))):
     return ai_priorities.generate_task_priorities(db, user, force=reload)
 
 
 @app.post("/files", response_model=FileAssetOut)
-def upload_chat_file(file: UploadFile, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def upload_chat_file(file: UploadFile, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     """Upload a file (image, PDF, or plain-text document) to attach to a chat
     message: pass the returned id in AskRequest.file_ids. Download stays on
     the shared GET /files/{file_id} route."""
@@ -379,18 +391,18 @@ def upload_chat_file(file: UploadFile, db: Session = Depends(get_db), user: User
 
 
 @app.get("/chats", response_model=list[ChatOut])
-def list_chats(domain: ChatDomain | None = None, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def list_chats(domain: ChatDomain | None = None, db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
     return ai_service.list_own_chats(db, user, domain)
 
 
 @app.get("/chats/{chat_id}", response_model=ChatDetailOut)
-def get_chat(chat_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def get_chat(chat_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
     return ai_service.get_own_chat_or_404(db, user, chat_id)
 
 
 @app.patch("/chats/{chat_id}/mode", response_model=ChatOut)
 def update_chat_mode(
-    chat_id: int, payload: ChatModeUpdate, db: Session = Depends(get_db), user: User = Depends(require_ai)
+    chat_id: int, payload: ChatModeUpdate, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)
 ):
     chat = ai_service.get_own_chat_or_404(db, user, chat_id)
     return ai_service.update_mode(db, chat, payload.mode)
@@ -398,27 +410,27 @@ def update_chat_mode(
 
 @app.patch("/chats/{chat_id}/title", response_model=ChatOut)
 def update_chat_title(
-    chat_id: int, payload: ChatTitleUpdate, db: Session = Depends(get_db), user: User = Depends(require_ai)
+    chat_id: int, payload: ChatTitleUpdate, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)
 ):
     chat = ai_service.get_own_chat_or_404(db, user, chat_id)
     return ai_service.update_title(db, chat, payload.title)
 
 
 @app.delete("/chats/{chat_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_chat(chat_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def delete_chat(chat_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     chat = ai_service.get_own_chat_or_404(db, user, chat_id)
     ai_service.delete_chat(db, chat)
 
 
 @app.get("/pending-actions", response_model=list[PendingActionOut])
 def list_pending_actions(
-    chat_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_ai)
+    chat_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_ai_view)
 ):
     return [_to_pending_out(pa) for pa in ai_service.list_own_pending_actions(db, user, chat_id)]
 
 
 @app.post("/pending-actions/{pending_action_id}/approve", response_model=AskResponse)
-def approve_pending_action(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def approve_pending_action(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     pa = ai_service.get_own_pending_action_or_404(db, user, pending_action_id)
     result = engine.resolve_pending_action(db, pa, approve=True, decided_by=user)
     return AskResponse(
@@ -430,7 +442,7 @@ def approve_pending_action(pending_action_id: int, db: Session = Depends(get_db)
 
 
 @app.post("/pending-actions/{pending_action_id}/reject", response_model=AskResponse)
-def reject_pending_action(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def reject_pending_action(pending_action_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     pa = ai_service.get_own_pending_action_or_404(db, user, pending_action_id)
     result = engine.resolve_pending_action(db, pa, approve=False, decided_by=user)
     return AskResponse(
@@ -442,7 +454,7 @@ def reject_pending_action(pending_action_id: int, db: Session = Depends(get_db),
 
 
 @app.get("/agent-actions", response_model=list[AgentActivityOut])
-def list_agent_actions(limit: int = 30, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def list_agent_actions(limit: int = 30, db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
     """Панель «Действия агента» справа от чата в «Марине» — общий (не по
     владельцу) лог, сейчас наполняется только демо-сидом на localhost (0033)."""
     return ai_service.list_agent_activity(db, limit=limit)
@@ -450,7 +462,7 @@ def list_agent_actions(limit: int = 30, db: Session = Depends(get_db), user: Use
 
 @app.get("/growth-proposals", response_model=list[GrowthProposalOut])
 def list_growth_proposals(
-    reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai)
+    reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_view)
 ):
     """Подраздел «Развитие» в «Марине» — предложения по улучшению бизнеса.
     reload=true запускает реальную генерацию через Claude (0050-a) и заменяет
@@ -463,7 +475,7 @@ def list_growth_proposals(
 
 @app.post("/growth-proposals/{proposal_id}/prepare-task", response_model=GrowthProposalPrepareTaskOut)
 def prepare_growth_proposal_task(
-    proposal_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)
+    proposal_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)
 ):
     """Кнопка «Подготовить задачу» на карточке предложения — создаёт настоящую
     задачу в разделе «Задачи» из полей предложения. Повторный вызов на уже
@@ -524,12 +536,12 @@ def _notes_out(notes, stale: bool = False) -> MeetingNotesOut | None:
 
 
 @app.post("/meetings", response_model=MeetingOut, status_code=status.HTTP_201_CREATED)
-def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def create_meeting(payload: MeetingCreate, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     return _meeting_out(ai_meetings.create_meeting(db, user, payload.title))
 
 
 @app.get("/meetings", response_model=list[MeetingOut])
-def list_meetings(db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def list_meetings(db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
     return [_meeting_out(m) for m in ai_meetings.list_own_meetings(db, user)]
 
 
@@ -538,7 +550,7 @@ def update_meeting(
     meeting_id: int,
     payload: MeetingUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_ai),
+    user: User = Depends(require_ai_edit),
 ):
     """Название и обстоятельства встречи (где / когда / с кем). Применяются
     только переданные поля."""
@@ -548,13 +560,13 @@ def update_meeting(
 
 
 @app.delete("/meetings/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def delete_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     ai_meetings.delete_meeting(db, meeting)
 
 
 @app.get("/meetings/{meeting_id}", response_model=MeetingDetailOut)
-def get_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def get_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     base = _meeting_out(meeting)
     return MeetingDetailOut(
@@ -573,7 +585,7 @@ def append_meeting_transcript(
     meeting_id: int,
     payload: TranscriptAppendIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_ai),
+    user: User = Depends(require_ai_edit),
 ):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     created = ai_meetings.append_transcript_lines(
@@ -590,7 +602,7 @@ def update_meeting_transcript_speaker(
     line_id: int,
     payload: TranscriptSpeakerUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_ai),
+    user: User = Depends(require_ai_edit),
 ):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     return TranscriptLineOut.model_validate(
@@ -600,14 +612,14 @@ def update_meeting_transcript_speaker(
 
 @app.post("/meetings/{meeting_id}/audio", response_model=MeetingOut)
 def upload_meeting_audio(
-    meeting_id: int, file: UploadFile, db: Session = Depends(get_db), user: User = Depends(require_ai)
+    meeting_id: int, file: UploadFile, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)
 ):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     return _meeting_out(ai_meetings.attach_audio(db, meeting, file, user))
 
 
 @app.post("/meetings/{meeting_id}/finish", response_model=MeetingOut)
-def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     finished = ai_meetings.finish_meeting(db, meeting)
     # Финальный пересчёт заметок по всему транскрипту — молча, finish не должен
@@ -621,7 +633,7 @@ def refresh_meeting_notes(
     meeting_id: int,
     force: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(require_ai),
+    user: User = Depends(require_ai_edit),
 ):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     notes, stale = ai_meeting_notes.refresh_notes(db, meeting, force=force)
@@ -629,7 +641,7 @@ def refresh_meeting_notes(
 
 
 @app.get("/meetings/{meeting_id}/document")
-def meeting_document(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def meeting_document(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
     """Готовый markdown-документ совещания для базы знаний (frontmatter +
     заметки + транскрипт). Реальная заливка в БЗ — задача 0010."""
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
@@ -649,7 +661,7 @@ def ask_about_meeting(
     meeting_id: int,
     payload: MeetingAskIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_ai),
+    user: User = Depends(require_ai_edit),
 ):
     """«Спросить Марину о совещании»: ответ на экран, контекст — транскрипт
     этого совещания (+ база знаний, если коннектор настроен и спрашивает
@@ -660,7 +672,7 @@ def ask_about_meeting(
 
 
 @app.get("/meetings/{meeting_id}/audio")
-def download_meeting_audio(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai)):
+def download_meeting_audio(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
     meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
     asset = ai_meetings.audio_asset(db, meeting)
     if asset is None:
@@ -669,7 +681,7 @@ def download_meeting_audio(meeting_id: int, db: Session = Depends(get_db), user:
 
 
 @app.get("/mcp/authorize")
-def mcp_authorize(_: User = Depends(require_admin)):
+def mcp_authorize(_: User = Depends(require_ai_full)):
     """Manual authorization: open the returned URL in a browser and approve
     access, which redirects to GET /callback (mounted on the root app, not
     here, since its path has to exactly match the redirect_uri registered
@@ -683,7 +695,7 @@ def mcp_authorize(_: User = Depends(require_admin)):
 
 
 @app.get("/mcp/status")
-def mcp_status(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def mcp_status(db: Session = Depends(get_db), _: User = Depends(require_ai_full)):
     if not settings.mcp_configured:
         return {"configured": False, "authorized": False}
     credential = db.get(McpCredential, 1)

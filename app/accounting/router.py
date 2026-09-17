@@ -29,7 +29,7 @@ from app.accounting.schemas import (
     SupplierOrderUpdate,
 )
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_admin, require_module
+from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
 from app.users.models import User
 
@@ -44,11 +44,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
-require_accounting = require_module(AccessModule.ACCOUNTING)
+require_accounting_view = require_view(AccessModule.ACCOUNTING)
+require_accounting_edit = require_edit(AccessModule.ACCOUNTING)
+require_accounting_full = require_full(AccessModule.ACCOUNTING)
 
 
 @app.get("/money-movements/enums")
-def money_movement_enums(_: User = Depends(require_accounting)):
+def money_movement_enums(_: User = Depends(require_accounting_view)):
     """Справочники для фронта: виды, статусы, оценки, типы источников."""
     return {
         "direction": [e.value for e in MoneyDirection],
@@ -59,7 +61,7 @@ def money_movement_enums(_: User = Depends(require_accounting)):
 
 
 @app.get("/money-movements/import/template")
-def download_import_template(_: User = Depends(require_accounting)):
+def download_import_template(_: User = Depends(require_accounting_view)):
     """.xlsx-шаблон таблицы платежей для импорта."""
     return Response(
         content=payment_import.generate_template(),
@@ -72,7 +74,7 @@ def download_import_template(_: User = Depends(require_accounting)):
 def import_payments(
     file: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(require_accounting),
+    user: User = Depends(require_accounting_edit),
 ):
     """Импорт платежей таблицей (.xlsx/.csv). Колонки размечает ИИ (при
     `ANTHROPIC_API_KEY`), иначе — словарь синонимов. Каждая строка → проводка в
@@ -110,7 +112,7 @@ def import_payments(
 def ai_fill_subkind(
     payload: AiFillSubkindRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_edit),
 ):
     """ИИ уточняет вид (`subkind`) у черновых проводок по назначению платежа и
     контрагенту. Меняет только `draft`. Без ключа ИИ — `updated = 0`."""
@@ -122,7 +124,7 @@ def ai_fill_subkind(
 def create_import_backfill_task(
     payload: ImportBackfillRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_edit),
 ):
     """Одна задача «дозаполнить проводки после импорта» — по кнопке в отчёте."""
     task_id = accounting_service.create_import_backfill_task(
@@ -132,7 +134,7 @@ def create_import_backfill_task(
 
 
 @app.get("/salary-overview", response_model=list[EmployeeSalaryOverview])
-def salary_overview(db: Session = Depends(get_db), _: User = Depends(require_accounting)):
+def salary_overview(db: Session = Depends(get_db), _: User = Depends(require_accounting_view)):
     """0023: раздел «Сотрудники» — каждый активный сотрудник и его текущая
     незакрытая зарплатная проводка (если есть), для кнопок «Начислить» /
     «Утвердить» / «Выплатить»."""
@@ -142,7 +144,7 @@ def salary_overview(db: Session = Depends(get_db), _: User = Depends(require_acc
 @app.get("/money-movements", response_model=list[MoneyMovementOut])
 def list_money_movements(
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_view),
     direction: MoneyDirection | None = None,
     subkind: MoneySubkind | None = None,
     status_filter: MoneyMovementStatus | None = Query(None, alias="status"),
@@ -176,7 +178,7 @@ def list_money_movements(
 def create_money_movement(
     payload: MoneyMovementCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_accounting),
+    user: User = Depends(require_accounting_edit),
 ):
     mm = accounting_service.create_money_movement(
         db, payload, initiator_id=payload.initiator_id or user.id
@@ -186,7 +188,7 @@ def create_money_movement(
 
 @app.get("/money-movements/{mm_id}", response_model=MoneyMovementOut)
 def get_money_movement(
-    mm_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting)
+    mm_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting_view)
 ):
     return MoneyMovementOut.from_movement(accounting_service.get_money_movement(db, mm_id))
 
@@ -196,7 +198,7 @@ def update_money_movement(
     mm_id: int,
     payload: MoneyMovementUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_edit),
 ):
     mm = accounting_service.get_money_movement(db, mm_id)
     mm = accounting_service.update_money_movement(db, mm, payload)
@@ -205,7 +207,7 @@ def update_money_movement(
 
 @app.delete("/money-movements/{mm_id}", status_code=204)
 def delete_money_movement(
-    mm_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)
+    mm_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting_full)
 ):
     mm = accounting_service.get_money_movement(db, mm_id)
     accounting_service.delete_money_movement(db, mm)
@@ -217,7 +219,7 @@ def change_money_movement_status(
     mm_id: int,
     payload: MoneyMovementStatusChange,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_edit),
 ):
     mm = accounting_service.get_money_movement(db, mm_id)
     mm = accounting_service.change_status(db, mm, payload.to, payload.reason)
@@ -230,7 +232,7 @@ def change_money_movement_status(
 @app.get("/supplier-orders", response_model=list[SupplierOrderOut])
 def list_supplier_orders(
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_view),
     supplier_id: int | None = None,
     status_filter: SupplierOrderStatus | None = Query(None, alias="status"),
 ):
@@ -242,7 +244,7 @@ def list_supplier_orders(
 def create_supplier_order(
     payload: SupplierOrderCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_edit),
 ):
     order = accounting_service.create_supplier_order(db, payload)
     return SupplierOrderOut.from_order(order)
@@ -250,7 +252,7 @@ def create_supplier_order(
 
 @app.get("/supplier-orders/{order_id}", response_model=SupplierOrderOut)
 def get_supplier_order(
-    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting)
+    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting_view)
 ):
     return SupplierOrderOut.from_order(accounting_service.get_supplier_order_or_404(db, order_id))
 
@@ -260,7 +262,7 @@ def update_supplier_order(
     order_id: int,
     payload: SupplierOrderUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_edit),
 ):
     order = accounting_service.get_supplier_order_or_404(db, order_id)
     order = accounting_service.update_supplier_order(db, order, payload)
@@ -269,7 +271,7 @@ def update_supplier_order(
 
 @app.delete("/supplier-orders/{order_id}", status_code=204)
 def delete_supplier_order(
-    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting)
+    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting_edit)
 ):
     order = accounting_service.get_supplier_order_or_404(db, order_id)
     accounting_service.delete_supplier_order(db, order)
@@ -281,7 +283,7 @@ def change_supplier_order_status(
     order_id: int,
     payload: SupplierOrderStatusChange,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting),
+    _: User = Depends(require_accounting_edit),
 ):
     order = accounting_service.get_supplier_order_or_404(db, order_id)
     order = accounting_service.change_supplier_order_status(db, order, payload.to)
@@ -292,7 +294,7 @@ def change_supplier_order_status(
 def pay_supplier_order(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_accounting),
+    user: User = Depends(require_accounting_edit),
 ):
     """0011-f: создаёт проводку «оплата поставки» на полную сумму заказа.
     Повторный вызов, пока заказ уже оплачивается/оплачен, — `409`."""

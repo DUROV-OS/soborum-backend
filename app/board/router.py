@@ -26,7 +26,7 @@ from app.board.schemas import (
     RenameDiscussionRequest,
 )
 from app.common.module_access import Module
-from app.core.deps import require_admin, require_module
+from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
 from app.users.models import User, UserRole
 
@@ -38,11 +38,13 @@ app = FastAPI(
     version="0.3",
 )
 
-require_board = require_module(Module.BOARD)
+require_board_view = require_view(Module.BOARD)
+require_board_edit = require_edit(Module.BOARD)
+require_board_full = require_full(Module.BOARD)
 
 
 @app.get("/tree", response_model=BoardNodeOut)
-def get_tree(db: Session = Depends(get_db), _: User = Depends(require_board)):
+def get_tree(db: Session = Depends(get_db), _: User = Depends(require_board_view)):
     root = board_service.get_root(db)
     if root is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дерево ещё не создано")
@@ -50,14 +52,14 @@ def get_tree(db: Session = Depends(get_db), _: User = Depends(require_board)):
 
 
 @app.get("/nodes/{node_id}", response_model=BoardNodeDetailOut)
-def get_node(node_id: int, db: Session = Depends(get_db), _: User = Depends(require_board)):
+def get_node(node_id: int, db: Session = Depends(get_db), _: User = Depends(require_board_view)):
     node = board_service.get_node_or_404(db, node_id)
     return BoardNodeDetailOut.from_model_with_path(node, board_service.node_path(node))
 
 
 @app.patch("/nodes/{node_id}", response_model=BoardNodeDetailOut)
 def update_node(
-    node_id: int, payload: BoardNodeUpdate, db: Session = Depends(get_db), user: User = Depends(require_board)
+    node_id: int, payload: BoardNodeUpdate, db: Session = Depends(get_db), user: User = Depends(require_board_edit)
 ):
     node = board_service.get_node_or_404(db, node_id)
     node = board_service.update_node_manual(db, node, payload.title, payload.description, payload.color, user)
@@ -65,7 +67,7 @@ def update_node(
 
 
 @app.get("/nodes/{node_id}/changes", response_model=list[BoardNodeChangeOut])
-def node_change_history(node_id: int, db: Session = Depends(get_db), _: User = Depends(require_board)):
+def node_change_history(node_id: int, db: Session = Depends(get_db), _: User = Depends(require_board_view)):
     board_service.get_node_or_404(db, node_id)  # 404 if the node never existed
     return (
         db.query(BoardNodeChange)
@@ -81,7 +83,7 @@ def propose_change(
     payload: ProposeChangeRequest,
     include_transcript: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(require_board),
+    user: User = Depends(require_board_edit),
 ):
     """Stage 1: convenes the council (7 roles + synthesis) over one node and
     stores its conclusion as a pending proposal, for the employee to accept
@@ -97,7 +99,7 @@ def list_proposals(
     proposal_status: BoardProposalStatus | None = None,
     include_transcript: bool = False,
     db: Session = Depends(get_db),
-    _: User = Depends(require_board),
+    _: User = Depends(require_board_view),
 ):
     proposals = board_service.list_proposals(db, node_id, proposal_status)
     return [BoardProposalOut.from_model(p, include_transcript) for p in proposals]
@@ -105,7 +107,7 @@ def list_proposals(
 
 @app.get("/proposals/{proposal_id}", response_model=BoardProposalOut)
 def get_proposal(
-    proposal_id: int, include_transcript: bool = False, db: Session = Depends(get_db), _: User = Depends(require_board)
+    proposal_id: int, include_transcript: bool = False, db: Session = Depends(get_db), _: User = Depends(require_board_view)
 ):
     proposal = board_service.get_proposal_or_404(db, proposal_id)
     return BoardProposalOut.from_model(proposal, include_transcript)
@@ -117,7 +119,7 @@ def respond_to_proposal(
     payload: ProposalDecisionRequest,
     include_transcript: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(require_board),
+    user: User = Depends(require_board_edit),
 ):
     """Stage 2/3/4-6: the employee's decision on the council's latest
     conclusion. "reject" needs a comment and loops back to stage 1 with it as
@@ -137,7 +139,7 @@ def respond_to_proposal(
 
 
 @app.delete("/proposals/{proposal_id}", response_model=BoardProposalOut)
-def cancel_proposal(proposal_id: int, db: Session = Depends(get_db), _: User = Depends(require_board)):
+def cancel_proposal(proposal_id: int, db: Session = Depends(get_db), _: User = Depends(require_board_edit)):
     """Discards a pending proposal without looping back - for when the
     employee just wants to drop it instead of rejecting-with-a-comment."""
     proposal = board_service.get_proposal_or_404(db, proposal_id)
@@ -169,7 +171,7 @@ def _default_discussion_title(payload: CreateDiscussionRequest, node) -> str:
 
 @app.post("/discussions", response_model=BoardDiscussionDetailOut, status_code=status.HTTP_201_CREATED)
 def create_discussion(
-    payload: CreateDiscussionRequest, db: Session = Depends(get_db), user: User = Depends(require_board)
+    payload: CreateDiscussionRequest, db: Session = Depends(get_db), user: User = Depends(require_board_edit)
 ):
     node = board_service.get_node_or_404(db, payload.node_id) if payload.node_id is not None else None
     discussion = board_discussion.create_discussion(db, node, user, _default_discussion_title(payload, node))
@@ -184,14 +186,14 @@ def list_discussions(
     node_id: int | None = None,
     mine: bool = False,
     db: Session = Depends(get_db),
-    user: User = Depends(require_board),
+    user: User = Depends(require_board_view),
 ):
     discussions = board_discussion.list_discussions(db, node_id, user if mine else None)
     return [BoardDiscussionOut.from_model(d) for d in discussions]
 
 
 @app.get("/discussions/{discussion_id}", response_model=BoardDiscussionDetailOut)
-def get_discussion(discussion_id: int, db: Session = Depends(get_db), _: User = Depends(require_board)):
+def get_discussion(discussion_id: int, db: Session = Depends(get_db), _: User = Depends(require_board_view)):
     return BoardDiscussionDetailOut.from_model(board_discussion.get_discussion_or_404(db, discussion_id))
 
 
@@ -200,7 +202,7 @@ def post_discussion_message(
     discussion_id: int,
     payload: PostDiscussionMessageRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_board),
+    user: User = Depends(require_board_edit),
 ):
     """Adds the employee's message to the thread and returns the board's
     reply. With `consult_council=true` the 7 council roles are polled first
@@ -216,7 +218,7 @@ def rename_discussion(
     discussion_id: int,
     payload: RenameDiscussionRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_board),
+    user: User = Depends(require_board_edit),
 ):
     discussion = board_discussion.get_discussion_or_404(db, discussion_id)
     _discussion_owned_or_admin(discussion, user)
@@ -224,14 +226,14 @@ def rename_discussion(
 
 
 @app.delete("/discussions/{discussion_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_discussion(discussion_id: int, db: Session = Depends(get_db), user: User = Depends(require_board)):
+def delete_discussion(discussion_id: int, db: Session = Depends(get_db), user: User = Depends(require_board_edit)):
     discussion = board_discussion.get_discussion_or_404(db, discussion_id)
     _discussion_owned_or_admin(discussion, user)
     board_discussion.delete_discussion(db, discussion)
 
 
 @app.post("/actualize", response_model=ActualizeResultOut)
-def actualize(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def actualize(db: Session = Depends(get_db), user: User = Depends(require_board_full)):
     """Refreshes the whole tree's descriptions/statuses from real, current
     operational data (tasks, clients, production, warehouse, ...) - no
     council, no proposal, applied directly. Admin-only: this is a system-wide

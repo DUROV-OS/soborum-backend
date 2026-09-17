@@ -1,6 +1,8 @@
-"""Удаление производства и блока производства (0030-b, переименовано в 0066-a):
+"""Удаление производства и блока производства (0030-b, переименовано в 0066-a;
+уровень доступа — 0052-b):
 
-- только администратор;
+- нужен уровень `full` на PRODUCTION (грант `full` либо роль `ADMIN`); обычный
+  грант (`edit`) — 403;
 - производство: отказ 409, если цикл не завершён или есть незавершённая
   заявка на материалы / незавершённая задача по блоку;
 - блок: отказ 409, если по нему уже выдавались материалы (started work) или
@@ -9,7 +11,7 @@
   заявки на уровне БД).
 """
 
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.cycle.models import Cycle, CycleStatus
 from app.production import service as production_service
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
@@ -62,12 +64,22 @@ def _make_block_material(db, block, warehouse_material, quantity_provided=0):
     return material
 
 
-def test_delete_production_requires_admin(api, make_user, db):
+def test_delete_production_requires_full_level(api, make_user, db):
     production = _make_production(db)
     db.commit()
-    worker = api(make_user(Module.PRODUCTION))
+    worker = api(make_user(Module.PRODUCTION, level=AccessLevel.EDIT))
     resp = worker.delete(f"/api/production/{production.id}")
     assert resp.status_code == 403
+
+
+def test_delete_production_allowed_with_full_level_without_admin_role(api, make_user, db):
+    production = _make_production(db)
+    db.commit()
+    production_id = production.id
+    worker = api(make_user(Module.PRODUCTION, level=AccessLevel.FULL))
+    resp = worker.delete(f"/api/production/{production_id}")
+    assert resp.status_code == 204
+    assert db.get(Production, production_id) is None
 
 
 def test_delete_production_rejected_with_active_cycle(api, make_user, db):
