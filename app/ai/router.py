@@ -251,7 +251,7 @@ def ask_consult_stream(payload: AskRequest, db: Session = Depends(get_db), user:
         chat = ai_service.get_or_create_chat(
             db, user, ChatDomain.GENERAL, None, payload.mode or ChatMode.REQUIRE_APPROVAL
         )
-    engine.prepare_stream_turn(db, chat, user, payload.message, payload.file_ids)
+    engine.prepare_stream_turn(db, chat, user, payload.message, payload.file_ids, payload.context_note)
     chat_id, user_id = chat.id, user.id
 
     def events():
@@ -280,7 +280,7 @@ def ask_consult(payload: AskRequest, db: Session = Depends(get_db), user: User =
         chat = ai_service.get_or_create_chat(
             db, user, ChatDomain.GENERAL, None, payload.mode or ChatMode.REQUIRE_APPROVAL
         )
-    result = engine.run_turn(db, chat, user, payload.message, payload.file_ids, voice_lead=True)
+    result = engine.run_turn(db, chat, user, payload.message, payload.file_ids, payload.context_note, voice_lead=True)
     return ConsultAskResponse(
         chat_id=chat.id,
         status=result.status,
