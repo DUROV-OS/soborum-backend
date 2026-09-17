@@ -28,12 +28,6 @@ class User(Base):
         back_populates="user", cascade="all, delete-orphan"
     )
 
-    @property
-    def accessible_modules(self) -> set[Module]:
-        if self.role == UserRole.ADMIN:
-            return set(Module)
-        return {grant.module for grant in self.module_access}
-
     def access_level(self, module: Module) -> AccessLevel:
         if self.role == UserRole.ADMIN:
             return AccessLevel.FULL
@@ -44,6 +38,14 @@ class User(Base):
 
     def has_access(self, module: Module) -> bool:
         return self.access_level(module) != AccessLevel.NONE
+
+    def access_levels(self) -> dict[Module, AccessLevel]:
+        """Уровень по каждому разделу `Module` (матрица доступа, 0052-c) —
+        `FULL` на всё для `ADMIN`, иначе уровень гранта или `NONE`."""
+        if self.role == UserRole.ADMIN:
+            return {module: AccessLevel.FULL for module in Module}
+        granted = {grant.module: grant.level for grant in self.module_access}
+        return {module: granted.get(module, AccessLevel.NONE) for module in Module}
 
 
 class UserModuleAccess(Base):
