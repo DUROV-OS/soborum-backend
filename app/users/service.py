@@ -2,7 +2,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.core.config import settings
 from app.core.security import hash_password, verify_password
 from app.users.models import User, UserModuleAccess, UserRole
@@ -74,9 +74,12 @@ def change_password(db: Session, user: User, current_password: str, new_password
 
 
 def set_module_access(db: Session, user: User, module_access: list[Module]) -> None:
+    """Матрица доступа (`AccessMatrixPage.tsx`) пока даёт только чекбокс "есть
+    раздел / нет" — грант всегда ставится на `FULL`, как и сегодняшний
+    булев грант (не регрессия). 4-уровневый UI — 0052-c."""
     db.query(UserModuleAccess).filter(UserModuleAccess.user_id == user.id).delete()
     for module in set(module_access):
-        db.add(UserModuleAccess(user_id=user.id, module=module))
+        db.add(UserModuleAccess(user_id=user.id, module=module, level=AccessLevel.FULL))
     db.flush()
 
 

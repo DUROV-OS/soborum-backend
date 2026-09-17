@@ -26,6 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.common.module_access import AccessLevel
 from app.db import import_all_models  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_db
@@ -45,11 +46,16 @@ def db():
 
 @pytest.fixture
 def make_user(db):
-    def create(*modules, admin=False):
+    def create(*modules, admin=False, level=AccessLevel.EDIT):
+        """`level` — уровень гранта на каждый из `modules` (задача 0052).
+        По умолчанию `EDIT`: раньше грант означал безусловный доступ ко всем
+        операциям раздела, `EDIT` — ближайший аналог для разделов, ещё не
+        переведённых на require_view/edit/full (has_access не смотрит на
+        уровень). Разделу «Клиенты» (пилот) — указывать level явно."""
         user = User(email=f"user{db.query(User).count()}@example.com", full_name="Тестовый сотрудник",
                     hashed_password="not-a-login-password", is_active=True,
                     role=UserRole.ADMIN if admin else UserRole.WORKER)
-        user.module_access = [UserModuleAccess(module=module) for module in modules]
+        user.module_access = [UserModuleAccess(module=module, level=level) for module in modules]
         db.add(user)
         db.commit()
         return user

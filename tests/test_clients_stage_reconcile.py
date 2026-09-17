@@ -6,7 +6,9 @@
 - клиенту на последней стадии открытые задачи закрываются;
 - дубли и задачи под уже пройденную стадию закрываются, остаётся ровно одна;
 - прогон идемпотентен;
-- ручной эндпоинт `POST /api/clients/reconcile-stage-tasks` — только админу.
+- ручной эндпоинт `POST /api/clients/reconcile-stage-tasks` — уровень `full`
+  на раздел «Клиенты» (грант `full` либо роль `ADMIN`), `edit` недостаточно
+  (0052-a).
 """
 
 import pytest
@@ -15,7 +17,7 @@ from app.clients import service as client_service
 from app.clients.models import ClientStage
 from app.clients.reconcile import reconcile_client_stage_tasks
 from app.clients.schemas import ClientCreate
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 
@@ -97,12 +99,14 @@ def test_dedupes_and_closes_stale_stage_task(db):
     assert open_tasks[0].link_meta["stage"] == "approval"
 
 
-def test_reconcile_endpoint_is_admin_only(api, make_user):
-    worker = make_user(Module.CLIENTS)
-    admin = make_user(Module.CLIENTS, admin=True)
+def test_reconcile_endpoint_requires_full_level(api, make_user):
+    editor = make_user(Module.CLIENTS, level=AccessLevel.EDIT)
+    full_worker = make_user(Module.CLIENTS, level=AccessLevel.FULL)
+    admin = make_user(admin=True)
 
-    assert api(worker).post("/api/clients/reconcile-stage-tasks").status_code == 403
+    assert api(editor).post("/api/clients/reconcile-stage-tasks").status_code == 403
 
-    res = api(admin).post("/api/clients/reconcile-stage-tasks")
-    assert res.status_code == 200
-    assert set(res.json()) == {"checked", "created", "closed_stale", "closed_final", "deduped"}
+    for user in (full_worker, admin):
+        res = api(user).post("/api/clients/reconcile-stage-tasks")
+        assert res.status_code == 200
+        assert set(res.json()) == {"checked", "created", "closed_stale", "closed_final", "deduped"}
