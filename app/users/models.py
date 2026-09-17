@@ -34,10 +34,16 @@ class User(Base):
             return set(Module)
         return {grant.module for grant in self.module_access}
 
-    def has_access(self, module: Module) -> bool:
+    def access_level(self, module: Module) -> AccessLevel:
         if self.role == UserRole.ADMIN:
-            return True
-        return any(grant.module == module for grant in self.module_access)
+            return AccessLevel.FULL
+        for grant in self.module_access:
+            if grant.module == module:
+                return grant.level
+        return AccessLevel.NONE
+
+    def has_access(self, module: Module) -> bool:
+        return self.access_level(module) != AccessLevel.NONE
 
 
 class UserModuleAccess(Base):
