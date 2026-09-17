@@ -18,7 +18,7 @@ ALLOWED_MANUAL_TRANSITIONS = {
 }
 
 # Which access-controlled section a linked task belongs to - see task 0021.
-# Tasks not in this map (link_type NONE without a module_id) have no section
+# Tasks not in this map (link_type NONE without a block_id) have no section
 # restriction: they are visible/claimable by anyone with access to `tasks`.
 _LINK_TYPE_SECTION: dict[TaskLinkType, Module] = {
     TaskLinkType.CLIENT_STAGE: Module.CLIENTS,
@@ -33,10 +33,10 @@ _LINK_TYPE_SECTION: dict[TaskLinkType, Module] = {
 
 
 def task_section(task: Task) -> Module | None:
-    """The section this task is bound to, if any (module_id set -> production;
+    """The section this task is bound to, if any (block_id set -> production;
     otherwise looked up from link_type). None means unbound - open to everyone
     with access to `tasks`."""
-    if task.module_id is not None:
+    if task.block_id is not None:
         return Module.PRODUCTION
     return _LINK_TYPE_SECTION.get(task.link_type)
 
@@ -116,7 +116,7 @@ def create_task(
     reviewer_ids: list[int] = (),
     depends_on_ids: list[int] = (),
     image_ids: list[int] = (),
-    module_id: int | None = None,
+    block_id: int | None = None,
     link_type: TaskLinkType = TaskLinkType.NONE,
     link_id: int | None = None,
     link_meta: dict | None = None,
@@ -126,7 +126,7 @@ def create_task(
         title=title,
         description=description,
         deadline=deadline,
-        module_id=module_id,
+        block_id=block_id,
         link_type=link_type,
         link_id=link_id,
         link_meta=link_meta,

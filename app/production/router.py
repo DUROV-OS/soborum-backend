@@ -7,17 +7,18 @@ from app.core.deps import require_admin, require_module
 from app.db.session import get_db
 from app.production import home as production_home
 from app.production import service as production_service
-from app.production.models import Production, ProductionModule
+from app.production.models import Production, ProductionBlock
 from app.cycle.models import Cycle
 from app.production.schemas import (
+    BlockCreate,
+    BlockDependencyCreate,
+    BlockMaterialCreate,
+    BlockMaterialOut,
+    BlockMaterialUpdate,
+    BlockOut,
+    BlockUpdate,
     MaterialRequestCreate,
     MaterialRequestOut,
-    ModuleCreate,
-    ModuleMaterialCreate,
-    ModuleMaterialOut,
-    ModuleMaterialUpdate,
-    ModuleOut,
-    ModuleUpdate,
     ProductionHomeOut,
     ProductionOut,
     ProductionListOut,
@@ -26,8 +27,8 @@ from app.users.models import User
 
 app = FastAPI(
     title="Soborbum — Производство",
-    description="Модули дома, их задачи и необходимые материалы, запросы материалов со склада.",
-    version="0.3.0",
+    description="Блоки производства, их задачи и необходимые материалы, запросы материалов со склада.",
+    version="0.4.0",
 )
 
 require_production = require_module(AccessModule.PRODUCTION)
@@ -41,8 +42,8 @@ def list_productions(
 ):
     # A production grant must not require a cycle grant or reveal a customer's passport/prices.
     # ?cycle_id= narrows to the houses of one order, kept in house order.
-    counts = (db.query(ProductionModule.production_id, func.count(ProductionModule.id).label("count"))
-              .group_by(ProductionModule.production_id).subquery())
+    counts = (db.query(ProductionBlock.production_id, func.count(ProductionBlock.id).label("count"))
+              .group_by(ProductionBlock.production_id).subquery())
     query = (db.query(Production, Cycle.status, func.coalesce(counts.c.count, 0))
              .join(Cycle, Cycle.id == Production.cycle_id)
              .outerjoin(counts, counts.c.production_id == Production.id))
@@ -50,7 +51,7 @@ def list_productions(
         query = query.filter(Production.cycle_id == cycle_id)
     rows = query.order_by(Production.cycle_id.desc(), Production.house_index.asc()).all()
     return [ProductionListOut(id=p.id, cycle_id=p.cycle_id, house_index=p.house_index, name=p.name,
-                              cycle_status=cycle_status, created_at=p.created_at, module_count=count)
+                              cycle_status=cycle_status, created_at=p.created_at, block_count=count)
             for p, cycle_status, count in rows]
 
 
@@ -74,80 +75,108 @@ def delete_production(production_id: int, db: Session = Depends(get_db), _: User
     db.commit()
 
 
-@app.post("/{production_id}/modules", response_model=ModuleOut, status_code=201)
-def create_module(
+@app.post("/{production_id}/blocks", response_model=BlockOut, status_code=201)
+def create_block(
     production_id: int,
-    payload: ModuleCreate,
+    payload: BlockCreate,
     db: Session = Depends(get_db),
     _: User = Depends(require_production),
 ):
-    module = production_service.create_module(db, production_id, payload)
+    block = production_service.create_block(db, production_id, payload)
     db.commit()
-    db.refresh(module)
-    return module
+    db.refresh(block)
+    return block
 
 
-@app.get("/modules/{module_id}", response_model=ModuleOut)
-def get_module(module_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
-    return production_service.get_module_or_404(db, module_id)
+@app.get("/blocks/{block_id}", response_model=BlockOut)
+def get_block(block_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
+    return production_service.get_block_or_404(db, block_id)
 
 
-@app.patch("/modules/{module_id}", response_model=ModuleOut)
-def update_module(
-    module_id: int,
-    payload: ModuleUpdate,
+@app.patch("/blocks/{block_id}", response_model=BlockOut)
+def update_block(
+    block_id: int,
+    payload: BlockUpdate,
     db: Session = Depends(get_db),
     _: User = Depends(require_production),
 ):
-    module = production_service.get_module_or_404(db, module_id)
-    module = production_service.update_module(db, module, payload)
+    block = production_service.get_block_or_404(db, block_id)
+    block = production_service.update_block(db, block, payload)
     db.commit()
-    db.refresh(module)
-    return module
+    db.refresh(block)
+    return block
 
 
-@app.delete("/modules/{module_id}", status_code=204)
-def delete_module(module_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    module = production_service.get_module_or_404(db, module_id)
-    production_service.delete_module(db, module)
+@app.delete("/blocks/{block_id}", status_code=204)
+def delete_block(block_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    block = production_service.get_block_or_404(db, block_id)
+    production_service.delete_block(db, block)
     db.commit()
 
 
-@app.post("/modules/{module_id}/materials", response_model=ModuleMaterialOut, status_code=201)
-def add_module_material(
-    module_id: int,
-    payload: ModuleMaterialCreate,
+@app.post("/blocks/{block_id}/dependencies", response_model=BlockOut, status_code=201)
+def add_block_dependency(
+    block_id: int,
+    payload: BlockDependencyCreate,
     db: Session = Depends(get_db),
     _: User = Depends(require_production),
 ):
-    material = production_service.add_module_material(db, module_id, payload)
+    block = production_service.get_block_or_404(db, block_id)
+    block = production_service.add_block_dependency(db, block, payload.depends_on_id)
+    db.commit()
+    db.refresh(block)
+    return block
+
+
+@app.delete("/blocks/{block_id}/dependencies/{depends_on_id}", response_model=BlockOut)
+def remove_block_dependency(
+    block_id: int,
+    depends_on_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_production),
+):
+    block = production_service.get_block_or_404(db, block_id)
+    block = production_service.remove_block_dependency(db, block, depends_on_id)
+    db.commit()
+    db.refresh(block)
+    return block
+
+
+@app.post("/blocks/{block_id}/materials", response_model=BlockMaterialOut, status_code=201)
+def add_block_material(
+    block_id: int,
+    payload: BlockMaterialCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_production),
+):
+    material = production_service.add_block_material(db, block_id, payload)
     db.commit()
     db.refresh(material)
     return material
 
 
-@app.patch("/module-materials/{material_id}", response_model=ModuleMaterialOut)
-def update_module_material(
+@app.patch("/block-materials/{material_id}", response_model=BlockMaterialOut)
+def update_block_material(
     material_id: int,
-    payload: ModuleMaterialUpdate,
+    payload: BlockMaterialUpdate,
     db: Session = Depends(get_db),
     user: User = Depends(require_production),
 ):
-    material = production_service.get_module_material_or_404(db, material_id)
+    material = production_service.get_block_material_or_404(db, material_id)
     material = production_service.update_required_quantity(db, material, payload.quantity_required, user)
     db.commit()
     db.refresh(material)
     return material
 
 
-@app.post("/module-materials/{material_id}/request", response_model=MaterialRequestOut, status_code=201)
+@app.post("/block-materials/{material_id}/request", response_model=MaterialRequestOut, status_code=201)
 def request_material(
     material_id: int,
     payload: MaterialRequestCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_production),
 ):
-    material = production_service.get_module_material_or_404(db, material_id)
+    material = production_service.get_block_material_or_404(db, material_id)
     request = production_service.request_material(db, material, payload.quantity, user)
     db.commit()
     db.refresh(request)

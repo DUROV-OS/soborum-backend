@@ -28,7 +28,7 @@ def list_tasks(
     scope: TaskScope = TaskScope.MINE,
     assignee_id: int | None = None,
     reviewer_id: int | None = None,
-    module_id: int | None = None,
+    block_id: int | None = None,
     link_type: TaskLinkType | None = None,
     task_status: TaskStatus | None = Query(None, alias="status"),
     overdue: bool | None = None,
@@ -41,8 +41,8 @@ def list_tasks(
         query = query.filter(Task.assignees.any(User.id == assignee_id))
     if reviewer_id is not None:
         query = query.filter(Task.reviewers.any(User.id == reviewer_id))
-    if module_id is not None:
-        query = query.filter(Task.module_id == module_id)
+    if block_id is not None:
+        query = query.filter(Task.block_id == block_id)
     if link_type is not None:
         query = query.filter(Task.link_type == link_type)
     if task_status is not None:
@@ -71,7 +71,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db), _: User = De
         reviewer_ids=payload.reviewer_ids,
         depends_on_ids=payload.depends_on_ids,
         image_ids=payload.image_ids,
-        module_id=payload.module_id,
+        block_id=payload.block_id,
     )
     db.commit()
     db.refresh(task)
@@ -128,7 +128,7 @@ def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depe
 @app.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks)):
     task = task_service.get_task_or_404(db, task_id)
-    if task.link_type != TaskLinkType.NONE or task.module_id is not None:
+    if task.link_type != TaskLinkType.NONE or task.block_id is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя удалить задачу, синхронизированную с другим разделом",

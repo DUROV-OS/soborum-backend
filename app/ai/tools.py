@@ -32,8 +32,8 @@ from app.marketing import service as marketing_service
 from app.marketing.models import ContentItem
 from app.marketing.schemas import ContentAnalysisUpdate, ContentFinalUpdate, ContentItemCreate, ContentRawUpdate
 from app.production import service as production_service
-from app.production.models import MaterialRequest, MaterialRequestStatus, ProductionModule
-from app.production.schemas import ModuleCreate, ModuleMaterialCreate
+from app.production.models import MaterialRequest, MaterialRequestStatus, ProductionBlock
+from app.production.schemas import BlockCreate, BlockMaterialCreate
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskStatus
 from app.users import service as user_service
@@ -104,7 +104,7 @@ def _attached_specs(client: Client) -> dict:
         "project_model": model,
         "must_use_attached_files": bool(client.house_project_file_id or client.contract_file_id),
         "field_warning": (
-            "Если project_spec или contract_spec есть — строй модули и задачи по ним. "
+            "Если project_spec или contract_spec есть — строй блоки и задачи по ним. "
             "Не говори, что спецификации нет."
             if (client.house_project_file_id or client.contract_file_id)
             else "Прикреплённых файлов проекта нет."
@@ -143,7 +143,7 @@ def _serialize_client(c: Client) -> dict:
     "read_attached_file",
     "Прочитать прикреплённый файл клиента (проект дома или договор) и вернуть текст. "
     "ОБЯЗАТЕЛЬНО вызови, если у клиента есть house_project_file или contract_file, "
-    "прежде чем говорить, что спецификации нет, или создавать модули и задачи.",
+    "прежде чем говорить, что спецификации нет, или создавать блоки и задачи.",
     {"file_id": {"type": "integer"}},
     ["file_id"],
     required_module=Module.AI,
@@ -309,30 +309,32 @@ def _transition_client_stage(db: Session, user: User, client_id: int) -> dict:
 
 # ------------------------------------------------------------- production --
 
-def _serialize_module(m: ProductionModule) -> dict:
+def _serialize_block(b: ProductionBlock) -> dict:
     return {
-        "id": m.id,
-        "production_id": m.production_id,
-        "name": m.name,
-        "description": m.description,
+        "id": b.id,
+        "production_id": b.production_id,
+        "name": b.name,
+        "description": b.description,
+        "sequence": b.sequence,
+        "depends_on_ids": b.depends_on_ids,
         "materials": [
             {
-                "id": mm.id,
-                "warehouse_material_id": mm.warehouse_material_id,
-                "inventory_number": mm.inventory_number,
-                "unit": mm.unit,
-                "quantity_required": mm.quantity_required,
-                "quantity_requested": mm.quantity_requested,
-                "quantity_provided": mm.quantity_provided,
+                "id": bm.id,
+                "warehouse_material_id": bm.warehouse_material_id,
+                "inventory_number": bm.inventory_number,
+                "unit": bm.unit,
+                "quantity_required": bm.quantity_required,
+                "quantity_requested": bm.quantity_requested,
+                "quantity_provided": bm.quantity_provided,
             }
-            for mm in m.materials
+            for bm in b.materials
         ],
-        "tasks": [{"id": t.id, "title": t.title, "status": t.status.value} for t in m.tasks],
+        "tasks": [{"id": t.id, "title": t.title, "status": t.status.value} for t in b.tasks],
     }
 
 
 @register(
-    "get_production", "Получить производство целиком: все модули дома, их материалы и задачи.",
+    "get_production", "Получить производство целиком: все блоки дома, их материалы и задачи.",
     {"production_id": {"type": "integer"}}, ["production_id"],
     required_module=Module.PRODUCTION, read_only=True, domains=[ChatDomain.PRODUCTION],
 )
@@ -341,23 +343,23 @@ def _get_production(db: Session, user: User, production_id: int) -> dict:
     return {
         "id": production.id,
         "cycle_id": production.cycle_id,
-        "modules": [_serialize_module(m) for m in production.modules],
+        "blocks": [_serialize_block(b) for b in production.blocks],
     }
 
 
 @register(
-    "get_module", "Получить один модуль дома: его материалы и задачи.",
-    {"module_id": {"type": "integer"}}, ["module_id"],
+    "get_block", "Получить один блок производства: его материалы и задачи.",
+    {"block_id": {"type": "integer"}}, ["block_id"],
     required_module=Module.PRODUCTION, read_only=True, domains=[ChatDomain.PRODUCTION],
 )
-def _get_module(db: Session, user: User, module_id: int) -> dict:
-    return _serialize_module(production_service.get_module_or_404(db, module_id))
+def _get_block(db: Session, user: User, block_id: int) -> dict:
+    return _serialize_block(production_service.get_block_or_404(db, block_id))
 
 
 @register(
     "get_client_context",
     "Получить проектные и документные данные клиента по id цикла - ОБЯЗАТЕЛЬНО вызови перед "
-    "созданием нового модуля или задачи по нему, чтобы опираться на пожелания и договор клиента.",
+    "созданием нового блока или задачи по нему, чтобы опираться на пожелания и договор клиента.",
     {"cycle_id": {"type": "integer"}}, ["cycle_id"],
     required_module=Module.PRODUCTION, read_only=True, domains=[ChatDomain.PRODUCTION],
 )
@@ -378,20 +380,20 @@ def _get_client_context(db: Session, user: User, cycle_id: int) -> dict:
 
 
 @register(
-    "create_module", "Создать новый модуль дома в рамках производства.",
+    "create_block", "Создать новый блок производства в рамках дома.",
     {"production_id": {"type": "integer"}, "name": {"type": "string"}, "description": {"type": "string"}},
     ["production_id", "name"],
     required_module=Module.PRODUCTION, domains=[ChatDomain.PRODUCTION],
 )
-def _create_module(db: Session, user: User, production_id: int, name: str, description: str | None = None) -> dict:
-    module = production_service.create_module(db, production_id, ModuleCreate(name=name, description=description))
-    return _serialize_module(module)
+def _create_block(db: Session, user: User, production_id: int, name: str, description: str | None = None) -> dict:
+    block = production_service.create_block(db, production_id, BlockCreate(name=name, description=description))
+    return _serialize_block(block)
 
 
 @register(
-    "create_module_task", "Создать задачу по модулю производства.",
+    "create_block_task", "Создать задачу по блоку производства.",
     {
-        "module_id": {"type": "integer"},
+        "block_id": {"type": "integer"},
         "title": {"type": "string"},
         "description": {"type": "string"},
         "deadline": {"type": "string", "description": "ISO 8601 дата/время"},
@@ -399,11 +401,11 @@ def _create_module(db: Session, user: User, production_id: int, name: str, descr
         "reviewer_ids": {"type": "array", "items": {"type": "integer"}},
         "depends_on_ids": {"type": "array", "items": {"type": "integer"}},
     },
-    ["module_id", "title"],
+    ["block_id", "title"],
     required_module=Module.PRODUCTION, domains=[ChatDomain.PRODUCTION],
 )
-def _create_module_task(
-    db: Session, user: User, module_id: int, title: str, description: str | None = None,
+def _create_block_task(
+    db: Session, user: User, block_id: int, title: str, description: str | None = None,
     deadline: str | None = None, assignee_ids: list[int] | None = None,
     reviewer_ids: list[int] | None = None, depends_on_ids: list[int] | None = None,
 ) -> dict:
@@ -415,37 +417,37 @@ def _create_module_task(
         assignee_ids=assignee_ids or [],
         reviewer_ids=reviewer_ids or [],
         depends_on_ids=depends_on_ids or [],
-        module_id=module_id,
+        block_id=block_id,
     )
     return {"id": task.id, "title": task.title, "status": task.status.value}
 
 
 @register(
-    "request_material", "Запросить материал со склада для материала модуля (module_material_id).",
-    {"module_material_id": {"type": "integer"}, "quantity": {"type": "number"}},
-    ["module_material_id", "quantity"],
+    "request_material", "Запросить материал со склада для материала блока (block_material_id).",
+    {"block_material_id": {"type": "integer"}, "quantity": {"type": "number"}},
+    ["block_material_id", "quantity"],
     required_module=Module.PRODUCTION, domains=[ChatDomain.PRODUCTION],
 )
-def _request_material(db: Session, user: User, module_material_id: int, quantity: float) -> dict:
-    material = production_service.get_module_material_or_404(db, module_material_id)
+def _request_material(db: Session, user: User, block_material_id: int, quantity: float) -> dict:
+    material = production_service.get_block_material_or_404(db, block_material_id)
     request = production_service.request_material(db, material, quantity, requested_by=user)
     return {"request_id": request.id, "quantity": request.quantity, "status": request.status.value}
 
 
 @register(
-    "add_module_material", "Добавить в модуль запись о необходимом материале со склада.",
+    "add_block_material", "Добавить в блок запись о необходимом материале со склада.",
     {
-        "module_id": {"type": "integer"},
+        "block_id": {"type": "integer"},
         "warehouse_material_id": {"type": "integer"},
         "inventory_number": {"type": "string"},
         "unit": {"type": "string"},
         "quantity_required": {"type": "number"},
     },
-    ["module_id", "warehouse_material_id", "inventory_number", "unit", "quantity_required"],
+    ["block_id", "warehouse_material_id", "inventory_number", "unit", "quantity_required"],
     required_module=Module.PRODUCTION, domains=[ChatDomain.PRODUCTION],
 )
-def _add_module_material(db: Session, user: User, module_id: int, **fields) -> dict:
-    material = production_service.add_module_material(db, module_id, ModuleMaterialCreate(**fields))
+def _add_block_material(db: Session, user: User, block_id: int, **fields) -> dict:
+    material = production_service.add_block_material(db, block_id, BlockMaterialCreate(**fields))
     return {"id": material.id, "warehouse_material_id": material.warehouse_material_id}
 
 
@@ -469,7 +471,7 @@ def _get_cycle(db: Session, user: User, cycle_id: int) -> dict:
                 "id": p.id,
                 "house_index": p.house_index,
                 "name": p.name,
-                "modules": [_serialize_module(m) for m in p.modules],
+                "blocks": [_serialize_block(b) for b in p.blocks],
             }
             for p in cycle.productions
         ],
@@ -538,7 +540,7 @@ def _list_pending_requests(db: Session, user: User) -> dict:
                 "warehouse_material_id": r.warehouse_material_id,
                 "material_title": r.warehouse_material.title,
                 "quantity": r.quantity,
-                "module_id": r.module_material.module_id,
+                "block_id": r.block_material.block_id,
             }
             for r in requests
         ]
@@ -728,7 +730,7 @@ def _serialize_task(t: Task) -> dict:
         "description": t.description,
         "deadline": _iso(t.deadline),
         "status": t.status.value,
-        "module_id": t.module_id,
+        "block_id": t.block_id,
         "assignees": [{"id": u.id, "full_name": u.full_name} for u in t.assignees],
         "reviewers": [{"id": u.id, "full_name": u.full_name} for u in t.reviewers],
     }
@@ -748,18 +750,18 @@ def _get_task(db: Session, user: User, task_id: int) -> dict:
     {
         "assignee_id": {"type": "integer"},
         "status": {"type": "string", "enum": [s.value for s in TaskStatus]},
-        "module_id": {"type": "integer"},
+        "block_id": {"type": "integer"},
     },
     required_module=Module.TASKS, read_only=True, domains=[ChatDomain.TASKS],
 )
-def _list_tasks(db: Session, user: User, assignee_id: int | None = None, status: str | None = None, module_id: int | None = None) -> dict:
+def _list_tasks(db: Session, user: User, assignee_id: int | None = None, status: str | None = None, block_id: int | None = None) -> dict:
     query = db.query(Task)
     if assignee_id is not None:
         query = query.filter(Task.assignees.any(User.id == assignee_id))
     if status is not None:
         query = query.filter(Task.status == TaskStatus(status))
-    if module_id is not None:
-        query = query.filter(Task.module_id == module_id)
+    if block_id is not None:
+        query = query.filter(Task.block_id == block_id)
     tasks = query.order_by(Task.id.desc()).limit(50).all()
     return {"tasks": [_serialize_task(t) for t in tasks]}
 

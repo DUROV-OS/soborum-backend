@@ -9,24 +9,30 @@ from app.house_models.schemas import HouseModelBriefOut
 from app.production.models import MaterialRequestStatus
 
 
-class ModuleCreate(BaseModel):
+class BlockCreate(BaseModel):
     name: str
     description: str | None = None
+    sequence: int | None = None
 
 
-class ModuleUpdate(BaseModel):
+class BlockUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    sequence: int | None = None
 
 
-class ModuleMaterialCreate(BaseModel):
+class BlockDependencyCreate(BaseModel):
+    depends_on_id: int
+
+
+class BlockMaterialCreate(BaseModel):
     warehouse_material_id: int
     inventory_number: str
     unit: str
     quantity_required: float
 
 
-class ModuleMaterialUpdate(BaseModel):
+class BlockMaterialUpdate(BaseModel):
     quantity_required: float
 
 
@@ -38,7 +44,7 @@ class MaterialRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    module_material_id: int
+    block_material_id: int
     warehouse_material_id: int
     quantity: float
     status: MaterialRequestStatus
@@ -48,11 +54,11 @@ class MaterialRequestOut(BaseModel):
     decided_at: datetime | None
 
 
-class ModuleMaterialOut(BaseModel):
+class BlockMaterialOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    module_id: int
+    block_id: int
     warehouse_material_id: int
     inventory_number: str
     unit: str
@@ -62,14 +68,16 @@ class ModuleMaterialOut(BaseModel):
     requests: list[MaterialRequestOut] = []
 
 
-class ModuleOut(BaseModel):
+class BlockOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     production_id: int
     name: str
     description: str | None
-    materials: list[ModuleMaterialOut] = []
+    sequence: int
+    depends_on_ids: list[int] = []
+    materials: list[BlockMaterialOut] = []
 
 
 class ProductionOut(BaseModel):
@@ -80,7 +88,7 @@ class ProductionOut(BaseModel):
     house_index: int
     name: str
     created_at: datetime
-    modules: list[ModuleOut] = []
+    blocks: list[BlockOut] = []
 
 
 class ProductionListOut(BaseModel):
@@ -90,7 +98,7 @@ class ProductionListOut(BaseModel):
     name: str
     cycle_status: CycleStatus
     created_at: datetime
-    module_count: int
+    block_count: int
 
 
 # --------------------------------------------------------------- «Главная» --

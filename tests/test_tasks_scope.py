@@ -18,7 +18,7 @@ def _seed_tasks(db, worker, other):
         link_type=TaskLinkType.WAREHOUSE_REQUEST, link_id=1,
     )
 
-    free_production = Task(title="free, production module", status=TaskStatus.READY, module_id=999)
+    free_production = Task(title="free, production block", status=TaskStatus.READY, block_id=999)
 
     free_clients = Task(
         title="free, clients", status=TaskStatus.READY,

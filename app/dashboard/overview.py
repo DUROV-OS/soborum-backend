@@ -18,7 +18,7 @@ METRICS = [
     ("clients", "Ожидают подтверждения оплаты", "awaiting_payment_confirmation", True),
     ("clients", "Ожидают оплаты после получения", "awaiting_balance_payment", True),
     ("production", "Производственных заказов", "total_productions", False),
-    ("production", "Модули ждут материалы", "modules_with_material_shortfall", True),
+    ("production", "Блоки ждут материалы", "blocks_with_material_shortfall", True),
     ("installation", "Монтажей на 7 дней", "scheduled_next_7_days", False),
     ("installation", "Монтажей с просрочкой", "overdue_not_completed", True),
     ("cycle", "Всего заказов", "total_cycles", False),

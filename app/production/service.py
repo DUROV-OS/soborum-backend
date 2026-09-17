@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
 from app.cycle.models import CycleStatus
-from app.production.models import MaterialRequest, MaterialRequestStatus, ModuleMaterial, Production, ProductionModule
-from app.production.schemas import ModuleCreate, ModuleMaterialCreate, ModuleUpdate
+from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
+from app.production.schemas import BlockCreate, BlockMaterialCreate, BlockUpdate
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
@@ -26,37 +26,37 @@ def get_production_or_404(db: Session, production_id: int) -> Production:
     return production
 
 
-def get_module_or_404(db: Session, module_id: int) -> ProductionModule:
-    module = db.get(ProductionModule, module_id)
-    if not module:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Модуль не найден")
-    return module
+def get_block_or_404(db: Session, block_id: int) -> ProductionBlock:
+    block = db.get(ProductionBlock, block_id)
+    if not block:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Блок не найден")
+    return block
 
 
-def get_module_material_or_404(db: Session, module_material_id: int) -> ModuleMaterial:
-    material = db.get(ModuleMaterial, module_material_id)
+def get_block_material_or_404(db: Session, block_material_id: int) -> BlockMaterial:
+    material = db.get(BlockMaterial, block_material_id)
     if not material:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Материал модуля не найден")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Материал блока не найден")
     return material
 
 
 def delete_production(db: Session, production: Production) -> None:
-    """Удалить производство целиком (каскад на модули/материалы/заявки —
-    `ondelete=CASCADE` в БД). Отказ 409, если цикл ещё не завершён или есть
-    незавершённые заявки на материалы/задачи по его модулям — по умолчанию
-    запрет, а не тихий каскад (см. спеку 0030-b)."""
+    """Удалить производство целиком (каскад на блоки/материалы/заявки —
+    `ondelete=CASCADE` в БД). Отказ 409, если цикл ещё не завершён или есть незавершённые
+    заявки на материалы/задачи по его блокам — по умолчанию запрет, а не тихий каскад
+    (см. спеку 0030-b)."""
     if production.cycle.status != CycleStatus.COMPLETED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя удалить производство: цикл ещё не завершён",
         )
-    module_ids = [m.id for m in production.modules]
-    if module_ids:
+    block_ids = [b.id for b in production.blocks]
+    if block_ids:
         pending = (
             db.query(MaterialRequest.id)
-            .join(ModuleMaterial, MaterialRequest.module_material_id == ModuleMaterial.id)
+            .join(BlockMaterial, MaterialRequest.block_material_id == BlockMaterial.id)
             .filter(
-                ModuleMaterial.module_id.in_(module_ids),
+                BlockMaterial.block_id.in_(block_ids),
                 MaterialRequest.status == MaterialRequestStatus.PENDING,
             )
             .first()
@@ -67,75 +67,122 @@ def delete_production(db: Session, production: Production) -> None:
                 detail="Нельзя удалить производство: есть незавершённые заявки на материалы",
             )
         open_task = (
-            db.query(Task.id).filter(Task.module_id.in_(module_ids), Task.status != TaskStatus.DONE).first()
+            db.query(Task.id).filter(Task.block_id.in_(block_ids), Task.status != TaskStatus.DONE).first()
         )
         if open_task is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Нельзя удалить производство: есть незавершённые задачи по модулям",
+                detail="Нельзя удалить производство: есть незавершённые задачи по блокам",
             )
-        # Завершённые задачи остаются как история — снимаем ссылку на модуль,
-        # который вот-вот исчезнет (у tasks.module_id нет ondelete в БД).
-        db.query(Task).filter(Task.module_id.in_(module_ids)).update(
-            {"module_id": None}, synchronize_session="fetch"
+        # Завершённые задачи остаются как история — снимаем ссылку на блок,
+        # который вот-вот исчезнет (у tasks.block_id нет ondelete в БД).
+        db.query(Task).filter(Task.block_id.in_(block_ids)).update(
+            {"block_id": None}, synchronize_session="fetch"
         )
     db.delete(production)
     db.flush()
 
 
-def delete_module(db: Session, module: ProductionModule) -> None:
-    """Удалить один модуль дома. Отказ 409, если по модулю уже выдавались
+def delete_block(db: Session, block: ProductionBlock) -> None:
+    """Удалить один блок производства. Отказ 409, если по блоку уже выдавались
     материалы со склада (реальная работа началась) или есть незавершённая
     заявка/задача — по умолчанию запрет, а не тихий каскад."""
-    if any(float(m.quantity_provided) > 0 for m in module.materials):
+    if any(float(m.quantity_provided) > 0 for m in block.materials):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить модуль: по нему уже выдавались материалы со склада",
+            detail="Нельзя удалить блок: по нему уже выдавались материалы со склада",
         )
     pending = (
         db.query(MaterialRequest.id)
-        .join(ModuleMaterial, MaterialRequest.module_material_id == ModuleMaterial.id)
-        .filter(ModuleMaterial.module_id == module.id, MaterialRequest.status == MaterialRequestStatus.PENDING)
+        .join(BlockMaterial, MaterialRequest.block_material_id == BlockMaterial.id)
+        .filter(BlockMaterial.block_id == block.id, MaterialRequest.status == MaterialRequestStatus.PENDING)
         .first()
     )
     if pending is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить модуль: есть незавершённая заявка на материалы",
+            detail="Нельзя удалить блок: есть незавершённая заявка на материалы",
         )
-    open_task = db.query(Task.id).filter(Task.module_id == module.id, Task.status != TaskStatus.DONE).first()
+    open_task = db.query(Task.id).filter(Task.block_id == block.id, Task.status != TaskStatus.DONE).first()
     if open_task is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить модуль: есть незавершённые задачи",
+            detail="Нельзя удалить блок: есть незавершённые задачи",
         )
-    db.query(Task).filter(Task.module_id == module.id).update({"module_id": None}, synchronize_session="fetch")
-    db.delete(module)
+    db.query(Task).filter(Task.block_id == block.id).update({"block_id": None}, synchronize_session="fetch")
+    db.delete(block)
     db.flush()
 
 
-def create_module(db: Session, production_id: int, payload: ModuleCreate) -> ProductionModule:
+def create_block(db: Session, production_id: int, payload: BlockCreate) -> ProductionBlock:
     get_production_or_404(db, production_id)
-    module = ProductionModule(production_id=production_id, name=payload.name, description=payload.description)
-    db.add(module)
+    sequence = payload.sequence
+    if sequence is None:
+        sequence = (db.query(ProductionBlock).filter(ProductionBlock.production_id == production_id).count()) + 1
+    block = ProductionBlock(
+        production_id=production_id, name=payload.name, description=payload.description, sequence=sequence
+    )
+    db.add(block)
     db.flush()
-    return module
+    return block
 
 
-def update_module(db: Session, module: ProductionModule, payload: ModuleUpdate) -> ProductionModule:
+def update_block(db: Session, block: ProductionBlock, payload: BlockUpdate) -> ProductionBlock:
     for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(module, field, value)
+        setattr(block, field, value)
     db.flush()
-    return module
+    return block
 
 
-def add_module_material(db: Session, module_id: int, payload: ModuleMaterialCreate) -> ModuleMaterial:
-    get_module_or_404(db, module_id)
+def _depends_transitively_on(block: ProductionBlock, target_id: int, seen: set[int] | None = None) -> bool:
+    """DFS: истина, если `block` (прямо или через цепочку) уже зависит от блока
+    `target_id` — используется, чтобы не дать замкнуть зависимости в цикл."""
+    if seen is None:
+        seen = set()
+    if block.id in seen:
+        return False
+    seen.add(block.id)
+    for dep in block.depends_on:
+        if dep.id == target_id:
+            return True
+        if _depends_transitively_on(dep, target_id, seen):
+            return True
+    return False
+
+
+def add_block_dependency(db: Session, block: ProductionBlock, depends_on_id: int) -> ProductionBlock:
+    if depends_on_id == block.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Блок не может зависеть от самого себя")
+    depends_on = get_block_or_404(db, depends_on_id)
+    if depends_on.production_id != block.production_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Зависимость должна быть в рамках того же производства"
+        )
+    if depends_on.id in {b.id for b in block.depends_on}:
+        return block
+    # Если target уже (транзитивно) зависит от block — добавление создаст цикл.
+    if _depends_transitively_on(depends_on, block.id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Эта зависимость замкнула бы блоки в цикл"
+        )
+    block.depends_on.append(depends_on)
+    db.flush()
+    return block
+
+
+def remove_block_dependency(db: Session, block: ProductionBlock, depends_on_id: int) -> ProductionBlock:
+    block.depends_on = [b for b in block.depends_on if b.id != depends_on_id]
+    db.flush()
+    return block
+
+
+def add_block_material(db: Session, block_id: int, payload: BlockMaterialCreate) -> BlockMaterial:
+    get_block_or_404(db, block_id)
     warehouse_material = db.get(WarehouseMaterial, payload.warehouse_material_id)
     if not warehouse_material:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Материал склада не найден")
-    material = ModuleMaterial(
-        module_id=module_id,
+    material = BlockMaterial(
+        block_id=block_id,
         warehouse_material_id=payload.warehouse_material_id,
         inventory_number=payload.inventory_number,
         unit=payload.unit,
@@ -149,8 +196,8 @@ def add_module_material(db: Session, module_id: int, payload: ModuleMaterialCrea
 
 
 def update_required_quantity(
-    db: Session, material: ModuleMaterial, quantity_required: float, actor
-) -> ModuleMaterial:
+    db: Session, material: BlockMaterial, quantity_required: float, actor
+) -> BlockMaterial:
     if quantity_required < 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество не может быть отрицательным")
     diff = quantity_required - float(material.quantity_required)
@@ -163,7 +210,7 @@ def update_required_quantity(
     return material
 
 
-def request_material(db: Session, material: ModuleMaterial, quantity: float, requested_by) -> MaterialRequest:
+def request_material(db: Session, material: BlockMaterial, quantity: float, requested_by) -> MaterialRequest:
     if quantity <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество должно быть положительным")
     if quantity > material.quantity_required:
@@ -177,7 +224,7 @@ def request_material(db: Session, material: ModuleMaterial, quantity: float, req
     db.flush()
 
     request = MaterialRequest(
-        module_material_id=material.id,
+        block_material_id=material.id,
         warehouse_material_id=material.warehouse_material_id,
         quantity=quantity,
         status=MaterialRequestStatus.PENDING,
@@ -190,7 +237,7 @@ def request_material(db: Session, material: ModuleMaterial, quantity: float, req
     task = task_service.create_link_task(
         db,
         title=f"Заявка на материал «{material.warehouse_material.title}» ({quantity} {material.unit}) "
-        f"для модуля «{material.module.name}»",
+        f"для блока «{material.block.name}»",
         link_type=TaskLinkType.WAREHOUSE_REQUEST,
         link_id=request.id,
         assignees=assignees,

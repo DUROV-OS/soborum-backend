@@ -22,7 +22,7 @@ from app.ai.models import AgentActivity, GrowthProposal
 from app.clients.models import Client
 from app.core.config import settings
 from app.marketing.models import ContentItem
-from app.production.models import ProductionModule
+from app.production.models import ProductionBlock
 
 
 def ensure_agent_activity_seed(db: Session) -> int:
@@ -34,7 +34,7 @@ def ensure_agent_activity_seed(db: Session) -> int:
         return 0
 
     client = db.query(Client).order_by(Client.id).first()
-    module = db.query(ProductionModule).order_by(ProductionModule.id).first()
+    block = db.query(ProductionBlock).order_by(ProductionBlock.id).first()
     content = db.query(ContentItem).order_by(ContentItem.id).first()
 
     client_link = (
@@ -46,13 +46,13 @@ def ensure_agent_activity_seed(db: Session) -> int:
         if client is not None
         else {}
     )
-    module_link = (
+    block_link = (
         {
             "related_section": "production",
-            "related_path": f"/production/modules/{module.id}",
-            "related_label": f"Открыть модуль «{module.name}»",
+            "related_path": f"/production/blocks/{block.id}",
+            "related_label": f"Открыть блок «{block.name}»",
         }
-        if module is not None
+        if block is not None
         else {}
     )
     content_link = (
@@ -158,7 +158,7 @@ def ensure_agent_activity_seed(db: Session) -> int:
                 "позиции на будущее. Саму закупку по-прежнему подтверждает снабженец."
             ),
             "autonomous": True,
-            **module_link,
+            **block_link,
         },
         {
             "title": "Указала на риск кассового разрыва",
