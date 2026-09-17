@@ -15,11 +15,12 @@ from app.clients.schemas import (
     ClientNoteOut,
     ClientNoteUpdate,
     ClientOut,
+    ClientPaymentEditUnlockUpdate,
     ClientPaymentUpdate,
 )
 from app.common.files import FilePurpose, save_upload_file
 from app.common.module_access import Module
-from app.core.deps import require_edit, require_full, require_view
+from app.core.deps import require_admin, require_edit, require_full, require_view
 from app.db.session import get_db
 from app.users.models import User
 
@@ -100,6 +101,20 @@ def update_payment(
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_payment(db, client, payload, current_user.id)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.patch("/{client_id}/payment-edit-unlock", response_model=ClientOut)
+def set_payment_edit_unlock(
+    client_id: int,
+    payload: ClientPaymentEditUnlockUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.set_payment_edit_unlocked(db, client, payload.unlocked)
     db.commit()
     db.refresh(client)
     return client
