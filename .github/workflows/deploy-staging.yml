@@ -1,0 +1,67 @@
+name: Deploy staging
+
+# Отдельный от deploy.yml триггер и job: пуш в staging не задевает прод-workflow
+# (тот слушает только push:main), и наоборот. workflow_dispatch — ручной
+# передеплой стейджа без нового коммита.
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH (staging)
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          APP_ENV: ${{ secrets.STAGING_APP_ENV }}
+          JWT_SECRET: ${{ secrets.STAGING_JWT_SECRET }}
+          ADMIN_EMAIL: ${{ secrets.STAGING_ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.STAGING_ADMIN_PASSWORD }}
+          CORS_ALLOWED_ORIGINS: ${{ secrets.STAGING_CORS_ALLOWED_ORIGINS }}
+          # Внешние интеграции переиспользуют прод-ключи — принятый риск, см.
+          # backlog/PROCESS/0069-staging-environment.md.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          MCP_SERVER_URL: ${{ secrets.MCP_SERVER_URL }}
+          MCP_OAUTH_CLIENT_ID: ${{ secrets.MCP_OAUTH_CLIENT_ID }}
+          MCP_OAUTH_CLIENT_SECRET: ${{ secrets.MCP_OAUTH_CLIENT_SECRET }}
+          MCP_REDIRECT_URI: ${{ secrets.MCP_REDIRECT_URI }}
+          MOYSKLAD_MCP_URL: ${{ secrets.MOYSKLAD_MCP_URL }}
+          MOYSKLAD_MCP_CLIENT_ID: ${{ secrets.MOYSKLAD_MCP_CLIENT_ID }}
+          MOYSKLAD_MCP_CLIENT_SECRET: ${{ secrets.MOYSKLAD_MCP_CLIENT_SECRET }}
+          DASHBOARD_MCP_URL: ${{ secrets.DASHBOARD_MCP_URL }}
+          DASHBOARD_MCP_CLIENT_ID: ${{ secrets.DASHBOARD_MCP_CLIENT_ID }}
+          DASHBOARD_MCP_CLIENT_SECRET: ${{ secrets.DASHBOARD_MCP_CLIENT_SECRET }}
+          MAX_TOKEN: ${{ secrets.MAX_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key_staging
+          chmod 600 ~/.ssh/deploy_key_staging
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+          python3 - <<'PY'
+          import os, pathlib
+          keys = [
+            "APP_ENV", "JWT_SECRET", "ADMIN_EMAIL", "ADMIN_PASSWORD", "CORS_ALLOWED_ORIGINS",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AI_MODEL",
+            "MCP_SERVER_URL", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_CLIENT_SECRET", "MCP_REDIRECT_URI",
+            "MOYSKLAD_MCP_URL", "MOYSKLAD_MCP_CLIENT_ID", "MOYSKLAD_MCP_CLIENT_SECRET",
+            "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
+            "MAX_TOKEN",
+          ]
+          lines = [f"{key}={os.environ.get(key, '').strip()}" for key in keys]
+          pathlib.Path("/tmp/soborbum-mcp-staging.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          filled = sum(1 for line in lines if not line.endswith("="))
+          print(f"prepared {len(lines)} env keys ({filled} set, {len(lines) - filled} cleared)")
+          PY
+
+          scp -i ~/.ssh/deploy_key_staging /tmp/soborbum-mcp-staging.env "$SSH_USER@$SSH_HOST:/tmp/soborbum-mcp-staging.env"
+          ssh -i ~/.ssh/deploy_key_staging "$SSH_USER@$SSH_HOST" \
+            'cd /srv/soborbum-backend-staging && git config --global --add safe.directory /srv/soborbum-backend-staging && git fetch --prune origin && git reset --hard origin/staging && python3 scripts/merge_env.py /tmp/soborbum-mcp-staging.env && rm -f /tmp/soborbum-mcp-staging.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build)'
+          rm -f /tmp/soborbum-mcp-staging.env

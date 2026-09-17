@@ -4,7 +4,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: soborbum
-      POSTGRES_PASSWORD: soborbum
+      # Стейдж задаёт свой POSTGRES_PASSWORD в .env — БД физически недостижима
+      # с прода в любом случае (отдельная docker-сеть по имени директории/
+      # compose-проекта), но пароль тоже разный, а не только сеть.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soborbum}
       POSTGRES_DB: soborbum
     volumes:
       - db_data:/var/lib/postgresql/data
@@ -26,7 +29,7 @@ services:
       - path: .env.mcp
         required: false
     environment:
-      DATABASE_URL: postgresql+psycopg2://soborbum:soborbum@db:5432/soborbum
+      DATABASE_URL: postgresql+psycopg2://soborbum:${POSTGRES_PASSWORD:-soborbum}@db:5432/soborbum
       STORAGE_DIR: /app/storage
       # Required. Set these in .env — no insecure defaults, prod boot fails without them.
       APP_ENV: ${APP_ENV:-prod}
@@ -59,7 +62,9 @@ services:
       - ./alembic:/app/alembic
       - storage_data:/app/storage
     ports:
-      - "127.0.0.1:8005:8000"
+      # Стейдж-проект (отдельная директория/compose-проект на том же VPS)
+      # задаёт свой BACKEND_PORT в .env, чтобы не конфликтовать с прод-портом.
+      - "127.0.0.1:${BACKEND_PORT:-8005}:8000"
 
 volumes:
   db_data:
