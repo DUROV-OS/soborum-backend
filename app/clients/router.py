@@ -6,11 +6,12 @@ from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
-    ClientChatStateUpdate,
+    ClientChatLinkCreate,
+    ClientChatLinkOut,
+    ClientChatLinkUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
-    ClientMaxChatUpdate,
     ClientNoteCreate,
     ClientNoteOut,
     ClientNoteUpdate,
@@ -134,32 +135,45 @@ def record_balance_payment(
     return client
 
 
-@app.patch("/{client_id}/max-chat", response_model=ClientOut)
-def set_max_chat(
+@app.post("/{client_id}/chat-links", response_model=ClientChatLinkOut, status_code=status.HTTP_201_CREATED)
+def create_chat_link(
     client_id: int,
-    payload: ClientMaxChatUpdate,
+    payload: ClientChatLinkCreate,
     db: Session = Depends(get_db),
     _: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
-    client = client_service.set_max_chat_id(db, client, payload)
+    link = client_service.create_chat_link(db, client, payload)
     db.commit()
-    db.refresh(client)
-    return client
+    db.refresh(link)
+    return link
 
 
-@app.patch("/{client_id}/chat-state", response_model=ClientOut)
-def set_chat_state(
+@app.patch("/{client_id}/chat-links/{link_id}", response_model=ClientChatLinkOut)
+def update_chat_link(
     client_id: int,
-    payload: ClientChatStateUpdate,
+    link_id: int,
+    payload: ClientChatLinkUpdate,
     db: Session = Depends(get_db),
     _: User = Depends(require_clients_edit),
 ):
-    client = client_service.get_client_or_404(db, client_id)
-    client = client_service.set_chat_state(db, client, payload)
+    link = client_service.get_chat_link_or_404(db, client_id, link_id)
+    link = client_service.update_chat_link(db, link, payload)
     db.commit()
-    db.refresh(client)
-    return client
+    db.refresh(link)
+    return link
+
+
+@app.delete("/{client_id}/chat-links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chat_link(
+    client_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_clients_edit),
+):
+    link = client_service.get_chat_link_or_404(db, client_id, link_id)
+    client_service.delete_chat_link(db, link)
+    db.commit()
 
 
 @app.post("/{client_id}/contract-file", response_model=ClientOut)

@@ -19,21 +19,31 @@ class ClientCreate(BaseModel):
     phone: str
     email: str
     contacts: list[ClientContact] = []
-    max_chat_id: int | None = None
 
 
-class ClientMaxChatUpdate(BaseModel):
-    """Привязка переписки с клиентом к чату в мессенджере MAX. `null`
-    отвязывает; `0` — «Избранное»."""
+class ClientChatLinkCreate(BaseModel):
+    """Новая привязка клиента к чату MAX (0053). `max_chat_id` уникален
+    глобально — 409, если чат уже занят другим клиентом (см.
+    client_service.create_chat_link). `0` — «Избранное»."""
 
-    max_chat_id: int | None = None
+    max_chat_id: int
+    label: str
 
 
-class ClientChatStateUpdate(BaseModel):
-    """Смена состояния переписки. Только для клиента с уже привязанным чатом
-    (см. client_service.set_chat_state)."""
+class ClientChatLinkUpdate(BaseModel):
+    label: str | None = None
+    state: ClientChatState | None = None
 
-    state: ClientChatState
+
+class ClientChatLinkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    client_id: int
+    max_chat_id: int
+    label: str
+    state: ClientChatState | None
+    created_at: datetime
 
 
 class ClientDocumentsUpdate(BaseModel):
@@ -91,8 +101,7 @@ class ClientOut(BaseModel):
     phone: str
     email: str
     contacts: list[ClientContact] = []
-    max_chat_id: int | None
-    max_chat_state: ClientChatState | None
+    chat_links: list[ClientChatLinkOut] = []
 
     order_type: OrderType | None
     house_model_key: str | None

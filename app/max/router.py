@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, Form, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.clients.models import Client
+from app.clients.models import Client, ClientChatLink
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.max import service as max_service
@@ -40,8 +40,10 @@ def list_chats(
     клиенту (app.clients) — для обратной привязки «из MAX к клиенту»."""
     result = max_service.list_chats(limit)
     linked = {
-        c.max_chat_id: (c.id, c.full_name)
-        for c in db.query(Client).filter(Client.max_chat_id.isnot(None))
+        max_chat_id: (client_id, client_name)
+        for max_chat_id, client_id, client_name in db.query(
+            ClientChatLink.max_chat_id, Client.id, Client.full_name
+        ).join(Client, Client.id == ClientChatLink.client_id)
     }
     for chat in result["chats"]:
         client_id, client_name = linked.get(chat["id"], (None, None))
