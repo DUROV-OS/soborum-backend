@@ -19,7 +19,7 @@ from app.clients.schemas import (
 )
 from app.common.files import FilePurpose, save_upload_file
 from app.common.module_access import Module
-from app.core.deps import require_admin, require_module
+from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
 from app.users.models import User
 
@@ -30,13 +30,18 @@ app = FastAPI(
     version="0.6.0",
 )
 
-require_clients = require_module(Module.CLIENTS)
+# Пилот 4-уровневого доступа (0052-a): просмотр — все GET; редактирование —
+# создание/изменение через POST/PATCH; полный доступ — удаление клиента/заметки
+# и служебный reconcile (раньше — require_admin, см. журнал задачи).
+require_clients_view = require_view(Module.CLIENTS)
+require_clients_edit = require_edit(Module.CLIENTS)
+require_clients_full = require_full(Module.CLIENTS)
 
 
 @app.get("/", response_model=list[ClientOut])
 def list_clients(
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    _: User = Depends(require_clients_view),
     stage: ClientStage | None = None,
 ):
     query = db.query(Client)
@@ -46,7 +51,7 @@ def list_clients(
 
 
 @app.post("/", response_model=ClientOut, status_code=status.HTTP_201_CREATED)
-def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User = Depends(require_clients)):
+def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User = Depends(require_clients_edit)):
     client = client_service.create_client(db, payload)
     db.commit()
     db.refresh(client)
@@ -54,7 +59,7 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User 
 
 
 @app.get("/{client_id}", response_model=ClientOut)
-def get_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients)):
+def get_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients_view)):
     return client_service.get_client_or_404(db, client_id)
 
 
@@ -63,7 +68,7 @@ def update_documents(
     client_id: int,
     payload: ClientDocumentsUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    _: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_documents(db, client, payload)
@@ -77,7 +82,7 @@ def update_houses_count(
     client_id: int,
     payload: ClientHousesCountUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    _: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_houses_count(db, client, payload)
@@ -91,7 +96,7 @@ def update_payment(
     client_id: int,
     payload: ClientPaymentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_clients),
+    current_user: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_payment(db, client, payload, current_user.id)
@@ -105,7 +110,7 @@ def record_balance_payment(
     client_id: int,
     payload: ClientBalancePaymentUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_clients),
+    current_user: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.record_balance_payment(db, client, payload, current_user.id)
@@ -119,7 +124,7 @@ def set_max_chat(
     client_id: int,
     payload: ClientMaxChatUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    _: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.set_max_chat_id(db, client, payload)
@@ -133,7 +138,7 @@ def set_chat_state(
     client_id: int,
     payload: ClientChatStateUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    _: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.set_chat_state(db, client, payload)
@@ -148,7 +153,7 @@ def upload_contract_files(
     contract: UploadFile,
     appendix: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(require_clients),
+    user: User = Depends(require_clients_edit),
 ):
     """Договор и приложение к договору — одно действие (0061): нельзя
     загрузить один без другого."""
@@ -166,7 +171,7 @@ def upload_house_project_file(
     client_id: int,
     file: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(require_clients),
+    user: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     asset = save_upload_file(db, file, FilePurpose.HOUSE_PROJECT, user)
@@ -181,7 +186,7 @@ def upload_ar_file(
     client_id: int,
     file: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(require_clients),
+    user: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     asset = save_upload_file(db, file, FilePurpose.ARCHITECTURAL_DECISIONS, user)
@@ -196,7 +201,7 @@ def upload_kr_file(
     client_id: int,
     file: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(require_clients),
+    user: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     asset = save_upload_file(db, file, FilePurpose.CONSTRUCTIVE_DECISIONS, user)
@@ -211,7 +216,7 @@ def add_note(
     client_id: int,
     payload: ClientNoteCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_clients),
+    user: User = Depends(require_clients_edit),
 ):
     client = client_service.get_client_or_404(db, client_id)
     note = client_service.add_note(db, client, user.id, payload.text)
@@ -226,7 +231,7 @@ def update_note(
     note_id: int,
     payload: ClientNoteUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    _: User = Depends(require_clients_edit),
 ):
     note = db.get(ClientNote, note_id)
     if not note or note.client_id != client_id:
@@ -242,7 +247,7 @@ def delete_note(
     client_id: int,
     note_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_clients),
+    _: User = Depends(require_clients_full),
 ):
     note = db.get(ClientNote, note_id)
     if not note or note.client_id != client_id:
@@ -252,14 +257,14 @@ def delete_note(
 
 
 @app.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def delete_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients_full)):
     client = client_service.get_client_or_404(db, client_id)
     client_service.delete_client(db, client)
     db.commit()
 
 
 @app.post("/reconcile-stage-tasks")
-def reconcile_stage_tasks(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def reconcile_stage_tasks(db: Session = Depends(get_db), _: User = Depends(require_clients_full)):
     """Ручной прогон сверки задач смены стадии с реальностью (та же, что раз в
     час фоном). Создаёт недостающие задачи, закрывает устаревшие и дубли."""
     report = client_reconcile.reconcile_client_stage_tasks(db)
@@ -268,7 +273,7 @@ def reconcile_stage_tasks(db: Session = Depends(get_db), _: User = Depends(requi
 
 
 @app.post("/{client_id}/transition", response_model=ClientOut)
-def transition_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients)):
+def transition_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients_edit)):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.transition_stage(db, client)
     db.commit()

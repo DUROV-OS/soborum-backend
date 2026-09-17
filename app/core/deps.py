@@ -2,7 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.users.models import User, UserRole
@@ -58,3 +58,31 @@ def require_admin_or_module(module: Module):
         return user
 
     return dependency
+
+
+def _require_level(module: Module, level: AccessLevel, label: str):
+    """Общий механизм 4-уровневого доступа (задача 0052): пропускает запрос,
+    если `access_level(module)` пользователя не ниже требуемого уровня —
+    `ADMIN` всегда `FULL`. Пилот — раздел «Клиенты» (`app/clients/router.py`),
+    остальные разделы переводятся в 0052-b."""
+    def dependency(user: User = Depends(get_current_user)) -> User:
+        if user.access_level(module) < level:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Недостаточно прав ({label}) в разделе «{module.value}»",
+            )
+        return user
+
+    return dependency
+
+
+def require_view(module: Module):
+    return _require_level(module, AccessLevel.VIEW, "просмотр")
+
+
+def require_edit(module: Module):
+    return _require_level(module, AccessLevel.EDIT, "редактирование")
+
+
+def require_full(module: Module):
+    return _require_level(module, AccessLevel.FULL, "полный доступ")
