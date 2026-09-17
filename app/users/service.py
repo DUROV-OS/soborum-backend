@@ -44,7 +44,7 @@ def create_user(
     password: str,
     full_name: str,
     role: UserRole,
-    module_access: list[Module],
+    module_access: dict[Module, AccessLevel],
 ) -> User:
     user = User(
         email=email,
@@ -73,13 +73,15 @@ def change_password(db: Session, user: User, current_password: str, new_password
     db.commit()
 
 
-def set_module_access(db: Session, user: User, module_access: list[Module]) -> None:
-    """Матрица доступа (`AccessMatrixPage.tsx`) пока даёт только чекбокс "есть
-    раздел / нет" — грант всегда ставится на `FULL`, как и сегодняшний
-    булев грант (не регрессия). 4-уровневый UI — 0052-c."""
+def set_module_access(db: Session, user: User, module_access: dict[Module, AccessLevel]) -> None:
+    """Матрица доступа (`AccessMatrixPage.tsx`, 0052-c) — уровень на раздел
+    из выпадающего списка. Строка гранта хранится только при уровне отличном
+    от `NONE` (см. инвариант в `UserModuleAccess` / 0052-a)."""
     db.query(UserModuleAccess).filter(UserModuleAccess.user_id == user.id).delete()
-    for module in set(module_access):
-        db.add(UserModuleAccess(user_id=user.id, module=module, level=AccessLevel.FULL))
+    for module, level in module_access.items():
+        if level == AccessLevel.NONE:
+            continue
+        db.add(UserModuleAccess(user_id=user.id, module=module, level=level))
     db.flush()
 
 

@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.users.models import UserRole
 
 
@@ -16,7 +16,7 @@ class UserCreate(BaseModel):
     password: str
     full_name: str
     role: UserRole = UserRole.WORKER
-    module_access: list[Module] = []
+    module_access: dict[Module, AccessLevel] = {}
 
 
 class UserUpdate(BaseModel):
@@ -27,7 +27,7 @@ class UserUpdate(BaseModel):
 
 
 class UserAccessUpdate(BaseModel):
-    module_access: list[Module]
+    module_access: dict[Module, AccessLevel]
 
 
 class PasswordChange(BaseModel):
@@ -44,7 +44,7 @@ class UserOut(BaseModel):
     role: UserRole
     is_active: bool
     created_at: datetime
-    module_access: list[Module] = []
+    module_access: dict[Module, AccessLevel] = {}
 
     @staticmethod
     def from_model(user) -> "UserOut":
@@ -55,5 +55,5 @@ class UserOut(BaseModel):
             role=user.role,
             is_active=user.is_active,
             created_at=user.created_at,
-            module_access=sorted(user.accessible_modules, key=lambda m: m.value),
+            module_access=user.access_levels(),
         )
