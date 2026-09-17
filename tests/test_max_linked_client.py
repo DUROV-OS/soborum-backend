@@ -3,7 +3,7 @@
 """
 
 from app.clients import service as client_service
-from app.clients.schemas import ClientCreate, ClientMaxChatUpdate
+from app.clients.schemas import ClientChatLinkCreate, ClientCreate
 from app.common.module_access import Module
 from app.max import service as max_service
 
@@ -13,7 +13,7 @@ def _make_client(db, name="Клиент", chat_id=None):
         db, ClientCreate(full_name=name, phone="+70000000000", email=f"{name}@example.com")
     )
     if chat_id is not None:
-        client_service.set_max_chat_id(db, client, ClientMaxChatUpdate(max_chat_id=chat_id))
+        client_service.create_chat_link(db, client, ClientChatLinkCreate(max_chat_id=chat_id, label="Клиент"))
     return client
 
 
