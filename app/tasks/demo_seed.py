@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.accounting.models import MoneyMovementStatus, MoneySubkind
 from app.accounting.schemas import MoneyMovementCreate
 from app.accounting.service import change_status, create_money_movement
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.core.config import settings
 from app.core.security import hash_password
 from app.tasks.models import TaskStatus
@@ -93,7 +93,7 @@ def ensure_demo_workforce_seed(db: Session) -> int:
         db.add(user)
         db.flush()
         for module in modules:
-            db.add(UserModuleAccess(user_id=user.id, module=module))
+            db.add(UserModuleAccess(user_id=user.id, module=module, level=AccessLevel.FULL))
         created_users[slug] = user
     db.flush()
 

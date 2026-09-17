@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.db.base import Base
 
 
@@ -47,5 +47,6 @@ class UserModuleAccess(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     module: Mapped[Module] = mapped_column(Enum(Module, name="module"), nullable=False)
+    level: Mapped[AccessLevel] = mapped_column(Enum(AccessLevel, name="access_level"), nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="module_access")
