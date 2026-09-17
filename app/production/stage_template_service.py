@@ -152,9 +152,14 @@ def _call_ai(pages_payload: list[dict]) -> dict:
     не поднимая реальную сеть, и считали число вызовов."""
     from app.core.llm import anthropic_client
 
-    response = anthropic_client().messages.create(
+    # Полный граф на реальный многостраничный КР — не короткая структурированная
+    # реплика вроде deadlines._ai_pick_bottleneck: генерация с max_tokens=16000
+    # не укладывается в дефолтный клиентский timeout (60с, рассчитан на быстрые
+    # вызовы) — раньше запрос обрывался клиентом раньше, чем модель успевала
+    # дописать JSON. Увеличены оба параметра.
+    response = anthropic_client(timeout=300.0).messages.create(
         model=settings.ai_model,
-        max_tokens=4096,
+        max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(pages_payload, ensure_ascii=False)}],
         tools=[TOOL_SCHEMA],
@@ -163,6 +168,19 @@ def _call_ai(pages_payload: list[dict]) -> dict:
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
     if tool_use is None:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ не вернул структурированный ответ")
+    if response.stop_reason == "max_tokens":
+        # Ответ оборван на середине JSON — нельзя тихо принять как «ИИ
+        # предложил пустой/неполный граф», это не то же самое, что реальное
+        # решение модели. Явная ошибка вместо недостоверного результата.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Ответ ИИ оборван по лимиту токенов — граф не сформирован полностью, попробуйте ещё раз",
+        )
+    if not tool_use.input.get("blocks"):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="ИИ не предложил ни одного блока по этому КР",
+        )
     return tool_use.input
 
 
