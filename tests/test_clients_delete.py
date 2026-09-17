@@ -1,6 +1,8 @@
-"""Удаление клиента (0030-a):
+"""Удаление клиента (0030-a; уровень доступа — 0052-a):
 
-- только администратор (`DELETE /api/clients/{id}`);
+- нужен уровень `full` на раздел «Клиенты» (`DELETE /api/clients/{id}`) —
+  либо явный грант `full`, либо роль `ADMIN` (у неё `full` всегда, без грантов);
+  уровня `edit` недостаточно;
 - отказ 409, если цикл ещё не завершён, есть незавершённые задачи или проводки
   по клиенту — ничего не удаляется;
 - при отсутствии зависимостей клиент и его заметки удаляются.
@@ -10,7 +12,7 @@ from app.accounting.models import MoneyDirection, MoneyMovement, MoneySourceKind
 from app.clients import service as client_service
 from app.clients.models import Client
 from app.clients.schemas import ClientCreate
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.cycle.models import CycleStatus
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 
@@ -27,13 +29,26 @@ def _close_open_tasks(db, client_id):
     db.flush()
 
 
-def test_delete_requires_admin(api, make_user, db):
+def test_delete_requires_full_level(api, make_user, db):
     client = _make_client(db)
     db.commit()
-    worker = api(make_user(Module.CLIENTS))
+    worker = api(make_user(Module.CLIENTS, level=AccessLevel.EDIT))
     resp = worker.delete(f"/api/clients/{client.id}")
     assert resp.status_code == 403
     assert db.get(Client, client.id) is not None
+
+
+def test_delete_allowed_with_full_level_without_admin_role(api, make_user, db):
+    client = _make_client(db)
+    client.cycle.status = CycleStatus.COMPLETED
+    _close_open_tasks(db, client.id)
+    db.commit()
+    client_id = client.id
+
+    worker = api(make_user(Module.CLIENTS, level=AccessLevel.FULL))
+    resp = worker.delete(f"/api/clients/{client_id}")
+    assert resp.status_code == 204
+    assert db.get(Client, client_id) is None
 
 
 def test_delete_rejected_with_active_cycle(api, make_user, db):
