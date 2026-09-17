@@ -176,12 +176,26 @@ def _call_ai(pages_payload: list[dict]) -> dict:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Ответ ИИ оборван по лимиту токенов — граф не сформирован полностью, попробуйте ещё раз",
         )
-    if not tool_use.input.get("blocks"):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="ИИ не предложил ни одного блока по этому КР",
-        )
-    return tool_use.input
+    return _normalize_graph(tool_use.input)
+
+
+def _normalize_graph(raw: dict) -> dict:
+    """На реальном большом графе модель иногда отдаёт `blocks` не массивом, а
+    строкой с сериализованным JSON (в т.ч. второй раз обёрнутым в
+    `{"blocks": [...]}`) — сама структура при этом валидна и не выдумана,
+    просто не в той форме, которую ожидает схема инструмента. Разворачиваем
+    оба варианта; если после этого `blocks` всё равно не список — это уже
+    настоящая ошибка формата, а не то, что можно тихо принять."""
+    blocks = raw.get("blocks")
+    if isinstance(blocks, str):
+        try:
+            parsed = json.loads(blocks)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ вернул нераспознаваемую структуру графа")
+        blocks = parsed.get("blocks") if isinstance(parsed, dict) else parsed
+    if not isinstance(blocks, list) or not blocks:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ не предложил ни одного блока по этому КР")
+    return {"blocks": blocks}
 
 
 def _persist_draft(db: Session, client: Client, graph: dict) -> ProductionStageTemplate:
