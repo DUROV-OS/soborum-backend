@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.clients.models import (
     CLIENT_STAGE_ORDER,
     Client,
-    ClientChatState,
+    ClientChatLink,
     ClientNote,
     ClientStage,
     OrderType,
@@ -15,11 +15,11 @@ from app.clients.models import (
 )
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
-    ClientChatStateUpdate,
+    ClientChatLinkCreate,
+    ClientChatLinkUpdate,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
-    ClientMaxChatUpdate,
     ClientPaymentUpdate,
 )
 from app.common.module_access import Module
@@ -88,7 +88,6 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
         phone=payload.phone,
         email=payload.email,
         contacts=[c.model_dump() for c in payload.contacts],
-        max_chat_id=payload.max_chat_id,
     )
     db.add(client)
     db.flush()
@@ -268,38 +267,53 @@ def set_kr_file(db: Session, client: Client, file_id: int) -> Client:
     return _set_document_file(db, client, "kr_file_id", file_id)
 
 
-def set_max_chat_id(db: Session, client: Client, payload: ClientMaxChatUpdate) -> Client:
-    """Привязать/отвязать чат MAX. Доступно на любой стадии — это не
-    документные данные, а служебная ссылка на переписку. Один чат — не более
-    одного клиента (по аналогии с app.warehouse.service.link_max_chat)."""
-    if payload.max_chat_id is not None:
-        taken = (
-            db.query(Client)
-            .filter(Client.max_chat_id == payload.max_chat_id, Client.id != client.id)
-            .first()
-        )
-        if taken:
+def create_chat_link(db: Session, client: Client, payload: ClientChatLinkCreate) -> ClientChatLink:
+    """Привязать ещё один чат MAX к клиенту (0053) — один клиент может иметь
+    несколько чатов (например, отдельно с ним и с его помощником), но каждый
+    чат по-прежнему принадлежит не более чем одному клиенту."""
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название привязки обязательно")
+    taken = db.query(ClientChatLink).filter(ClientChatLink.max_chat_id == payload.max_chat_id).first()
+    if taken:
+        if taken.client_id == client.id:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Чат уже привязан к клиенту «{taken.full_name}» — сначала открепите его там",
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Этот чат уже привязан к этому клиенту"
             )
-    client.max_chat_id = payload.max_chat_id
-    if payload.max_chat_id is None:
-        # состояние переписки живёт на связи — без чата оно бессмысленно
-        client.max_chat_state = None
-    db.flush()
-    return client
-
-
-def set_chat_state(db: Session, client: Client, payload: ClientChatStateUpdate) -> Client:
-    if client.max_chat_id is None:
+        taken_client = db.get(Client, taken.client_id)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Нельзя задать состояние переписки без привязанного чата",
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Чат уже привязан к клиенту «{taken_client.full_name}» — сначала открепите его там",
         )
-    client.max_chat_state = ClientChatState(payload.state)
+    link = ClientChatLink(client_id=client.id, max_chat_id=payload.max_chat_id, label=label)
+    db.add(link)
     db.flush()
-    return client
+    return link
+
+
+def get_chat_link_or_404(db: Session, client_id: int, link_id: int) -> ClientChatLink:
+    link = db.get(ClientChatLink, link_id)
+    if not link or link.client_id != client_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Привязка не найдена")
+    return link
+
+
+def update_chat_link(db: Session, link: ClientChatLink, payload: ClientChatLinkUpdate) -> ClientChatLink:
+    data = payload.model_dump(exclude_unset=True)
+    if "label" in data:
+        label = (data["label"] or "").strip()
+        if not label:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название привязки обязательно")
+        link.label = label
+    if "state" in data:
+        link.state = data["state"]
+    db.flush()
+    return link
+
+
+def delete_chat_link(db: Session, link: ClientChatLink) -> None:
+    db.delete(link)
+    db.flush()
 
 
 def add_note(db: Session, client: Client, author_id: int, text: str) -> ClientNote:
