@@ -23,7 +23,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # Autogenerate doesn't detect added enum values on an existing pg enum type,
     # so this is added by hand (see f030f9e91731 for the same precedent).
-    op.execute("ALTER TYPE file_purpose ADD VALUE IF NOT EXISTS 'kr_page_image'")
+    op.execute("ALTER TYPE file_purpose ADD VALUE IF NOT EXISTS 'KR_PAGE_IMAGE'")
 
     op.create_table(
         'kr_extractions',
