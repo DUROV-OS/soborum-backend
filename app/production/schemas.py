@@ -141,3 +141,89 @@ class ProductionHomeOut(BaseModel):
     aktualnoe: ProductionAktualnoeOut | None
     deadlines: DeadlineInsightOut
     documents: ProductionHomeDocumentsOut
+
+
+# --------------------------------------------------------- разбор КР (0066-c) --
+
+
+class KrPageOut(BaseModel):
+    page_number: int
+    text: str
+    image_file_id: int
+
+
+class KrExtractionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    client_id: int
+    pages: list[KrPageOut]
+    extracted_at: datetime
+
+
+# ------------------------------------------------ шаблон графа этапов (0066-d) --
+
+
+class KrPageRefOut(BaseModel):
+    page_number: int
+    note: str | None = None
+
+
+class TemplateBlockTaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    description: str | None
+    kr_page_ref: KrPageRefOut | None
+
+
+class TemplateBlockMaterialOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    unit: str
+    kr_page_ref: KrPageRefOut | None
+    warehouse_material_id: int | None
+
+
+class TemplateBlockOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    description: str | None
+    sequence: int
+    depends_on_ids: list[int] = []
+    kr_page_refs: list[KrPageRefOut] = []
+    tasks: list[TemplateBlockTaskOut] = []
+    materials: list[TemplateBlockMaterialOut] = []
+
+
+class ProductionStageTemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    house_model_key: str | None
+    status: str
+    source_client_id: int
+    created_at: datetime
+    confirmed_at: datetime | None
+    confirmed_by_id: int | None
+    blocks: list[TemplateBlockOut] = []
+
+
+class TemplateBlockPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class TemplateBlockTaskPatch(BaseModel):
+    title: str | None = None
+    description: str | None = None
+
+
+class TemplateBlockMaterialPatch(BaseModel):
+    name: str | None = None
+    unit: str | None = None
+    warehouse_material_id: int | None = None

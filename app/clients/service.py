@@ -427,16 +427,29 @@ def transition_stage(db: Session, client: Client) -> Client:
         from app.production.models import Production
 
         houses = client.houses_count if client.order_type == OrderType.MULTIPLE else 1
+        new_productions = []
         for i in range(1, houses + 1):
-            db.add(
-                Production(
-                    cycle_id=client.cycle_id,
-                    house_index=i,
-                    name=f"Дом {i}" if houses > 1 else "Дом",
-                )
+            production = Production(
+                cycle_id=client.cycle_id,
+                house_index=i,
+                name=f"Дом {i}" if houses > 1 else "Дом",
             )
+            db.add(production)
+            new_productions.append(production)
         client.cycle.status = CycleStatus.PRODUCTION
         db.flush()
+
+        # ИИ строит (или переиспользует) граф этапов производства по КР и,
+        # если шаблон уже подтверждён, сразу применяет его — см. 0066-f.
+        # Один вызов транзакции = одна генерация даже на мультидом: второй и
+        # третий дом этого же клиента переиспользуют template_cache, не
+        # только house_model_key-кеш самой generate_or_reuse_template (тот
+        # работает МЕЖДУ клиентами одной модели, этот — ВНУТРИ одного перехода
+        # для мультидома, в т.ч. индивидуальных проектов без house_model_key).
+        template_cache: dict[str, object] = {}
+        for production in new_productions:
+            _apply_stage_plan(db, client, production, template_cache)
+
         if client.payment_plan != PaymentPlan.FULL_PREPAYMENT:
             _create_balance_payment_task(db, client)
 
@@ -447,6 +460,34 @@ def transition_stage(db: Session, client: Client) -> Client:
     ensure_stage_transition_task(db, client)
 
     return client
+
+
+def _apply_stage_plan(db: Session, client: Client, production, template_cache: dict[str, object]) -> None:
+    """Строит/переиспользует граф этапов производства по КР ([[0066-d]]) и,
+    если он уже подтверждён, сразу применяет к `production` ([[0066-f]]).
+
+    Намеренно не роняет переход клиента по стадиям: нет разбора КР, нет ключа
+    ИИ, сбой сети/генерации — производство просто остаётся без блоков до
+    ручного запуска (тот же принцип деградации, что у `production/deadlines.py`
+    — переход клиента со стадии на стадию не должен зависеть от готовности
+    ИИ-инфраструктуры)."""
+    from app.production.stage_plan import instantiate_stage_plan
+    from app.production.stage_template_service import generate_or_reuse_template
+    from app.production.stage_templates import TemplateStatus
+
+    template = template_cache.get("template")
+    if template is None:
+        try:
+            template = generate_or_reuse_template(db, client)
+        except HTTPException as error:
+            logger.warning(
+                "Автогенерация шаблона графа этапов для клиента %s пропущена: %s", client.id, error.detail
+            )
+            return
+        template_cache["template"] = template
+
+    if template.status == TemplateStatus.CONFIRMED:  # type: ignore[union-attr]
+        instantiate_stage_plan(db, production, template)
 
 
 def _create_balance_payment_task(db: Session, client: Client) -> None:
