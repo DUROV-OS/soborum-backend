@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
-from app.core.deps import require_module
+from app.core.deps import require_edit, require_view
 from app.db.session import get_db
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
@@ -18,13 +18,14 @@ app = FastAPI(
     version="0.1.2",
 )
 
-require_tasks = require_module(Module.TASKS)
+require_tasks_view = require_view(Module.TASKS)
+require_tasks_edit = require_edit(Module.TASKS)
 
 
 @app.get("/", response_model=list[TaskOut])
 def list_tasks(
     db: Session = Depends(get_db),
-    current: User = Depends(require_tasks),
+    current: User = Depends(require_tasks_view),
     scope: TaskScope = TaskScope.MINE,
     assignee_id: int | None = None,
     reviewer_id: int | None = None,
@@ -61,7 +62,7 @@ def list_tasks(
 
 
 @app.post("/", response_model=TaskOut, status_code=status.HTTP_201_CREATED)
-def create_task(payload: TaskCreate, db: Session = Depends(get_db), _: User = Depends(require_tasks)):
+def create_task(payload: TaskCreate, db: Session = Depends(get_db), _: User = Depends(require_tasks_edit)):
     task = task_service.create_task(
         db,
         title=payload.title,
@@ -80,12 +81,12 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db), _: User = De
 
 
 @app.get("/{task_id}", response_model=TaskOut)
-def get_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks)):
+def get_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks_view)):
     return TaskOut.from_model(task_service.get_task_or_404(db, task_id))
 
 
 @app.patch("/{task_id}", response_model=TaskOut)
-def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db), _: User = Depends(require_tasks)):
+def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db), _: User = Depends(require_tasks_edit)):
     task = task_service.get_task_or_404(db, task_id)
     task = task_service.update_task(
         db,
@@ -109,7 +110,7 @@ def update_task_status(
     task_id: int,
     payload: TaskStatusUpdate,
     db: Session = Depends(get_db),
-    actor: User = Depends(require_tasks),
+    actor: User = Depends(require_tasks_edit),
 ):
     task = task_service.get_task_or_404(db, task_id)
     task = task_service.set_status(db, task, payload.status, actor)
@@ -119,7 +120,7 @@ def update_task_status(
 
 
 @app.post("/{task_id}/claim", response_model=TaskOut)
-def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depends(require_tasks)):
+def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depends(require_tasks_edit)):
     task = task_service.get_task_or_404(db, task_id)
     task = task_service.claim_task(db, task, current)
     db.commit()
@@ -128,7 +129,7 @@ def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depe
 
 
 @app.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks)):
+def delete_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks_edit)):
     task = task_service.get_task_or_404(db, task_id)
     if task.link_type != TaskLinkType.NONE or task.block_id is not None:
         raise HTTPException(

@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_module
+from app.core.deps import require_edit, require_view
 from app.db.session import get_db
 from app.marketing import service as marketing_service
 from app.marketing import trends_client
@@ -35,13 +35,14 @@ app = FastAPI(
     version="0.2.1",
 )
 
-require_marketing = require_module(AccessModule.MARKETING)
+require_marketing_view = require_view(AccessModule.MARKETING)
+require_marketing_edit = require_edit(AccessModule.MARKETING)
 
 
 @app.get("/calendar", response_model=list[ContentItemOut])
 def calendar(
     db: Session = Depends(get_db),
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
     date_from: date | None = None,
     date_to: date | None = None,
 ):
@@ -50,7 +51,7 @@ def calendar(
 
 
 @app.post("/content", response_model=ContentItemOut, status_code=201)
-def create_content(payload: ContentItemCreate, db: Session = Depends(get_db), _: User = Depends(require_marketing)):
+def create_content(payload: ContentItemCreate, db: Session = Depends(get_db), _: User = Depends(require_marketing_edit)):
     content = marketing_service.create_content(db, payload)
     db.commit()
     db.refresh(content)
@@ -58,7 +59,7 @@ def create_content(payload: ContentItemCreate, db: Session = Depends(get_db), _:
 
 
 @app.get("/content/{content_id}", response_model=ContentItemOut)
-def get_content(content_id: int, db: Session = Depends(get_db), _: User = Depends(require_marketing)):
+def get_content(content_id: int, db: Session = Depends(get_db), _: User = Depends(require_marketing_view)):
     content = marketing_service.get_content_or_404(db, content_id)
     return ContentItemOut.from_model(content)
 
@@ -68,7 +69,7 @@ def update_content(
     content_id: int,
     payload: ContentItemUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_edit),
 ):
     content = marketing_service.get_content_or_404(db, content_id)
     content = marketing_service.update_basic(db, content, payload)
@@ -82,7 +83,7 @@ def update_raw(
     content_id: int,
     payload: ContentRawUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_edit),
 ):
     content = marketing_service.get_content_or_404(db, content_id)
     content = marketing_service.update_raw(db, content, payload)
@@ -96,7 +97,7 @@ def update_final(
     content_id: int,
     payload: ContentFinalUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_edit),
 ):
     content = marketing_service.get_content_or_404(db, content_id)
     content = marketing_service.update_final(db, content, payload)
@@ -110,7 +111,7 @@ def set_post_links(
     content_id: int,
     payload: list[PostLinkIn],
     db: Session = Depends(get_db),
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_edit),
 ):
     content = marketing_service.get_content_or_404(db, content_id)
     content = marketing_service.set_post_links(db, content, payload)
@@ -124,7 +125,7 @@ def update_analysis(
     content_id: int,
     payload: ContentAnalysisUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_edit),
 ):
     content = marketing_service.get_content_or_404(db, content_id)
     content = marketing_service.update_analysis(db, content, payload)
@@ -134,7 +135,7 @@ def update_analysis(
 
 
 @app.post("/content/{content_id}/transition", response_model=ContentItemOut)
-def transition_content(content_id: int, db: Session = Depends(get_db), _: User = Depends(require_marketing)):
+def transition_content(content_id: int, db: Session = Depends(get_db), _: User = Depends(require_marketing_edit)):
     content = marketing_service.get_content_or_404(db, content_id)
     content = marketing_service.transition_stage(db, content)
     db.commit()
@@ -155,7 +156,7 @@ def trends_interest_over_time(
     timeframe: str | None = None,
     geo: str | None = None,
     cat: str | None = None,
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
 ):
     """Динамика популярности во времени — данные для линейного графика.
 
@@ -174,7 +175,7 @@ def trends_interest_by_region(
     timeframe: str | None = None,
     geo: str | None = None,
     resolution: str | None = None,
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
 ):
     """Распределение интереса по регионам — данные для карты/столбчатой диаграммы.
 
@@ -188,7 +189,7 @@ def trends_related_queries(
     q: str,
     timeframe: str | None = None,
     geo: str | None = None,
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
 ):
     """Похожие запросы: ``top`` — самые популярные, ``rising`` — набирающие."""
     return trends_client.related_queries(q, timeframe, geo)
@@ -199,7 +200,7 @@ def trends_related_topics(
     q: str,
     timeframe: str | None = None,
     geo: str | None = None,
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
 ):
     """Похожие темы: ``top`` и ``rising``."""
     return trends_client.related_topics(q, timeframe, geo)
@@ -209,7 +210,7 @@ def trends_related_topics(
 
 
 @app.get("/trends/niche/keywords", response_model=NicheKeywordsOut)
-def trends_niche_keywords(geo: str | None = None, _: User = Depends(require_marketing)):
+def trends_niche_keywords(geo: str | None = None, _: User = Depends(require_marketing_view)):
     """Готовые группы поисковых запросов ниши (для фильтров на странице «Тренд»)."""
     return trends_client.niche_keywords(geo)
 
@@ -219,7 +220,7 @@ def trends_niche_overview(
     timeframe: str | None = None,
     geo: str | None = None,
     groups: str | None = None,
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
 ):
     """Сводка спроса по нише: по каждому запросу — текущий и средний уровень,
     пик, рост за период и направление (``rising`` / ``flat`` / ``falling``).
@@ -235,7 +236,7 @@ def trends_niche_regions(
     timeframe: str | None = None,
     geo: str | None = None,
     resolution: str | None = None,
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
 ):
     """В каких регионах чаще интересуются нишей. Значение 0..100 усреднено по
     нескольким ключевым запросам. По умолчанию ``geo=RU``, ``resolution=REGION``
@@ -250,7 +251,7 @@ def trends_niche_rising(
     geo: str | None = None,
     limit: int = 25,
     groups: str | None = None,
-    _: User = Depends(require_marketing),
+    _: User = Depends(require_marketing_view),
 ):
     """Набирающие темы вокруг ниши: объединённые ``rising``-запросы Google
     по ключевым словам бизнеса, с указанием, какой запрос их вывел.
@@ -259,12 +260,12 @@ def trends_niche_rising(
 
 
 @app.get("/trends/geo", response_model=list[LookupEntry])
-def trends_geo(find: str | None = None, _: User = Depends(require_marketing)):
+def trends_geo(find: str | None = None, _: User = Depends(require_marketing_view)):
     """Справочник регионов Google Trends (для выбора ``geo``)."""
     return trends_client.geo_lookup(find)
 
 
 @app.get("/trends/categories", response_model=list[LookupEntry])
-def trends_categories(find: str | None = None, _: User = Depends(require_marketing)):
+def trends_categories(find: str | None = None, _: User = Depends(require_marketing_view)):
     """Справочник категорий Google Trends (для выбора ``cat``)."""
     return trends_client.categories_lookup(find)
