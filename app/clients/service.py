@@ -173,10 +173,19 @@ def _record_sale_income(db: Session, client: Client, amount: float | None, initi
         logger.exception("Не удалось создать проводку «доход от продажи» для клиента %s", client.id)
 
 
+def set_payment_edit_unlocked(db: Session, client: Client, unlocked: bool) -> Client:
+    """Разрешение администратора обходить `payment_locked_at` (0054). Не
+    трогает сам факт блокировки — только снимает запрет на редактирование,
+    пока включено."""
+    client.payment_edit_unlocked = unlocked
+    db.flush()
+    return client
+
+
 def update_payment(
     db: Session, client: Client, payload: ClientPaymentUpdate, initiator_id: int | None = None
 ) -> Client:
-    if client.payment_locked_at is not None:
+    if client.payment_locked_at is not None and not client.payment_edit_unlocked:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Статус оплаты уже зафиксирован")
     was_paid = client.is_paid
     client.is_paid = payload.is_paid

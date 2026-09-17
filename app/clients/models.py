@@ -177,6 +177,10 @@ class Client(Base):
     #   POST_PAYMENT — не требуется (переход возможен при is_paid = False).
     is_paid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     payment_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Явное разрешение администратора обходить payment_locked_at (0054). Не
+    # трогает сам факт блокировки — только снимает запрет на редактирование,
+    # пока включено. Переключается через отдельный admin-only эндпоинт.
+    payment_edit_unlocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     # `balance_paid` — погашен ли остаток «после получения». Для FULL_PREPAYMENT
     # проставляется автоматически на стадии «оплата». Для остальных планов —
     # вручную на «постоплате» после получения дома; пока не True, цикл нельзя

@@ -53,6 +53,10 @@ class ClientPaymentUpdate(BaseModel):
     is_paid: bool
 
 
+class ClientPaymentEditUnlockUpdate(BaseModel):
+    unlocked: bool
+
+
 class ClientBalancePaymentUpdate(BaseModel):
     balance_paid: bool
 
@@ -108,6 +112,7 @@ class ClientOut(BaseModel):
 
     is_paid: bool | None
     payment_locked_at: datetime | None
+    payment_edit_unlocked: bool
     balance_paid: bool | None
     balance_paid_at: datetime | None
 
