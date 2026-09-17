@@ -24,7 +24,7 @@ def upgrade() -> None:
         sa.Column('house_model_key', sa.String(length=64), nullable=True),
         sa.Column(
             'status',
-            sa.Enum('draft', 'reviewed', 'confirmed', name='production_stage_template_status'),
+            sa.Enum('DRAFT', 'REVIEWED', 'CONFIRMED', name='production_stage_template_status'),
             nullable=False,
         ),
         sa.Column('source_client_id', sa.Integer(), nullable=False),
