@@ -25,6 +25,56 @@ python -m venv .venv
 
 Тесты используют отдельную SQLite в памяти и синтетические данные. Секрет для тестов задаётся только в тестовой среде. Полные изменения, влияние на существующий деплой, ограничения и следующая приёмка: [пакет исправлений 05.09.2026](docs/ASTRA_REVIEW_2026-09-05.md).
 
+## Стейдж-окружение
+
+Отдельное окружение для проверки веток перед прод-мержем: `https://stage.soborum.durov.house`.
+Деплой — пуш в ветку `staging` (workflow `.github/workflows/deploy-staging.yml`),
+не задевает прод (`push:main`, `deploy.yml`) ни при успехе, ни при падении —
+это отдельный job на отдельном триггере. Ручной передеплой без нового коммита —
+`workflow_dispatch` на `deploy-staging.yml` в Actions.
+
+Стейдж живёт на **том же VPS**, что и прод, но изолированно:
+
+| | Прод | Стейдж |
+| --- | --- | --- |
+| Ветка деплоя | `main` | `staging` |
+| Директория на сервере | `/srv/soborbum-backend` | `/srv/soborbum-backend-staging` |
+| Порт бэка (127.0.0.1) | 8005 | 8006 |
+| compose-проект/сеть | `soborbum-backend_*` | `soborbum-backend-staging_*` (отдельная БД, недостижима с прод-стороны) |
+| GitHub Secrets | `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`, `JWT_SECRET`, `ADMIN_*`, `CORS_ALLOWED_ORIGINS`, `APP_ENV` | те же имена с префиксом `STAGING_` |
+| Внешние интеграции (`ANTHROPIC_API_KEY`, `MOYSKLAD_MCP_*`, `MAX_TOKEN` и т.п.) | свои секреты | **переиспользует прод-секреты** — осознанный риск, см. `backlog/.../0069-staging-environment.md` |
+
+Первичная настройка на сервере (руками, один раз — агент не имеет SSH-доступа):
+
+```bash
+git clone <репозиторий> /srv/soborbum-backend-staging
+cd /srv/soborbum-backend-staging
+git checkout staging   # ветка должна существовать в origin
+cp .env.example .env
+# в .env выставить: BACKEND_PORT=8006, POSTGRES_PASSWORD=<другой, не прод>,
+# ADMIN_PASSWORD=<свой>, JWT_SECRET=<свой>, APP_ENV=staging,
+# CORS_ALLOWED_ORIGINS=https://stage.soborum.durov.house
+docker compose up -d --build
+```
+
+Плюс nginx-vhost на сервере (не в этом репозитории), например:
+
+```nginx
+server {
+    server_name stage.soborum.durov.house;
+    location /api/ { proxy_pass http://127.0.0.1:8006; }
+    location /      { root /var/www/soborbum-frontend-staging/dist; try_files $uri /index.html; }
+}
+```
+
+GitHub Secrets `STAGING_*` — добавить в оба репозитория (`soborum-backend`,
+`soborbum-frontend`) через `gh secret set` или настройки репозитория; значения
+(SSH-ключ деплоя, пароли) агент не генерирует и не имеет к ним доступа.
+
+Логи стейдж-деплоя — вкладка Actions → workflow «Deploy staging». Логи
+контейнера на сервере — `docker compose -p soborbum-backend-staging logs -f backend`
+(или из `/srv/soborbum-backend-staging`: `docker compose logs -f backend`).
+
 ## Разделы API
 
 Каждый раздел — отдельное FastAPI-приложение со своей Swagger-документацией:
