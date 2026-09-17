@@ -105,7 +105,6 @@ CLIENT_STAGE_ORDER = [
 
 class Client(Base):
     __tablename__ = "clients"
-    __table_args__ = (UniqueConstraint("max_chat_id", name="uq_clients_max_chat_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     cycle_id: Mapped[int] = mapped_column(ForeignKey("cycles.id"), unique=True, nullable=False)
@@ -122,16 +121,6 @@ class Client(Base):
     # Паспорт/ИНН/дата рождения больше не собираются — для работы с клиентом
     # достаточно знать, где и как с ним связаться.
     contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    # ID чата в мессенджере MAX (app/max), к которому привязана переписка с
-    # клиентом. Редактируется в любой момент, ни к одной стадии не привязан.
-    # 0 — «Избранное» (чат с самим собой); id групп/каналов бывают
-    # отрицательными и большими, поэтому BigInteger.
-    max_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    # Состояние переписки — хранится на связи, а не на клиенте: сбрасывается
-    # при отвязке чата (см. client_service.set_max_chat_id).
-    max_chat_state: Mapped["ClientChatState | None"] = mapped_column(
-        Enum(ClientChatState, name="client_chat_state"), nullable=True
-    )
 
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at
@@ -190,6 +179,9 @@ class Client(Base):
 
     cycle: Mapped["Cycle"] = relationship(back_populates="client")  # noqa: F821
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    chat_links: Mapped[list["ClientChatLink"]] = relationship(
+        back_populates="client", cascade="all, delete-orphan", order_by="ClientChatLink.id"
+    )
     contract_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_file_id])  # noqa: F821
     contract_appendix_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_appendix_file_id])  # noqa: F821
     house_project_file: Mapped["FileAsset"] = relationship(foreign_keys=[house_project_file_id])  # noqa: F821
@@ -211,3 +203,28 @@ class ClientNote(Base):
 
     client: Mapped["Client"] = relationship(back_populates="notes")
     author: Mapped["User"] = relationship()  # noqa: F821
+
+
+class ClientChatLink(Base):
+    """Привязка клиента к чату MAX — один-ко-многим со стороны клиента (0053):
+    у клиента может быть несколько чатов (например, отдельно с ним и с его
+    помощником), но каждый чат по-прежнему принадлежит не более чем одному
+    клиенту (``max_chat_id`` уникален глобально, как раньше на ``Client``).
+    Заменяет бывшие `Client.max_chat_id`/`Client.max_chat_state` (0012)."""
+
+    __tablename__ = "client_chat_links"
+    __table_args__ = (UniqueConstraint("max_chat_id", name="uq_client_chat_links_max_chat_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False)
+    # 0 — «Избранное» (чат с самим собой); id групп/каналов бывают
+    # отрицательными и большими, поэтому BigInteger.
+    max_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Например «С клиентом», «С помощником» — различает несколько чатов одного клиента в UI.
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped["ClientChatState | None"] = mapped_column(
+        Enum(ClientChatState, name="client_chat_state"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    client: Mapped["Client"] = relationship(back_populates="chat_links")
