@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.clients import service as client_service
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_admin, require_module
+from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
 from app.production import home as production_home
 from app.production import kr_extraction
@@ -39,14 +39,16 @@ app = FastAPI(
     version="0.4.0",
 )
 
-require_production = require_module(AccessModule.PRODUCTION)
+require_production_view = require_view(AccessModule.PRODUCTION)
+require_production_edit = require_edit(AccessModule.PRODUCTION)
+require_production_full = require_full(AccessModule.PRODUCTION)
 
 
 @app.get("/", response_model=list[ProductionListOut])
 def list_productions(
     cycle_id: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_view),
 ):
     # A production grant must not require a cycle grant or reveal a customer's passport/prices.
     # ?cycle_id= narrows to the houses of one order, kept in house order.
@@ -64,20 +66,20 @@ def list_productions(
 
 
 @app.get("/{production_id}", response_model=ProductionOut)
-def get_production(production_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
+def get_production(production_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_view)):
     return production_service.get_production_or_404(db, production_id)
 
 
 @app.get("/{production_id}/home", response_model=ProductionHomeOut)
 def get_production_home(
-    production_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)
+    production_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_view)
 ):
     production = production_service.get_production_or_404(db, production_id)
     return production_home.build_home(db, production)
 
 
 @app.delete("/{production_id}", status_code=204)
-def delete_production(production_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def delete_production(production_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_full)):
     production = production_service.get_production_or_404(db, production_id)
     production_service.delete_production(db, production)
     db.commit()
@@ -88,7 +90,7 @@ def create_block(
     production_id: int,
     payload: BlockCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     block = production_service.create_block(db, production_id, payload)
     db.commit()
@@ -97,7 +99,7 @@ def create_block(
 
 
 @app.get("/blocks/{block_id}", response_model=BlockOut)
-def get_block(block_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
+def get_block(block_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_view)):
     return production_service.get_block_or_404(db, block_id)
 
 
@@ -106,7 +108,7 @@ def update_block(
     block_id: int,
     payload: BlockUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     block = production_service.get_block_or_404(db, block_id)
     block = production_service.update_block(db, block, payload)
@@ -116,7 +118,7 @@ def update_block(
 
 
 @app.delete("/blocks/{block_id}", status_code=204)
-def delete_block(block_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def delete_block(block_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_full)):
     block = production_service.get_block_or_404(db, block_id)
     production_service.delete_block(db, block)
     db.commit()
@@ -127,7 +129,7 @@ def add_block_dependency(
     block_id: int,
     payload: BlockDependencyCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     block = production_service.get_block_or_404(db, block_id)
     block = production_service.add_block_dependency(db, block, payload.depends_on_id)
@@ -141,7 +143,7 @@ def remove_block_dependency(
     block_id: int,
     depends_on_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     block = production_service.get_block_or_404(db, block_id)
     block = production_service.remove_block_dependency(db, block, depends_on_id)
@@ -155,7 +157,7 @@ def add_block_material(
     block_id: int,
     payload: BlockMaterialCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     material = production_service.add_block_material(db, block_id, payload)
     db.commit()
@@ -168,7 +170,7 @@ def update_block_material(
     material_id: int,
     payload: BlockMaterialUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_production),
+    user: User = Depends(require_production_edit),
 ):
     material = production_service.get_block_material_or_404(db, material_id)
     material = production_service.update_required_quantity(db, material, payload.quantity_required, user)
@@ -182,7 +184,7 @@ def request_material(
     material_id: int,
     payload: MaterialRequestCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_production),
+    user: User = Depends(require_production_edit),
 ):
     material = production_service.get_block_material_or_404(db, material_id)
     request = production_service.request_material(db, material, payload.quantity, user)
@@ -192,7 +194,7 @@ def request_material(
 
 
 @app.post("/kr-extraction/{client_id}", response_model=KrExtractionOut, status_code=201)
-def run_kr_extraction(client_id: int, db: Session = Depends(get_db), user: User = Depends(require_production)):
+def run_kr_extraction(client_id: int, db: Session = Depends(get_db), user: User = Depends(require_production_edit)):
     client = client_service.get_client_or_404(db, client_id)
     record = kr_extraction.run_kr_extraction(db, client, user)
     db.commit()
@@ -201,7 +203,7 @@ def run_kr_extraction(client_id: int, db: Session = Depends(get_db), user: User 
 
 
 @app.get("/kr-extraction/{client_id}", response_model=KrExtractionOut)
-def get_kr_extraction(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
+def get_kr_extraction(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_view)):
     record = kr_extraction.get_kr_extraction(db, client_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Разбор КР ещё не запускался")
@@ -213,7 +215,7 @@ def get_kr_extraction(client_id: int, db: Session = Depends(get_db), _: User = D
 
 @app.post("/stage-templates/generate", response_model=ProductionStageTemplateOut, status_code=201)
 def generate_stage_template(
-    client_id: int, db: Session = Depends(get_db), user: User = Depends(require_production)
+    client_id: int, db: Session = Depends(get_db), user: User = Depends(require_production_edit)
 ):
     client = client_service.get_client_or_404(db, client_id)
     template = stage_template_service.generate_or_reuse_template(db, client)
@@ -223,7 +225,7 @@ def generate_stage_template(
 
 
 @app.get("/stage-templates/{template_id}", response_model=ProductionStageTemplateOut)
-def get_stage_template(template_id: int, db: Session = Depends(get_db), _: User = Depends(require_production)):
+def get_stage_template(template_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_view)):
     return stage_template_service.get_template_or_404(db, template_id)
 
 
@@ -233,7 +235,7 @@ def update_stage_template_block(
     block_id: int,
     payload: TemplateBlockPatch,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     template = stage_template_service.get_template_or_404(db, template_id)
     block = stage_template_service.get_block_or_404(db, template_id, block_id)
@@ -252,7 +254,7 @@ def update_stage_template_task(
     task_id: int,
     payload: TemplateBlockTaskPatch,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     template = stage_template_service.get_template_or_404(db, template_id)
     stage_template_service.get_block_or_404(db, template_id, block_id)
@@ -273,7 +275,7 @@ def update_stage_template_material(
     material_id: int,
     payload: TemplateBlockMaterialPatch,
     db: Session = Depends(get_db),
-    _: User = Depends(require_production),
+    _: User = Depends(require_production_edit),
 ):
     template = stage_template_service.get_template_or_404(db, template_id)
     stage_template_service.get_block_or_404(db, template_id, block_id)
@@ -286,7 +288,7 @@ def update_stage_template_material(
 
 @app.post("/stage-templates/{template_id}/confirm", response_model=ProductionStageTemplateOut)
 def confirm_stage_template(
-    template_id: int, db: Session = Depends(get_db), user: User = Depends(require_production)
+    template_id: int, db: Session = Depends(get_db), user: User = Depends(require_production_edit)
 ):
     template = stage_template_service.get_template_or_404(db, template_id)
     stage_template_service.confirm_template(db, template, user)

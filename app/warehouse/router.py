@@ -3,7 +3,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_admin, require_admin_or_module, require_module
+from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
 from app.production.schemas import MaterialRequestOut
 from app.users.models import User
@@ -39,24 +39,25 @@ app = FastAPI(
     version="0.1.2",
 )
 
-require_warehouse = require_module(AccessModule.WAREHOUSE)
-require_warehouse_or_admin = require_admin_or_module(AccessModule.WAREHOUSE)
+require_warehouse_view = require_view(AccessModule.WAREHOUSE)
+require_warehouse_edit = require_edit(AccessModule.WAREHOUSE)
+require_warehouse_full = require_full(AccessModule.WAREHOUSE)
 
 
 @app.get("/warehouses", response_model=list[str])
-def list_warehouses(_: User = Depends(require_warehouse)):
+def list_warehouses(_: User = Depends(require_warehouse_view)):
     return [w.value for w in Warehouse]
 
 
 @app.get("/categories", response_model=list[str])
-def list_categories(_: User = Depends(require_warehouse)):
+def list_categories(_: User = Depends(require_warehouse_view)):
     return [c.value for c in MaterialCategory]
 
 
 @app.get("/materials", response_model=list[WarehouseMaterialOut])
 def list_materials(
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_view),
     needs_supply: bool | None = None,
     warehouse: Warehouse | None = None,
 ):
@@ -65,7 +66,7 @@ def list_materials(
 
 @app.post("/materials", response_model=WarehouseMaterialOut, status_code=201)
 def create_material(
-    payload: WarehouseMaterialCreate, db: Session = Depends(get_db), _: User = Depends(require_warehouse)
+    payload: WarehouseMaterialCreate, db: Session = Depends(get_db), _: User = Depends(require_warehouse_edit)
 ):
     material = warehouse_service.create_material(db, payload)
     db.commit()
@@ -73,7 +74,7 @@ def create_material(
 
 
 @app.get("/materials/{material_id}", response_model=WarehouseMaterialOut)
-def get_material(material_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def get_material(material_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
     material = warehouse_service.get_material_or_404(db, material_id)
     return warehouse_service.to_out(db, material)
 
@@ -83,7 +84,7 @@ def update_material(
     material_id: int,
     payload: WarehouseMaterialUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     material = warehouse_service.get_material_or_404(db, material_id)
     material = warehouse_service.update_material(db, material, payload)
@@ -96,7 +97,7 @@ def write_off_material(
     material_id: int,
     payload: WriteOffRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_warehouse_or_admin),
+    user: User = Depends(require_warehouse_full),
 ):
     material = warehouse_service.get_material_or_404(db, material_id)
     material = warehouse_service.write_off_material(db, material, payload.quantity, payload.reason, user)
@@ -105,7 +106,7 @@ def write_off_material(
 
 
 @app.get("/materials/{material_id}/history", response_model=list[StockMovementOut])
-def material_history(material_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def material_history(material_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
     warehouse_service.get_material_or_404(db, material_id)
     return warehouse_service.get_material_history(db, material_id)
 
@@ -113,7 +114,7 @@ def material_history(material_id: int, db: Session = Depends(get_db), _: User = 
 @app.get("/history", response_model=list[StockMovementOut])
 def history(
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_view),
     material_id: int | None = None,
     reason: StockMovementReason | None = None,
 ):
@@ -121,7 +122,7 @@ def history(
 
 
 @app.get("/supplies/template")
-def download_supply_template(_: User = Depends(require_warehouse)):
+def download_supply_template(_: User = Depends(require_warehouse_view)):
     content = excel.generate_template()
     return Response(
         content=content,
@@ -131,7 +132,7 @@ def download_supply_template(_: User = Depends(require_warehouse)):
 
 
 @app.post("/supplies", response_model=SupplyOut, status_code=201)
-def create_supply(payload: SupplyCreate, db: Session = Depends(get_db), user: User = Depends(require_warehouse)):
+def create_supply(payload: SupplyCreate, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)):
     supply = warehouse_service.create_supply(db, payload, user)
     db.commit()
     db.refresh(supply)
@@ -143,7 +144,7 @@ def import_supply(
     warehouse: Warehouse,
     file: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(require_warehouse),
+    user: User = Depends(require_warehouse_edit),
 ):
     rows = excel.parse_supply_rows(file)
     supply = warehouse_service.import_supply(db, rows, warehouse, user)
@@ -153,7 +154,7 @@ def import_supply(
 
 
 @app.get("/supplies/{supply_id}", response_model=SupplyOut)
-def get_supply(supply_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def get_supply(supply_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
     supply = db.get(Supply, supply_id)
     if not supply:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Поставка не найдена")
@@ -161,7 +162,7 @@ def get_supply(supply_id: int, db: Session = Depends(get_db), _: User = Depends(
 
 
 @app.post("/requests/{request_id}/approve", response_model=MaterialRequestOut)
-def approve_request(request_id: int, db: Session = Depends(get_db), user: User = Depends(require_warehouse)):
+def approve_request(request_id: int, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)):
     request = warehouse_service.get_request_or_404(db, request_id)
     request = warehouse_service.approve_request(db, request, user)
     db.commit()
@@ -170,7 +171,7 @@ def approve_request(request_id: int, db: Session = Depends(get_db), user: User =
 
 
 @app.post("/requests/{request_id}/reject", response_model=MaterialRequestOut)
-def reject_request(request_id: int, db: Session = Depends(get_db), user: User = Depends(require_warehouse)):
+def reject_request(request_id: int, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)):
     request = warehouse_service.get_request_or_404(db, request_id)
     request = warehouse_service.reject_request(db, request, user)
     db.commit()
@@ -182,19 +183,19 @@ def reject_request(request_id: int, db: Session = Depends(get_db), user: User = 
 
 
 @app.get("/suppliers", response_model=list[SupplierOut])
-def list_suppliers(db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def list_suppliers(db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
     return [warehouse_service.supplier_out(s) for s in warehouse_service.list_suppliers(db)]
 
 
 @app.post("/suppliers", response_model=SupplierOut, status_code=201)
-def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def create_supplier(payload: SupplierCreate, db: Session = Depends(get_db), _: User = Depends(require_warehouse_edit)):
     supplier = warehouse_service.create_supplier(db, payload)
     db.commit()
     return warehouse_service.supplier_out(supplier)
 
 
 @app.get("/suppliers/{supplier_id}", response_model=SupplierOut)
-def get_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def get_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
     return warehouse_service.supplier_out(warehouse_service.get_supplier_or_404(db, supplier_id))
 
 
@@ -203,7 +204,7 @@ def update_supplier(
     supplier_id: int,
     payload: SupplierUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     supplier = warehouse_service.update_supplier(db, supplier, payload)
@@ -212,7 +213,7 @@ def update_supplier(
 
 
 @app.delete("/suppliers/{supplier_id}", status_code=204)
-def delete_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def delete_supplier(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_full)):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     warehouse_service.delete_supplier(db, supplier)
     db.commit()
@@ -224,7 +225,7 @@ def import_price_list(
     supplier_id: int,
     file: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(require_warehouse),
+    user: User = Depends(require_warehouse_edit),
 ):
     """Импорт прайс-листа таблицей (.xlsx/.csv). Колонки размечает ИИ (при
     наличии `ANTHROPIC_API_KEY`), иначе — словарь синонимов. Строки добавляются
@@ -257,7 +258,7 @@ def import_price_list(
 
 
 @app.post("/suppliers/{supplier_id}/price-items/ai-fill-category", response_model=AiFillCategoryResult)
-def ai_fill_category(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def ai_fill_category(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_edit)):
     """ИИ проставляет категорию из справочника склада строкам прайса поставщика,
     у которых она пуста."""
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
@@ -273,7 +274,7 @@ def ai_fill_category(supplier_id: int, db: Session = Depends(get_db), _: User = 
     response_model=LeadTimeQuestionDraft,
 )
 def draft_lead_time_question(
-    supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)
+    supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_edit)
 ):
     """Черновик сообщения поставщику в MAX с просьбой указать сроки поставки по
     позициям без срока. Ничего не отправляет. Нет привязанного чата MAX → 409."""
@@ -289,7 +290,7 @@ def send_lead_time_question(
     supplier_id: int,
     payload: LeadTimeQuestionSend,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     """Отправляет согласованный пользователем текст в привязанный чат MAX поставщика."""
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
@@ -302,7 +303,7 @@ def create_backfill_task(
     supplier_id: int,
     payload: BackfillTaskRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     """Создаёт задачу «дозаполнить прайс поставщика» по подтверждению пользователя."""
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
@@ -316,7 +317,7 @@ def add_price_item(
     supplier_id: int,
     payload: SupplierPriceItemCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     warehouse_service.add_price_item(db, supplier, payload)
@@ -330,7 +331,7 @@ def update_price_item(
     item_id: int,
     payload: SupplierPriceItemUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     warehouse_service.update_price_item(db, supplier, item_id, payload)
@@ -343,7 +344,7 @@ def delete_price_item(
     supplier_id: int,
     item_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     warehouse_service.delete_price_item(db, supplier, item_id)
@@ -356,7 +357,7 @@ def add_supplier_note(
     supplier_id: int,
     payload: SupplierNoteCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_warehouse),
+    user: User = Depends(require_warehouse_edit),
 ):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     warehouse_service.add_supplier_note(db, supplier, user.id, payload.text)
@@ -369,7 +370,7 @@ def delete_supplier_note(
     supplier_id: int,
     note_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     warehouse_service.delete_supplier_note(db, supplier, note_id)
@@ -382,7 +383,7 @@ def link_max_chat(
     supplier_id: int,
     payload: LinkMaxChatIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_warehouse),
+    _: User = Depends(require_warehouse_edit),
 ):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     supplier = warehouse_service.link_max_chat(db, supplier, payload.chat_id)
@@ -391,7 +392,7 @@ def link_max_chat(
 
 
 @app.delete("/suppliers/{supplier_id}/link-max-chat", response_model=SupplierOut)
-def unlink_max_chat(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse)):
+def unlink_max_chat(supplier_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_edit)):
     supplier = warehouse_service.get_supplier_or_404(db, supplier_id)
     supplier = warehouse_service.unlink_max_chat(db, supplier)
     db.commit()

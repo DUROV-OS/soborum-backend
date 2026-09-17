@@ -2,7 +2,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
-from app.core.deps import require_module
+from app.core.deps import require_view
 from app.cycle.models import Cycle
 from app.cycle.schemas import CycleOut
 from app.db.session import get_db
@@ -14,16 +14,16 @@ app = FastAPI(
     version="0.4.0",
 )
 
-require_cycle = require_module(AccessModule.CYCLE)
+require_cycle_view = require_view(AccessModule.CYCLE)
 
 
 @app.get("/", response_model=list[CycleOut])
-def list_cycles(db: Session = Depends(get_db), _: User = Depends(require_cycle)):
+def list_cycles(db: Session = Depends(get_db), _: User = Depends(require_cycle_view)):
     return db.query(Cycle).order_by(Cycle.id.desc()).all()
 
 
 @app.get("/{cycle_id}", response_model=CycleOut)
-def get_cycle(cycle_id: int, db: Session = Depends(get_db), _: User = Depends(require_cycle)):
+def get_cycle(cycle_id: int, db: Session = Depends(get_db), _: User = Depends(require_cycle_view)):
     cycle = db.get(Cycle, cycle_id)
     if not cycle:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Цикл не найден")
