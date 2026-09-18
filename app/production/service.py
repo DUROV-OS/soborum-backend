@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -48,6 +50,70 @@ def completed_flags_by_production(db: Session, production_ids: list[int]) -> dic
     for production_id in set(production_by_block.values()):
         completed[production_id] = production_id not in productions_with_open_task
     return completed
+
+
+def criticality_by_production(
+    db: Session, production_ids: list[int], completed_by_id: dict[int, bool]
+) -> dict[int, str]:
+    """Критичность для списка производств одним проходом по их блокам/
+    задачам/заявкам на материалы — то же определение узких мест, что
+    `collect_deadline_signals` в `deadlines.py` (просроченная задача блока >
+    зависшая заявка на материал > неподанная заявка при недостаче), но как
+    batch-факт по многим производствам сразу, без выбора ИИ «самого
+    значимого» и без кэша `ai_cache` (тот вызов остаётся только для вкладки
+    «Главная» одного производства). Для завершённых производств всегда
+    'normal' — фронт цвет критичности на них не показывает."""
+    criticality: dict[int, str] = {pid: "normal" for pid in production_ids}
+    if not production_ids:
+        return criticality
+
+    blocks = (
+        db.query(ProductionBlock.id, ProductionBlock.production_id)
+        .filter(ProductionBlock.production_id.in_(production_ids))
+        .all()
+    )
+    if not blocks:
+        return criticality
+    production_by_block = {b.id: b.production_id for b in blocks}
+    block_ids = list(production_by_block.keys())
+
+    now = datetime.now(timezone.utc)
+    productions_with_overdue: set[int] = set()
+    for block_id, deadline in (
+        db.query(Task.block_id, Task.deadline)
+        .filter(Task.block_id.in_(block_ids), Task.status != TaskStatus.DONE, Task.deadline.isnot(None))
+        .all()
+    ):
+        deadline_aware = deadline if deadline.tzinfo else deadline.replace(tzinfo=timezone.utc)
+        if deadline_aware < now:
+            productions_with_overdue.add(production_by_block[block_id])
+
+    productions_with_pending_request = {
+        production_by_block[block_id]
+        for (block_id,) in db.query(BlockMaterial.block_id)
+        .join(MaterialRequest, MaterialRequest.block_material_id == BlockMaterial.id)
+        .filter(BlockMaterial.block_id.in_(block_ids), MaterialRequest.status == MaterialRequestStatus.PENDING)
+        .all()
+    }
+    productions_with_shortfall = {
+        production_by_block[block_id]
+        for (block_id,) in db.query(BlockMaterial.block_id)
+        .filter(
+            BlockMaterial.block_id.in_(block_ids),
+            BlockMaterial.quantity_required > 0,
+            BlockMaterial.quantity_requested == 0,
+        )
+        .all()
+    }
+
+    for production_id in set(production_by_block.values()):
+        if completed_by_id.get(production_id, False):
+            continue
+        if production_id in productions_with_overdue:
+            criticality[production_id] = "critical"
+        elif production_id in productions_with_pending_request or production_id in productions_with_shortfall:
+            criticality[production_id] = "warning"
+    return criticality
 
 
 def get_production_or_404(db: Session, production_id: int) -> Production:

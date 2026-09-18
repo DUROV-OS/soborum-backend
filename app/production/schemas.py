@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -100,6 +101,7 @@ class ProductionListOut(BaseModel):
     created_at: datetime
     block_count: int
     is_completed: bool
+    criticality: Literal["normal", "warning", "critical"]
 
 
 # --------------------------------------------------------------- «Главная» --
