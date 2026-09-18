@@ -11,6 +11,19 @@ from app.accounting.models import (
     MoneySubkind,
     SupplierOrderStatus,
 )
+from app.common.files import FileAssetOut
+
+
+def _validate_link(value: str | None) -> str | None:
+    """0072-d: ссылка — пусто или похоже на URL (http/https). Без похода в сеть."""
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        raise ValueError("Ссылка должна начинаться с http:// или https://")
+    return cleaned
 
 
 class MoneyMovementCreate(BaseModel):
@@ -29,6 +42,13 @@ class MoneyMovementCreate(BaseModel):
     payment_purpose: str | None = None
     comment: str | None = None
     external_number: str | None = None
+    document_ids: list[int] = []
+    link: str | None = None
+
+    @field_validator("link")
+    @classmethod
+    def _link_looks_like_url(cls, value: str | None) -> str | None:
+        return _validate_link(value)
 
 
 class MoneyMovementUpdate(BaseModel):
@@ -44,6 +64,13 @@ class MoneyMovementUpdate(BaseModel):
     payment_purpose: str | None = None
     comment: str | None = None
     external_number: str | None = None
+    document_ids: list[int] | None = None
+    link: str | None = None
+
+    @field_validator("link")
+    @classmethod
+    def _link_looks_like_url(cls, value: str | None) -> str | None:
+        return _validate_link(value)
 
 
 class MoneyMovementStatusChange(BaseModel):
@@ -83,6 +110,8 @@ class MoneyMovementOut(BaseModel):
     employee_id: int | None
     supply_id: int | None
     source_label: str | None = None
+    documents: list[FileAssetOut] = []
+    link: str | None = None
     created_at: datetime
     updated_at: datetime
 
