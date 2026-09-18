@@ -12,6 +12,7 @@ from app.ai import mcp_auth
 from app.ai import meeting_ask as ai_meeting_ask
 from app.ai import meeting_notes as ai_meeting_notes
 from app.ai import meetings as ai_meetings
+from app.ai import daily_plan as ai_daily_plan
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
 from app.ai import topic as ai_topic
@@ -37,6 +38,7 @@ from app.ai.schemas import (
     ChatOut,
     ChatTitleUpdate,
     ConsultAskResponse,
+    DailyPlanOut,
     GrowthProposalOut,
     GrowthProposalPrepareTaskOut,
     MeetingAskIn,
@@ -377,6 +379,11 @@ def analytics_tasks(reload: bool = False, db: Session = Depends(get_db), user: U
 @app.get("/tasks/priorities", response_model=TaskPrioritiesOut)
 def task_priorities(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.TASKS, ai_level=AccessLevel.VIEW))):
     return ai_priorities.generate_task_priorities(db, user, force=reload)
+
+
+@app.get("/tasks/daily-plan", response_model=DailyPlanOut)
+def task_daily_plan(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(require_ai_and(Module.TASKS, ai_level=AccessLevel.VIEW))):
+    return ai_daily_plan.generate_daily_plan(db, user, force=reload)
 
 
 @app.post("/files", response_model=FileAssetOut)
