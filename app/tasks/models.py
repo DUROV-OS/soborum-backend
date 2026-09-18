@@ -88,6 +88,12 @@ class Task(Base):
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus, name="task_status"), nullable=False, default=TaskStatus.NOT_READY
     )
+    # Скрытая от сотрудников оценка объёма задачи ИИ, шкала {1,2,3,5,8} - см.
+    # app/ai/story_points.py. NULL до первой оценки (best-effort при создании,
+    # см. create_task) или для задач, созданных до этого поля (см.
+    # app/tasks/story_points_backfill.py). Никогда не отдаётся через API -
+    # намеренно нет в TaskCreate/TaskUpdate/TaskOut.
+    story_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Set when this task belongs to a production block - see app/production/models.py.
