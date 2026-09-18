@@ -21,6 +21,16 @@ def list_productions(db: Session, cycle_id: int | None = None) -> list[Productio
     return query.order_by(Production.cycle_id.desc(), Production.house_index.asc()).all()
 
 
+def _blocks_by_production(db: Session, production_ids: list[int]) -> tuple[dict[int, int], list[int]]:
+    blocks = (
+        db.query(ProductionBlock.id, ProductionBlock.production_id)
+        .filter(ProductionBlock.production_id.in_(production_ids))
+        .all()
+    )
+    production_by_block = {b.id: b.production_id for b in blocks}
+    return production_by_block, list(production_by_block.keys())
+
+
 def completed_flags_by_production(db: Session, production_ids: list[int]) -> dict[int, bool]:
     """Признак завершённости для списка производств одним проходом по их
     блокам/задачам — тот же факт («у блока нет открытых задач»), что уже
@@ -31,15 +41,9 @@ def completed_flags_by_production(db: Session, production_ids: list[int]) -> dic
     if not production_ids:
         return completed
 
-    blocks = (
-        db.query(ProductionBlock.id, ProductionBlock.production_id)
-        .filter(ProductionBlock.production_id.in_(production_ids))
-        .all()
-    )
-    if not blocks:
+    production_by_block, block_ids = _blocks_by_production(db, production_ids)
+    if not block_ids:
         return completed
-    production_by_block = {b.id: b.production_id for b in blocks}
-    block_ids = list(production_by_block.keys())
 
     productions_with_open_task = {
         production_by_block[block_id]
@@ -67,15 +71,9 @@ def criticality_by_production(
     if not production_ids:
         return criticality
 
-    blocks = (
-        db.query(ProductionBlock.id, ProductionBlock.production_id)
-        .filter(ProductionBlock.production_id.in_(production_ids))
-        .all()
-    )
-    if not blocks:
+    production_by_block, block_ids = _blocks_by_production(db, production_ids)
+    if not block_ids:
         return criticality
-    production_by_block = {b.id: b.production_id for b in blocks}
-    block_ids = list(production_by_block.keys())
 
     now = datetime.now(timezone.utc)
     productions_with_overdue: set[int] = set()
