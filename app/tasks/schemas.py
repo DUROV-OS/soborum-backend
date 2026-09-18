@@ -86,3 +86,24 @@ class TaskOut(BaseModel):
             images=[FileAssetOut.model_validate(f) for f in task.images],
             depends_on_ids=[t.id for t in task.depends_on],
         )
+
+
+class WorkloadLevel(str, enum.Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class WorkloadOut(BaseModel):
+    """GET /api/tasks/workload (0070-f, только администратор). В отличие от
+    обычного интерфейса задач, сторипоинты здесь показываются администратору
+    явно — «скрытость» 0070-d касается рядовых сотрудников."""
+
+    user_id: int
+    full_name: str
+    open_tasks_count: int
+    open_story_points: int
+    completed_points_7d: int
+    completed_points_prev_7d: int
+    overdue_count: int
+    workload_level: WorkloadLevel

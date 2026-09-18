@@ -4,11 +4,12 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
-from app.core.deps import require_edit, require_view
+from app.core.deps import require_admin, require_edit, require_view
 from app.db.session import get_db
 from app.tasks import service as task_service
+from app.tasks import story_points_stats
 from app.tasks.models import Task, TaskLinkType, TaskStatus
-from app.tasks.schemas import TaskCreate, TaskOut, TaskScope, TaskStatusUpdate, TaskUpdate
+from app.tasks.schemas import TaskCreate, TaskOut, TaskScope, TaskStatusUpdate, TaskUpdate, WorkloadOut
 from app.users.models import User
 
 app = FastAPI(
@@ -79,6 +80,11 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db), _: User = De
     db.commit()
     db.refresh(task)
     return TaskOut.from_model(task)
+
+
+@app.get("/workload", response_model=list[WorkloadOut])
+def workload(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    return story_points_stats.workload_by_user(db)
 
 
 @app.get("/{task_id}", response_model=TaskOut)
