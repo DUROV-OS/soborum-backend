@@ -134,6 +134,23 @@ class PriorityTaskOut(BaseModel):
     reason: str
 
 
+# --- План на день (0070-e) - отдельная от TaskPrioritiesOut механика: та выбирает
+# 2-3 задачи «на что посмотреть», эта собирает связный план на весь день с учётом
+# сторипоинтов/приоритета/чужой загрузки (см. app/ai/daily_plan.py). Сторипоинты и
+# агрегаты нагрузки в ответе не участвуют - только задачи и объяснение, скрытость
+# 0070-d сохраняется.
+
+
+class DailyPlanItemOut(BaseModel):
+    task: TaskOut
+    reason: str
+
+
+class DailyPlanOut(BaseModel):
+    generated_at: datetime
+    plan: list[DailyPlanItemOut]
+
+
 # --- Режим «Совещание» (0004) -------------------------------------------------
 
 
