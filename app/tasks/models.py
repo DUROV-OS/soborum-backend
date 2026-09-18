@@ -97,6 +97,12 @@ class Task(Base):
     priority: Mapped[TaskPriority] = mapped_column(
         Enum(TaskPriority, name="task_priority"), nullable=False, default=TaskPriority.MEDIUM
     )
+    # Скрытая от сотрудников оценка объёма задачи ИИ, шкала {1,2,3,5,8} - см.
+    # app/ai/story_points.py. NULL до первой оценки (best-effort при создании,
+    # см. create_task) или для задач, созданных до этого поля (см.
+    # app/tasks/story_points_backfill.py). Никогда не отдаётся через API -
+    # намеренно нет в TaskCreate/TaskUpdate/TaskOut.
+    story_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Set when this task belongs to a production block - see app/production/models.py.
