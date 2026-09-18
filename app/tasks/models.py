@@ -19,6 +19,12 @@ class TaskStatus(str, enum.Enum):
     DONE = "done"
 
 
+class TaskPriority(str, enum.Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class TaskLinkType(str, enum.Enum):
     """What auto-created this task, if anything. Domain sections that create
     linked tasks (clients, marketing, warehouse) look up their own entity by
@@ -87,6 +93,9 @@ class Task(Base):
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus, name="task_status"), nullable=False, default=TaskStatus.NOT_READY
+    )
+    priority: Mapped[TaskPriority] = mapped_column(
+        Enum(TaskPriority, name="task_priority"), nullable=False, default=TaskPriority.MEDIUM
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

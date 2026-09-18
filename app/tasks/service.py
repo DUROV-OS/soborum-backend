@@ -7,7 +7,7 @@ from app.common.files import FileAsset
 from app.common.module_access import Module
 from app.tasks import sync as task_sync
 from app.tasks import timelog
-from app.tasks.models import Task, TaskLinkType, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskPriority, TaskStatus
 from app.users.models import User
 
 ALLOWED_MANUAL_TRANSITIONS = {
@@ -120,6 +120,7 @@ def create_task(
     title: str,
     description: str | None = None,
     deadline: datetime | None = None,
+    priority: TaskPriority = TaskPriority.MEDIUM,
     assignee_ids: list[int] = (),
     reviewer_ids: list[int] = (),
     responsible_id: int | None = None,
@@ -136,6 +137,7 @@ def create_task(
         title=title,
         description=description,
         deadline=deadline,
+        priority=priority,
         block_id=block_id,
         responsible_id=responsible_id,
         link_type=link_type,
@@ -161,6 +163,7 @@ def update_task(
     title: str | None,
     description: str | None,
     deadline: datetime | None,
+    priority: TaskPriority | None = None,
     assignee_ids: list[int] | None,
     reviewer_ids: list[int] | None,
     responsible_id: int | None = None,
@@ -173,6 +176,8 @@ def update_task(
         task.description = description
     if deadline is not None:
         task.deadline = deadline
+    if priority is not None:
+        task.priority = priority
     if assignee_ids is not None:
         task.assignees = _resolve_users(db, assignee_ids)
     if reviewer_ids is not None:
