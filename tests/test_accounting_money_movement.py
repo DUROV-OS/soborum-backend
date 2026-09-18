@@ -243,6 +243,62 @@ def test_list_filter_by_amount_and_tax(db, api, acc_user):
     assert invalid.status_code == 422
 
 
+def test_movement_documents_and_link_editable_only_for_draft_and_approved(db, api, acc_user):
+    """0072-d: документ и ссылка сохраняются при создании, правятся для
+    draft/approved, отклоняются для posted (тот же принцип, что и у суммы,
+    0011-c)."""
+    client = _client(db)
+    api_client = api(acc_user)
+
+    upload = api_client.post(
+        "/api/accounting/money-movement-documents",
+        files={"file": ("act.pdf", b"fake-pdf-bytes", "application/pdf")},
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["id"]
+
+    created = _create(
+        api_client,
+        subkind="sale_income",
+        client_id=client.id,
+        document_ids=[doc_id],
+        link="https://example.com/act",
+    )
+    assert created.status_code == 201
+    body = created.json()
+    mm_id = body["id"]
+    assert [d["id"] for d in body["documents"]] == [doc_id]
+    assert body["link"] == "https://example.com/act"
+
+    # неверный формат ссылки — отклоняется, а не сохраняется как есть
+    assert _create(
+        api_client, subkind="sale_income", client_id=client.id, link="not-a-url"
+    ).status_code == 422
+
+    # второй документ добавляется на draft
+    upload2 = api_client.post(
+        "/api/accounting/money-movement-documents",
+        files={"file": ("scan.jpg", b"fake-jpg-bytes", "image/jpeg")},
+    )
+    doc2_id = upload2.json()["id"]
+    patched = api_client.patch(
+        f"/api/accounting/money-movements/{mm_id}",
+        json={"document_ids": [doc_id, doc2_id], "link": "https://example.com/act-v2"},
+    )
+    assert patched.status_code == 200
+    assert {d["id"] for d in patched.json()["documents"]} == {doc_id, doc2_id}
+    assert patched.json()["link"] == "https://example.com/act-v2"
+
+    for to in ("approved", "posted"):
+        api_client.post(f"/api/accounting/money-movements/{mm_id}/status", json={"to": to})
+
+    posted_patch = api_client.patch(
+        f"/api/accounting/money-movements/{mm_id}", json={"link": "https://example.com/too-late"}
+    )
+    assert posted_patch.status_code == 409
+    assert api_client.get(f"/api/accounting/money-movements/{mm_id}").json()["link"] == "https://example.com/act-v2"
+
+
 def test_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/money-movements")
     assert r.status_code == 403

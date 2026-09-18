@@ -38,6 +38,7 @@ from app.accounting.schemas import (
     SupplierOrderUpdate,
 )
 from app.clients.models import Client
+from app.common.files import FileAsset
 from app.common.module_access import Module as AccessModule
 from app.core.config import settings
 from app.tasks import service as task_service
@@ -221,7 +222,10 @@ def create_money_movement(
         client_id=data.client_id,
         employee_id=data.employee_id,
         supply_id=data.supply_id,
+        link=data.link,
     )
+    if data.document_ids:
+        mm.documents = db.query(FileAsset).filter(FileAsset.id.in_(list(data.document_ids))).all()
     db.add(mm)
     db.commit()
     db.refresh(mm)
@@ -337,11 +341,14 @@ def update_money_movement(
 
     for field in (
         "amount", "currency", "tax", "assessment", "affects_profit",
-        "payment_purpose", "comment", "external_number",
+        "payment_purpose", "comment", "external_number", "link",
         "subkind", "client_id", "employee_id", "supply_id",
     ):
         if field in payload:
             setattr(mm, field, payload[field])
+
+    if "document_ids" in payload and payload["document_ids"] is not None:
+        mm.documents = db.query(FileAsset).filter(FileAsset.id.in_(payload["document_ids"])).all()
 
     mm.direction = _direction_for(new_subkind)
     mm.source_kind = source_kind

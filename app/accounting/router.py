@@ -28,6 +28,7 @@ from app.accounting.schemas import (
     SupplierOrderStatusChange,
     SupplierOrderUpdate,
 )
+from app.common.files import FileAssetOut, FilePurpose, save_upload_file
 from app.common.module_access import Module as AccessModule
 from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
@@ -182,6 +183,22 @@ def list_money_movements(
         offset=offset,
     )
     return [MoneyMovementOut.from_movement(mm) for mm in movements]
+
+
+@app.post("/money-movement-documents", response_model=FileAssetOut)
+def upload_money_movement_document(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_accounting_edit),
+):
+    """Загрузить документ для прикрепления к проводке (0072-d): вернувшийся
+    id передаётся в `document_ids` при создании/правке проводки. Разрешена
+    загрузка «на будущее» — до того, как файл действительно приложен к
+    какой-то проводке, тот же приём, что `image_ids` у задач."""
+    asset = save_upload_file(db, file, FilePurpose.MONEY_MOVEMENT_DOCUMENT, user)
+    db.commit()
+    db.refresh(asset)
+    return asset
 
 
 @app.post("/money-movements", response_model=MoneyMovementOut, status_code=201)
