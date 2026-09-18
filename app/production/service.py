@@ -19,6 +19,37 @@ def list_productions(db: Session, cycle_id: int | None = None) -> list[Productio
     return query.order_by(Production.cycle_id.desc(), Production.house_index.asc()).all()
 
 
+def completed_flags_by_production(db: Session, production_ids: list[int]) -> dict[int, bool]:
+    """Признак завершённости для списка производств одним проходом по их
+    блокам/задачам — тот же факт («у блока нет открытых задач»), что уже
+    используют guard-проверки удаления (`delete_production`/`delete_block`
+    выше), просто batch'ем по многим производствам для `/production/` списка.
+    Производство без единого блока считается не завершённым."""
+    completed: dict[int, bool] = {pid: False for pid in production_ids}
+    if not production_ids:
+        return completed
+
+    blocks = (
+        db.query(ProductionBlock.id, ProductionBlock.production_id)
+        .filter(ProductionBlock.production_id.in_(production_ids))
+        .all()
+    )
+    if not blocks:
+        return completed
+    production_by_block = {b.id: b.production_id for b in blocks}
+    block_ids = list(production_by_block.keys())
+
+    productions_with_open_task = {
+        production_by_block[block_id]
+        for (block_id,) in db.query(Task.block_id)
+        .filter(Task.block_id.in_(block_ids), Task.status != TaskStatus.DONE)
+        .all()
+    }
+    for production_id in set(production_by_block.values()):
+        completed[production_id] = production_id not in productions_with_open_task
+    return completed
+
+
 def get_production_or_404(db: Session, production_id: int) -> Production:
     production = db.get(Production, production_id)
     if not production:

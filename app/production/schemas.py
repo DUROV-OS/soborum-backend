@@ -99,6 +99,7 @@ class ProductionListOut(BaseModel):
     cycle_status: CycleStatus
     created_at: datetime
     block_count: int
+    is_completed: bool
 
 
 # --------------------------------------------------------------- «Главная» --

@@ -60,8 +60,10 @@ def list_productions(
     if cycle_id is not None:
         query = query.filter(Production.cycle_id == cycle_id)
     rows = query.order_by(Production.cycle_id.desc(), Production.house_index.asc()).all()
+    completed_by_id = production_service.completed_flags_by_production(db, [p.id for p, _, _ in rows])
     return [ProductionListOut(id=p.id, cycle_id=p.cycle_id, house_index=p.house_index, name=p.name,
-                              cycle_status=cycle_status, created_at=p.created_at, block_count=count)
+                              cycle_status=cycle_status, created_at=p.created_at, block_count=count,
+                              is_completed=completed_by_id[p.id])
             for p, cycle_status, count in rows]
 
 
