@@ -9,7 +9,8 @@ from here.
 
 from sqlalchemy.orm import Session
 
-from app.board.models import BoardNode, BoardNodeColor
+from app.board.models import BoardChangeSource, BoardChangeType, BoardNode, BoardNodeColor
+from app.board.service import log_change
 from app.users.models import User
 
 ROOT_TITLE = "durov.house"
@@ -298,12 +299,13 @@ def restore_previous_structure(db: Session, actor: User | None = None) -> BoardN
     Deliberately does not try to preserve the old board_proposals/
     board_node_changes rows tied to the deleted nodes (they stay in the audit
     table, just orphaned - board_node_changes.node_id is intentionally not
-    FK-constrained for this reason, see BoardNodeChange's docstring).
+    FK-constrained for this reason, see BoardNodeChange's docstring). Instead
+    it records ONE new BoardNodeChange entry (source=manual) noting that the
+    whole tree was replaced, so the fact of the reset itself is auditable
+    even though the individual old nodes' history isn't carried forward.
 
     Safe to call more than once (e.g. re-run against the same DB): it will
-    just replace the tree again. `actor` is accepted here (and not yet used)
-    so the caller doesn't have to change once the audit-log entry for this
-    operation is wired in on top.
+    just replace the tree again and log another audit entry.
     """
     root = db.query(BoardNode).filter(BoardNode.parent_id.is_(None)).order_by(BoardNode.id).first()
     if root is None:
@@ -314,11 +316,25 @@ def restore_previous_structure(db: Session, actor: User | None = None) -> BoardN
         db.add(root)
         db.flush()
 
+    old_direction_titles = [child.title for child in root.children]
     for child in list(root.children):
         db.delete(child)
     db.flush()
 
     _populate_directions(db, root)
+
+    if old_direction_titles:
+        note = (
+            "Восстановление старой структуры по запросу Арсения: дерево (уровни 1-2) заменено целиком "
+            "на 6 направлений/27 поднаправлений. Заменённая версия содержала направления: "
+            + ", ".join(old_direction_titles) + "."
+        )
+    else:
+        note = (
+            "Восстановление старой структуры по запросу Арсения: дерево было пустым, создано 6 "
+            "направлений/27 поднаправлений."
+        )
+    log_change(db, root, BoardChangeType.UPDATED, BoardChangeSource.MANUAL, None, actor, note=note)
 
     db.commit()
     db.refresh(root)
