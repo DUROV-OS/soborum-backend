@@ -237,6 +237,68 @@ def test_movement_documents_and_link_editable_only_for_draft_and_approved(db, ap
     assert api_client.get(f"/api/accounting/money-movements/{mm_id}").json()["link"] == "https://example.com/act-v2"
 
 
+def test_list_filter_by_amount_and_tax(db, api, acc_user):
+    """0072-c: `amount_min`/`amount_max`/`tax_min`/`tax_max` в GET
+    money-movements — диапазон, "больше", "меньше", "равно"; невалидный
+    диапазон (min > max) — ошибка, не пустой список."""
+    client = _client(db)
+    api_client = api(acc_user)
+
+    small_id = _create(api_client, subkind="sale_income", client_id=client.id, amount=10000, tax=1000).json()["id"]
+    large_id = _create(api_client, subkind="sale_income", client_id=client.id, amount=90000, tax=9000).json()["id"]
+
+    above = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 50000}
+    ).json()
+    assert [m["id"] for m in above] == [large_id]
+
+    below = api_client.get(
+        "/api/accounting/money-movements", params={"amount_max": 50000}
+    ).json()
+    assert [m["id"] for m in below] == [small_id]
+
+    ranged = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 5000, "amount_max": 20000}
+    ).json()
+    assert [m["id"] for m in ranged] == [small_id]
+
+    exact = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 90000, "amount_max": 90000}
+    ).json()
+    assert [m["id"] for m in exact] == [large_id]
+
+    tax_ranged = api_client.get(
+        "/api/accounting/money-movements", params={"tax_min": 500, "tax_max": 5000}
+    ).json()
+    assert [m["id"] for m in tax_ranged] == [small_id]
+
+    invalid = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 90000, "amount_max": 10000}
+    )
+    assert invalid.status_code == 422
+
+
+def test_list_filter_by_initiator(db, api, acc_user, make_user):
+    """0072-b: `initiator_id` в GET money-movements отдаёт только проводки
+    этого инициатора, не трогая проводки других сотрудников."""
+    other_acc_user = make_user(Module.ACCOUNTING)
+    client = _client(db)
+
+    first_id = _create(api(acc_user), subkind="sale_income", client_id=client.id).json()["id"]
+    _create(api(other_acc_user), subkind="sale_income", client_id=client.id)
+
+    by_initiator = api(acc_user).get(
+        "/api/accounting/money-movements", params={"initiator_id": acc_user.id}
+    ).json()
+    assert [m["id"] for m in by_initiator] == [first_id]
+
+    by_other_initiator = api(acc_user).get(
+        "/api/accounting/money-movements", params={"initiator_id": other_acc_user.id}
+    ).json()
+    assert len(by_other_initiator) == 1
+    assert by_other_initiator[0]["id"] != first_id
+
+
 def test_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/money-movements")
     assert r.status_code == 403

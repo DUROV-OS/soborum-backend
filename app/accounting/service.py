@@ -262,11 +262,21 @@ def list_money_movements(
     client_id: int | None = None,
     employee_id: int | None = None,
     supply_id: int | None = None,
+    initiator_id: int | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    tax_min: float | None = None,
+    tax_max: float | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[MoneyMovement]:
+    if amount_min is not None and amount_max is not None and amount_min > amount_max:
+        raise _bad_request("Минимум суммы не может быть больше максимума")
+    if tax_min is not None and tax_max is not None and tax_min > tax_max:
+        raise _bad_request("Минимум суммы налога не может быть больше максимума")
+
     stmt = select(MoneyMovement)
     if direction is not None:
         stmt = stmt.where(MoneyMovement.direction == direction)
@@ -282,6 +292,16 @@ def list_money_movements(
         stmt = stmt.where(MoneyMovement.employee_id == employee_id)
     if supply_id is not None:
         stmt = stmt.where(MoneyMovement.supply_id == supply_id)
+    if initiator_id is not None:
+        stmt = stmt.where(MoneyMovement.initiator_id == initiator_id)
+    if amount_min is not None:
+        stmt = stmt.where(MoneyMovement.amount >= amount_min)
+    if amount_max is not None:
+        stmt = stmt.where(MoneyMovement.amount <= amount_max)
+    if tax_min is not None:
+        stmt = stmt.where(MoneyMovement.tax >= tax_min)
+    if tax_max is not None:
+        stmt = stmt.where(MoneyMovement.tax <= tax_max)
     # Период — по дате платёжного документа (импорт выпиской), иначе по дате
     # проведения, иначе по созданию.
     effective_date = func.coalesce(
