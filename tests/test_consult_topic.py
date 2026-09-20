@@ -37,7 +37,7 @@ def test_consult_ask_requires_login_not_ai_module(api, make_user, monkeypatch):
     user = make_user()  # worker without Module.AI
     monkeypatch.setattr("app.core.config.settings.anthropic_api_key", "sk-test")
 
-    def fake_turn(db, chat, owner, message, file_ids=None, context_note=None, **_kwargs):
+    def fake_turn(db, chat, owner, message, file_ids=None, **_kwargs):
         from app.ai.engine import TurnResult
 
         return TurnResult(status="completed", reply="Кратко: смотрю факт.")
@@ -79,25 +79,3 @@ def test_worker_without_ai_cannot_use_old_marina_ask(api, make_user):
     user = make_user()
     response = api(user).post("/api/ai/chat/ask", json={"message": "Привет"})
     assert response.status_code == 403
-
-
-def test_consult_ask_forwards_context_note(api, make_user, monkeypatch):
-    """0051-c: /consult/ask раньше не передавал context_note в run_turn вовсе —
-    Jarvis-оверлей не мог сообщить агенту, какая карточка открыта на экране."""
-    user = make_user(Module.AI, admin=True)
-    monkeypatch.setattr("app.core.config.settings.anthropic_api_key", "sk-test")
-    captured = {}
-
-    def fake_turn(db, chat, owner, message, file_ids=None, context_note=None, **_kwargs):
-        from app.ai.engine import TurnResult
-
-        captured["context_note"] = context_note
-        return TurnResult(status="completed", reply="ок")
-
-    monkeypatch.setattr("app.ai.engine.run_turn", fake_turn)
-    response = api(user).post(
-        "/api/ai/consult/ask",
-        json={"message": "Какая у него оплата?", "context_note": "[client_id=6, Иванов И.]"},
-    )
-    assert response.status_code == 200
-    assert captured["context_note"] == "[client_id=6, Иванов И.]"
