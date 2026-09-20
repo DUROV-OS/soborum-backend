@@ -9,6 +9,7 @@ from app.ai import attachments as ai_attachments
 from app.ai import engine
 from app.ai import growth_ideation as ai_growth_ideation
 from app.ai import mcp_auth
+from app.ai import mcp_write
 from app.ai import meeting_ask as ai_meeting_ask
 from app.ai import meeting_notes as ai_meeting_notes
 from app.ai import meetings as ai_meetings
@@ -39,6 +40,8 @@ from app.ai.schemas import (
     ConsultAskResponse,
     GrowthProposalOut,
     GrowthProposalPrepareTaskOut,
+    McpNoteCreate,
+    McpNoteOut,
     MeetingAskIn,
     MeetingAskOut,
     MeetingCreate,
@@ -57,7 +60,7 @@ from app.ai.schemas import (
 from app.common.files import FileAssetOut
 from app.common.module_access import AccessLevel, Module
 from app.core.config import settings
-from app.core.deps import get_current_user, require_edit, require_full, require_view
+from app.core.deps import get_current_user, require_admin, require_edit, require_full, require_view
 from app.db.session import get_db
 from app.tasks import service as task_service
 from app.tasks.models import TaskLinkType
@@ -707,3 +710,14 @@ def mcp_status(db: Session = Depends(get_db), _: User = Depends(require_ai_full)
         "expires_at": credential.expires_at,
         "has_refresh_token": credential.refresh_token is not None,
     }
+
+
+@app.post("/mcp/notes", response_model=McpNoteOut, status_code=status.HTTP_201_CREATED)
+def create_mcp_note(payload: McpNoteCreate, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Задача 0010: ручная проверка канала записи в базу знаний -
+    администратором, не через чат с Мариной. Тот же путь (mcp_write.
+    create_note), что и отправка документа совещания на finish."""
+    path = mcp_write.create_note(
+        db, source=payload.source, body=payload.body, title=payload.title, folder=payload.folder
+    )
+    return McpNoteOut(path=path)
