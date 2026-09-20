@@ -181,6 +181,47 @@ def test_list_filters(db, api, acc_user, make_user):
     assert len(salary) == 1 and salary[0]["subkind"] == "salary_payout"
 
 
+def test_list_filter_by_amount_and_tax(db, api, acc_user):
+    """0072-c: `amount_min`/`amount_max`/`tax_min`/`tax_max` в GET
+    money-movements — диапазон, "больше", "меньше", "равно"; невалидный
+    диапазон (min > max) — ошибка, не пустой список."""
+    client = _client(db)
+    api_client = api(acc_user)
+
+    small_id = _create(api_client, subkind="sale_income", client_id=client.id, amount=10000, tax=1000).json()["id"]
+    large_id = _create(api_client, subkind="sale_income", client_id=client.id, amount=90000, tax=9000).json()["id"]
+
+    above = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 50000}
+    ).json()
+    assert [m["id"] for m in above] == [large_id]
+
+    below = api_client.get(
+        "/api/accounting/money-movements", params={"amount_max": 50000}
+    ).json()
+    assert [m["id"] for m in below] == [small_id]
+
+    ranged = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 5000, "amount_max": 20000}
+    ).json()
+    assert [m["id"] for m in ranged] == [small_id]
+
+    exact = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 90000, "amount_max": 90000}
+    ).json()
+    assert [m["id"] for m in exact] == [large_id]
+
+    tax_ranged = api_client.get(
+        "/api/accounting/money-movements", params={"tax_min": 500, "tax_max": 5000}
+    ).json()
+    assert [m["id"] for m in tax_ranged] == [small_id]
+
+    invalid = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 90000, "amount_max": 10000}
+    )
+    assert invalid.status_code == 422
+
+
 def test_list_filter_by_initiator(db, api, acc_user, make_user):
     """0072-b: `initiator_id` в GET money-movements отдаёт только проводки
     этого инициатора, не трогая проводки других сотрудников."""
