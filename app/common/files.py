@@ -35,6 +35,12 @@ class FilePurpose(str, enum.Enum):
     HOUSE_MODEL_PLANNING = "house_model_planning"
     KR_PAGE_IMAGE = "kr_page_image"
     MONEY_MOVEMENT_DOCUMENT = "money_movement_document"
+    # Типовые АР/КР карточки каталожной модели (0073-b) — образец для модели
+    # целиком, не привязан ни к какому клиенту. Отдельно от
+    # ARCHITECTURAL_DECISIONS/CONSTRUCTIVE_DECISIONS (те — клиентские файлы,
+    # Module.CLIENTS), чтобы права доступа не смешивались.
+    TYPICAL_ARCHITECTURAL_DECISIONS = "typical_architectural_decisions"
+    TYPICAL_CONSTRUCTIVE_DECISIONS = "typical_constructive_decisions"
 
 
 PURPOSE_MODULE = {
@@ -51,6 +57,8 @@ PURPOSE_MODULE = {
     FilePurpose.HOUSE_MODEL_PLANNING: Module.HOUSE_MODELS,
     FilePurpose.KR_PAGE_IMAGE: Module.PRODUCTION,
     FilePurpose.MONEY_MOVEMENT_DOCUMENT: Module.ACCOUNTING,
+    FilePurpose.TYPICAL_ARCHITECTURAL_DECISIONS: Module.HOUSE_MODELS,
+    FilePurpose.TYPICAL_CONSTRUCTIVE_DECISIONS: Module.HOUSE_MODELS,
 }
 
 

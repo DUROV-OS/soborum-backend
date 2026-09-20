@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 
+from app.common.files import FileAssetOut
 from app.house_models.models import HouseModelConfirmation, HouseModelKind
 
 
@@ -56,6 +57,21 @@ class HouseModelDetailOut(BaseModel):
     files_md: str | None
     open_questions_md: str | None
     notes_md: str | None
+
+    # Типовые АР/КР (0073-b) — единственные поля карточки, редактируемые
+    # через API (PATCH /catalog/{key}/typical-documents, только админ).
+    typical_ar: FileAssetOut | None
+    typical_kr: FileAssetOut | None
+
+
+class HouseModelTypicalDocumentsPatch(BaseModel):
+    """Тело PATCH /catalog/{key}/typical-documents. Поле, не переданное в
+    запросе, остаётся как было; переданное (в т.ч. `null`) — обновляется,
+    очищая ссылку. `exclude_unset=True` на роутере отличает «не пришло» от
+    «пришёл null»."""
+
+    typical_ar_file_id: int | None = None
+    typical_kr_file_id: int | None = None
 
 
 class HouseModelProductionOut(BaseModel):

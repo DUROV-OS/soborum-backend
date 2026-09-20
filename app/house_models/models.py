@@ -24,8 +24,13 @@ class HouseModelConfirmation(str, enum.Enum):
 
 class HouseModelCard(Base):
     """Справочная карточка типового проекта дома (задача 0043-a) — витрина,
-    не CRUD-сущность: пишется только разовым импортом из базы знаний
-    (`app.house_models.import_kb`), никаких POST/PATCH/DELETE в API нет.
+    почти не CRUD-сущность: подавляющее большинство полей пишется только
+    разовым импортом из базы знаний (`app.house_models.import_kb`).
+
+    Единственное исключение (задача 0073-b) — `typical_ar_file_id`/
+    `typical_kr_file_id`: правятся через `PATCH /catalog/{key}/typical-documents`,
+    доступно только администратору. Все остальные поля по-прежнему
+    только-импорт, без POST/PATCH/DELETE.
 
     Только всегда-единообразные поля структурированы (площадь/цена/статус
     подтверждения); остальные секции карточки — markdown-текст по одному
@@ -57,7 +62,28 @@ class HouseModelCard(Base):
     planning_image_id: Mapped[int | None] = mapped_column(
         ForeignKey("file_assets.id"), nullable=True
     )
-    planning_image: Mapped["FileAsset | None"] = relationship()  # noqa: F821
+    planning_image: Mapped["FileAsset | None"] = relationship(
+        foreign_keys=[planning_image_id]
+    )  # noqa: F821
+
+    # Типовые АР/КР (задача 0073-b) — единственное исключение из read-only:
+    # образец для модели целиком, правится только через
+    # PATCH /catalog/{key}/typical-documents (require_admin), никогда через
+    # import_kb. Намеренно не участвует в генерации графа этапов
+    # (app.production.stage_template_service читает только Client.kr_file
+    # конкретного клиента).
+    typical_ar_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("file_assets.id"), nullable=True
+    )
+    typical_ar: Mapped["FileAsset | None"] = relationship(
+        foreign_keys=[typical_ar_file_id]
+    )  # noqa: F821
+    typical_kr_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("file_assets.id"), nullable=True
+    )
+    typical_kr: Mapped["FileAsset | None"] = relationship(
+        foreign_keys=[typical_kr_file_id]
+    )  # noqa: F821
 
     characteristics_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     planning_md: Mapped[str | None] = mapped_column(Text, nullable=True)
