@@ -1,7 +1,20 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Table, Text, func
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -11,6 +24,21 @@ class MaterialRequestStatus(str, enum.Enum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+
+
+class MappingConfidence(str, enum.Enum):
+    """Насколько уверенно сопоставлен материал шаблона с карточкой склада
+    (0073-a). `low`/полное отсутствие соответствия сюда никогда не попадает —
+    такие случаи не кэшируются (см. app.production.material_matching), чтобы
+    система продолжала переспрашивать ИИ по мере роста каталога склада."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+
+
+class MatchedBy(str, enum.Enum):
+    AI = "ai"
+    HUMAN = "human"
 
 
 class Production(Base):
@@ -133,3 +161,31 @@ class KrExtraction(Base):
     extracted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     client: Mapped["Client"] = relationship()  # noqa: F821
+
+
+class TemplateMaterialMapping(Base):
+    """Переиспользуемый справочник «название+ед. материала шаблона -> карточка
+    склада» (0073-a). Заполняется при первой ИИ-генерации графа этапов
+    ([[0066-d]]) и при ручной правке материала на проверке шаблона
+    ([[0066-e]]); при повторной генерации (другой шаблон, тот же материал по
+    смыслу) точное совпадение по (normalized_name, unit) переиспользуется без
+    обращения к ИИ. Человеческое сопоставление (`matched_by=HUMAN`) всегда
+    перезаписывает более раннее ИИ-сопоставление той же пары и с этого
+    момента побеждает — ИИ больше не переспрашивается по этой паре."""
+
+    __tablename__ = "template_material_mappings"
+    __table_args__ = (
+        UniqueConstraint("normalized_name", "unit", name="uq_template_material_mappings_name_unit"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    normalized_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    warehouse_material_id: Mapped[int] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=False)
+    confidence: Mapped[MappingConfidence] = mapped_column(
+        Enum(MappingConfidence, name="mapping_confidence"), nullable=False
+    )
+    matched_by: Mapped[MatchedBy] = mapped_column(Enum(MatchedBy, name="mapping_matched_by"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    warehouse_material: Mapped["WarehouseMaterial"] = relationship()  # noqa: F821
