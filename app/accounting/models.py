@@ -19,10 +19,19 @@
 import enum
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Numeric, String, Text, func
+from sqlalchemy import JSON, Boolean, Column, Date, DateTime, Enum, ForeignKey, Numeric, String, Table, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+# Документы, прикреплённые к проводке (0072-d) — тот же приём, что и
+# task_images (app/tasks/models.py): M2M со общим хранилищем FileAsset.
+money_movement_documents = Table(
+    "money_movement_documents",
+    Base.metadata,
+    Column("money_movement_id", ForeignKey("money_movements.id", ondelete="CASCADE"), primary_key=True),
+    Column("file_id", ForeignKey("file_assets.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
 class MoneyDirection(str, enum.Enum):
@@ -193,6 +202,8 @@ class MoneyMovement(Base):
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Задел под банк-интеграцию (← incomingNumber МойСклад).
     external_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Произвольная ссылка на проводку (0072-d) — одна, не список.
+    link: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Полиморфная привязка: заполнено не более одного из client/employee/supply,
     # source_kind согласован с тем, что заполнено (валидируется в service).
@@ -216,4 +227,5 @@ class MoneyMovement(Base):
     initiator: Mapped["User"] = relationship(foreign_keys=[initiator_id])  # noqa: F821
     client: Mapped["Client"] = relationship(foreign_keys=[client_id])  # noqa: F821
     employee: Mapped["User"] = relationship(foreign_keys=[employee_id])  # noqa: F821
+    documents: Mapped[list["FileAsset"]] = relationship(secondary=money_movement_documents)  # noqa: F821
     supply: Mapped["SupplierOrder"] = relationship(foreign_keys=[supply_id])
