@@ -64,6 +64,14 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _aware(dt: datetime | None) -> datetime | None:
+    """Postgres round-трипит aware datetime как есть, SQLite (тесты) обрезает
+    tzinfo — тот же приём и та же причина, что `app.tasks.timelog._aware`."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def _direction_for(subkind: MoneySubkind) -> MoneyDirection:
     return MoneyDirection.INCOME if subkind in INCOME_SUBKINDS else MoneyDirection.EXPENSE
 
@@ -417,7 +425,7 @@ def _compute_kpi_for_period(
     for t in tasks:
         duration = durations.get(t.id)
         if t.status is TaskStatus.DONE and duration and duration.completed_at:
-            if duration.completed_at <= t.deadline:
+            if _aware(duration.completed_at) <= _aware(t.deadline):
                 on_time += 1
             else:
                 late += 1
