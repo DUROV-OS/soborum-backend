@@ -368,7 +368,8 @@ def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
 
 def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
     """0023: сотрудники (все активные пользователи — worker и admin) с их
-    текущей незакрытой (draft/approved) зарплатной проводкой, если есть."""
+    текущей незакрытой (draft/approved) зарплатной проводкой, если есть, и
+    датой/суммой последней проведённой проводки (0041)."""
     employees = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name).all()
     open_by_employee: dict[int, MoneyMovement] = {
         mm.employee_id: mm
@@ -379,12 +380,33 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
         )
         .all()
     }
+    # Проведённые проводки, от новых к старым — первая на сотрудника и есть
+    # его последнее начисление (без DISTINCT ON — переносимо на SQLite тестов).
+    last_posted_by_employee: dict[int, MoneyMovement] = {}
+    posted_movements = (
+        db.query(MoneyMovement)
+        .filter(
+            MoneyMovement.subkind == MoneySubkind.SALARY_PAYOUT,
+            MoneyMovement.status == MoneyMovementStatus.POSTED,
+        )
+        .order_by(MoneyMovement.posted_at.desc())
+        .all()
+    )
+    for mm in posted_movements:
+        last_posted_by_employee.setdefault(mm.employee_id, mm)
+
     return [
         EmployeeSalaryOverview(
             employee_id=employee.id,
             full_name=employee.full_name,
             open_movement=MoneyMovementOut.from_movement(open_by_employee[employee.id])
             if employee.id in open_by_employee
+            else None,
+            last_posted_at=last_posted_by_employee[employee.id].posted_at
+            if employee.id in last_posted_by_employee
+            else None,
+            last_posted_amount=last_posted_by_employee[employee.id].amount
+            if employee.id in last_posted_by_employee
             else None,
         )
         for employee in employees

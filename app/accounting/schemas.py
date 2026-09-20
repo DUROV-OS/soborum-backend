@@ -183,11 +183,17 @@ class EmployeeSalaryOverview(BaseModel):
     """Строка раздела «Сотрудники» (0023): сотрудник + его текущая незакрытая
     (draft/approved) зарплатная проводка, если есть. Отдельный эндпоинт, а не
     `GET /api/auth/users`, потому что тот доступен только админу — здесь
-    доступ по `Module.ACCOUNTING`, как у остальной бухгалтерии."""
+    доступ по `Module.ACCOUNTING`, как у остальной бухгалтерии.
+
+    `last_posted_at`/`last_posted_amount` — карточка сотрудника (0041)."""
 
     employee_id: int
     full_name: str
     open_movement: MoneyMovementOut | None
+    # Последняя ПРОВЕДЁННАЯ (posted) зарплатная проводка этого сотрудника —
+    # не текущая открытая, а история; None, если проведённых ещё не было.
+    last_posted_at: datetime | None = None
+    last_posted_amount: float | None = None
 
 
 # --- Импорт платежей таблицей (задача 0011-k) ---
