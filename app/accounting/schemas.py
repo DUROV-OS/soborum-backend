@@ -194,10 +194,26 @@ class EmployeeSalaryOverview(BaseModel):
     # не текущая открытая, а история; None, если проведённых ещё не было.
     last_posted_at: datetime | None = None
     last_posted_amount: float | None = None
-    # ВРЕМЕННАЯ ЗАГЛУШКА (0041, согласовано с Арсением 12.09.2026): случайное
-    # число 0–100, генерируется заново при каждом запросе, ничего не считает —
-    # реальный расчёт делает 0042. Не хранится в БД.
-    kpi: int
+    # KPI за текущий календарный месяц (0042: по задачам с прошедшим
+    # дедлайном — доля выполненных в срок). None — за месяц нет ни одной
+    # оценённой задачи, это не то же самое, что 0.
+    kpi: int | None = None
+
+
+class EmployeeKpiPeriod(BaseModel):
+    """Один сохранённый период KPI сотрудника — `GET
+    /employee-kpi-history/{employee_id}` (0042). Текущий месяц пересчитан на
+    момент запроса; прошлые — замороженный снимок."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    period_start: date
+    period_end: date
+    tasks_total: int
+    tasks_on_time: int
+    tasks_late: int
+    tasks_overdue: int
+    kpi: int | None
 
 
 # --- Импорт платежей таблицей (задача 0011-k) ---

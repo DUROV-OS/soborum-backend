@@ -15,6 +15,7 @@ from app.accounting.models import (
 from app.accounting.schemas import (
     AiFillSubkindRequest,
     AiFillSubkindResult,
+    EmployeeKpiPeriod,
     EmployeeSalaryOverview,
     ImportBackfillRequest,
     ImportBackfillResult,
@@ -140,6 +141,15 @@ def salary_overview(db: Session = Depends(get_db), _: User = Depends(require_acc
     незакрытая зарплатная проводка (если есть), для кнопок «Начислить» /
     «Утвердить» / «Выплатить»."""
     return accounting_service.list_employee_salary_overview(db)
+
+
+@app.get("/employee-kpi-history/{employee_id}", response_model=list[EmployeeKpiPeriod])
+def employee_kpi_history(
+    employee_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting_view)
+):
+    """0042: до 6 последних периодов KPI сотрудника (текущий месяц —
+    пересчитан на момент запроса), новые сверху — для карточки в 0041."""
+    return accounting_service.get_employee_kpi_history(db, employee_id)
 
 
 @app.get("/money-movements", response_model=list[MoneyMovementOut])

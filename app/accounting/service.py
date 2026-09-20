@@ -6,7 +6,6 @@
 запись неизменяема; шаги `draft`/`approved` — процессный слой поверх `state`.
 """
 
-import random
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -451,6 +450,10 @@ def _compute_kpi_for_period(
 def get_employee_kpi_history(db: Session, employee_id: int, limit: int = 6) -> list[EmployeeKpi]:
     """0042: текущий месяц пересчитывается, затем читаем до `limit` последних
     сохранённых периодов (включая только что пересчитанный), новые сверху."""
+    employee = db.query(User).filter(User.id == employee_id, User.is_active.is_(True)).one_or_none()
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
+
     period_start, period_end = _month_range(_utcnow().date())
     _compute_kpi_for_period(db, employee_id, period_start, period_end)
     db.commit()
@@ -493,7 +496,8 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
     for mm in posted_movements:
         last_posted_by_employee.setdefault(mm.employee_id, mm)
 
-    return [
+    period_start, period_end = _month_range(_utcnow().date())
+    rows = [
         EmployeeSalaryOverview(
             employee_id=employee.id,
             full_name=employee.full_name,
@@ -506,10 +510,12 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
             last_posted_amount=last_posted_by_employee[employee.id].amount
             if employee.id in last_posted_by_employee
             else None,
-            kpi=random.randint(0, 100),
+            kpi=_compute_kpi_for_period(db, employee.id, period_start, period_end).kpi,
         )
         for employee in employees
     ]
+    db.commit()
+    return rows
 
 
 def _adjust_supplier_paid(db: Session, mm: MoneyMovement, delta: float) -> None:
