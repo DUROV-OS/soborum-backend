@@ -6,6 +6,7 @@
 запись неизменяема; шаги `draft`/`approved` — процессный слой поверх `state`.
 """
 
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -368,8 +369,8 @@ def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
 
 def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
     """0023: сотрудники (все активные пользователи — worker и admin) с их
-    текущей незакрытой (draft/approved) зарплатной проводкой, если есть, и
-    датой/суммой последней проведённой проводки (0041)."""
+    текущей незакрытой (draft/approved) зарплатной проводкой, если есть,
+    датой/суммой последней проведённой проводки и KPI-заглушкой (0041)."""
     employees = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name).all()
     open_by_employee: dict[int, MoneyMovement] = {
         mm.employee_id: mm
@@ -408,6 +409,7 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
             last_posted_amount=last_posted_by_employee[employee.id].amount
             if employee.id in last_posted_by_employee
             else None,
+            kpi=random.randint(0, 100),
         )
         for employee in employees
     ]

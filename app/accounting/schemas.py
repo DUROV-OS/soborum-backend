@@ -185,7 +185,7 @@ class EmployeeSalaryOverview(BaseModel):
     `GET /api/auth/users`, потому что тот доступен только админу — здесь
     доступ по `Module.ACCOUNTING`, как у остальной бухгалтерии.
 
-    `last_posted_at`/`last_posted_amount` — карточка сотрудника (0041)."""
+    `last_posted_at`/`last_posted_amount` и `kpi` — карточка сотрудника (0041)."""
 
     employee_id: int
     full_name: str
@@ -194,6 +194,10 @@ class EmployeeSalaryOverview(BaseModel):
     # не текущая открытая, а история; None, если проведённых ещё не было.
     last_posted_at: datetime | None = None
     last_posted_amount: float | None = None
+    # ВРЕМЕННАЯ ЗАГЛУШКА (0041, согласовано с Арсением 12.09.2026): случайное
+    # число 0–100, генерируется заново при каждом запросе, ничего не считает —
+    # реальный расчёт делает 0042. Не хранится в БД.
+    kpi: int
 
 
 # --- Импорт платежей таблицей (задача 0011-k) ---
