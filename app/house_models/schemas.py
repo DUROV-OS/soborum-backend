@@ -56,3 +56,15 @@ class HouseModelDetailOut(BaseModel):
     files_md: str | None
     open_questions_md: str | None
     notes_md: str | None
+
+
+class HouseModelProductionOut(BaseModel):
+    """Строка `GET /catalog/{key}/productions` — реальные дома этой модели.
+    Как и на «Главной» одного производства (`app.production.home`), цена и
+    контакты клиента не отдаются: только то, что уже видно в разделе
+    «Производство» (номер заказа, имя проекта дома)."""
+
+    production_id: int
+    cycle_id: int
+    house_index: int
+    client_display_name: str
