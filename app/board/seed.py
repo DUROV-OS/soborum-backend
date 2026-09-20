@@ -10,6 +10,7 @@ from here.
 from sqlalchemy.orm import Session
 
 from app.board.models import BoardNode, BoardNodeColor
+from app.users.models import User
 
 ROOT_TITLE = "durov.house"
 ROOT_DESCRIPTION = (
@@ -246,17 +247,11 @@ DIRECTIONS: list[tuple[str, str, BoardNodeColor, list[tuple[str, str, BoardNodeC
 ]
 
 
-def ensure_seed(db: Session) -> BoardNode | None:
-    """Creates the initial tree if the board is empty. Returns the root node
-    if it just created one, None if the board already had a root (i.e. this
-    already ran before, or the tree was populated some other way)."""
-    if db.query(BoardNode).filter(BoardNode.parent_id.is_(None)).first() is not None:
-        return None
-
-    root = BoardNode(parent_id=None, level=0, sort_order=0, title=ROOT_TITLE, description=ROOT_DESCRIPTION, color=BoardNodeColor.GREEN)
-    db.add(root)
-    db.flush()
-
+def _populate_directions(db: Session, root: BoardNode) -> None:
+    """Creates the level-1/level-2 subtree from `DIRECTIONS` under `root`.
+    Assumes `root` has no children yet (ensure_seed only calls this for a
+    freshly-created root; restore_previous_structure deletes the old
+    children first)."""
     for i, (title, description, color, subdirections) in enumerate(DIRECTIONS):
         direction = BoardNode(
             parent_id=root.id, level=1, sort_order=i, title=title, description=description, color=color,
@@ -271,6 +266,59 @@ def ensure_seed(db: Session) -> BoardNode | None:
                     title=sub_title, description=sub_description, color=sub_color,
                 )
             )
+    db.flush()
+
+
+def ensure_seed(db: Session) -> BoardNode | None:
+    """Creates the initial tree if the board is empty. Returns the root node
+    if it just created one, None if the board already had a root (i.e. this
+    already ran before, or the tree was populated some other way)."""
+    if db.query(BoardNode).filter(BoardNode.parent_id.is_(None)).first() is not None:
+        return None
+
+    root = BoardNode(parent_id=None, level=0, sort_order=0, title=ROOT_TITLE, description=ROOT_DESCRIPTION, color=BoardNodeColor.GREEN)
+    db.add(root)
+    db.flush()
+
+    _populate_directions(db, root)
+
+    db.commit()
+    db.refresh(root)
+    return root
+
+
+def restore_previous_structure(db: Session, actor: User | None = None) -> BoardNode:
+    """One-off operation for an ALREADY-populated board (task 0028): unlike
+    ensure_seed(), which no-ops once a root exists, this always replaces
+    whatever level-1/level-2 tree is currently there - including any
+    council/actualize/manual edits layered on top of it - with the current
+    `DIRECTIONS` above. The root node itself (`durov.house`) is left alone;
+    only its descendants are torn down and rebuilt.
+
+    Deliberately does not try to preserve the old board_proposals/
+    board_node_changes rows tied to the deleted nodes (they stay in the audit
+    table, just orphaned - board_node_changes.node_id is intentionally not
+    FK-constrained for this reason, see BoardNodeChange's docstring).
+
+    Safe to call more than once (e.g. re-run against the same DB): it will
+    just replace the tree again. `actor` is accepted here (and not yet used)
+    so the caller doesn't have to change once the audit-log entry for this
+    operation is wired in on top.
+    """
+    root = db.query(BoardNode).filter(BoardNode.parent_id.is_(None)).order_by(BoardNode.id).first()
+    if root is None:
+        root = BoardNode(
+            parent_id=None, level=0, sort_order=0, title=ROOT_TITLE, description=ROOT_DESCRIPTION,
+            color=BoardNodeColor.GREEN,
+        )
+        db.add(root)
+        db.flush()
+
+    for child in list(root.children):
+        db.delete(child)
+    db.flush()
+
+    _populate_directions(db, root)
 
     db.commit()
     db.refresh(root)
