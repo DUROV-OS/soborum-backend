@@ -258,6 +258,7 @@ def list_money_movements(
     client_id: int | None = None,
     employee_id: int | None = None,
     supply_id: int | None = None,
+    initiator_id: int | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     tax_min: float | None = None,
@@ -287,6 +288,8 @@ def list_money_movements(
         stmt = stmt.where(MoneyMovement.employee_id == employee_id)
     if supply_id is not None:
         stmt = stmt.where(MoneyMovement.supply_id == supply_id)
+    if initiator_id is not None:
+        stmt = stmt.where(MoneyMovement.initiator_id == initiator_id)
     if amount_min is not None:
         stmt = stmt.where(MoneyMovement.amount >= amount_min)
     if amount_max is not None:

@@ -222,6 +222,27 @@ def test_list_filter_by_amount_and_tax(db, api, acc_user):
     assert invalid.status_code == 422
 
 
+def test_list_filter_by_initiator(db, api, acc_user, make_user):
+    """0072-b: `initiator_id` в GET money-movements отдаёт только проводки
+    этого инициатора, не трогая проводки других сотрудников."""
+    other_acc_user = make_user(Module.ACCOUNTING)
+    client = _client(db)
+
+    first_id = _create(api(acc_user), subkind="sale_income", client_id=client.id).json()["id"]
+    _create(api(other_acc_user), subkind="sale_income", client_id=client.id)
+
+    by_initiator = api(acc_user).get(
+        "/api/accounting/money-movements", params={"initiator_id": acc_user.id}
+    ).json()
+    assert [m["id"] for m in by_initiator] == [first_id]
+
+    by_other_initiator = api(acc_user).get(
+        "/api/accounting/money-movements", params={"initiator_id": other_acc_user.id}
+    ).json()
+    assert len(by_other_initiator) == 1
+    assert by_other_initiator[0]["id"] != first_id
+
+
 def test_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/money-movements")
     assert r.status_code == 403
