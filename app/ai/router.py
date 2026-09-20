@@ -628,6 +628,9 @@ def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = 
     # Финальный пересчёт заметок по всему транскрипту — молча, finish не должен
     # падать из-за ИИ (нет ключа / провайдер недоступен).
     ai_meeting_notes.refresh_notes_quietly(db, finished)
+    # Задача 0010: отправить итоговый документ в базу знаний, если канал
+    # записи включён — тоже молча, финиш не должен падать из-за этого.
+    ai_meeting_notes.send_to_knowledge_base_quietly(db, finished)
     return _meeting_out(finished)
 
 
