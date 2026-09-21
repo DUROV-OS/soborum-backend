@@ -117,6 +117,20 @@ class Settings(BaseSettings):
     mcp_oauth_client_secret: str = ""
     mcp_redirect_uri: str = "https://claude.ai/api/mcp/auth_callback"
 
+    # Write channel (task 0010) - off by default even when the connector above
+    # is fully configured. app/ai/mcp_write.py refuses to call create_note/
+    # edit_note/append_note unless this is explicitly true. mcp_write_scope is
+    # kept empty by default: nothing observed suggests this provider splits
+    # read/write into separate OAuth scopes (mcp_auth's authorize request
+    # sends no `scope` at all), so the write channel reuses the same
+    # client_id/client_secret/headless grant as the read connector unless a
+    # provider update someday requires otherwise. mcp_notes_folder is a
+    # best-effort default (see "Разведка" in 0010's backlog file) - not
+    # verified against a live vault listing.
+    mcp_write_enabled: bool = False
+    mcp_write_scope: str = ""
+    mcp_notes_folder: str = "02_Business/03_Meetings"
+
     # Same OAuth shape as the knowledge-base MCP. Shift calls read tools only.
     moysklad_mcp_url: str = ""
     moysklad_mcp_client_id: str = ""
