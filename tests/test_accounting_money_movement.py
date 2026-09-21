@@ -385,9 +385,9 @@ def test_salary_overview_requires_module_access(db, api, other_user):
     assert r.status_code == 403
 
 
-def test_salary_overview_reports_last_posted_movement_and_kpi_stub(db, api, acc_user, make_user):
+def test_salary_overview_reports_last_posted_movement(db, api, acc_user, make_user):
     """0041: `last_posted_at`/`last_posted_amount` — последняя ПРОВЕДЁННАЯ
-    проводка (не текущая открытая); `kpi` — временная заглушка 0–100."""
+    проводка (не текущая открытая), не путается с `open_movement`."""
     employee = make_user()
     never_paid = make_user()
     api_client = api(acc_user)
@@ -411,9 +411,20 @@ def test_salary_overview_reports_last_posted_movement_and_kpi_stub(db, api, acc_
     assert row["open_movement"]["id"] == second["id"]
     assert row["last_posted_amount"] == 40000
     assert row["last_posted_at"] == posted_first["posted_at"]
-    assert 0 <= row["kpi"] <= 100
 
     never_row = overview[never_paid.id]
     assert never_row["last_posted_at"] is None
     assert never_row["last_posted_amount"] is None
-    assert 0 <= never_row["kpi"] <= 100
+
+
+def test_salary_overview_kpi_is_null_without_evaluable_tasks(db, api, acc_user, make_user):
+    """0042: без задач с прошедшим дедлайном в текущем месяце `kpi` — `null`,
+    не `0` (отсутствие данных не равно провалу по KPI)."""
+    employee = make_user()
+    api_client = api(acc_user)
+
+    overview = {
+        row["employee_id"]: row
+        for row in api_client.get("/api/accounting/salary-overview").json()
+    }
+    assert overview[employee.id]["kpi"] is None

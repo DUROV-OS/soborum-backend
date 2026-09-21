@@ -6,10 +6,9 @@
 запись неизменяема; шаги `draft`/`approved` — процессный слой поверх `state`.
 """
 
-import random
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -21,6 +20,7 @@ from app.accounting.models import (
     INCOME_SUBKINDS,
     MONEY_SUBKIND_LABELS,
     SUBKIND_REQUIRED_SOURCE,
+    EmployeeKpi,
     MoneyAssessment,
     MoneyDirection,
     MoneyMovement,
@@ -43,7 +43,7 @@ from app.common.files import FileAsset
 from app.common.module_access import Module as AccessModule
 from app.core.config import settings
 from app.tasks import service as task_service
-from app.tasks.models import TaskLinkType
+from app.tasks.models import Task, TaskLinkType, TaskStatus, TaskWorkDuration, task_assignees
 from app.users import service as user_service
 from app.users.models import User
 from app.warehouse import service as warehouse_service
@@ -62,6 +62,14 @@ _EDITABLE_STATUSES = {MoneyMovementStatus.DRAFT, MoneyMovementStatus.APPROVED}
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    """Postgres round-трипит aware datetime как есть, SQLite (тесты) обрезает
+    tzinfo — тот же приём и та же причина, что `app.tasks.timelog._aware`."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _direction_for(subkind: MoneySubkind) -> MoneyDirection:
@@ -367,10 +375,110 @@ def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
     db.commit()
 
 
+def _month_range(day: date) -> tuple[date, date]:
+    """Календарный месяц, содержащий `day`: [начало, конец) — конец исключён."""
+    start = date(day.year, day.month, 1)
+    end = date(day.year + 1, 1, 1) if day.month == 12 else date(day.year, day.month + 1, 1)
+    return start, end
+
+
+def _compute_kpi_for_period(
+    db: Session, employee_id: int, period_start: date, period_end: date
+) -> EmployeeKpi:
+    """0042: KPI сотрудника за календарный месяц по задачам (`app.tasks`) —
+    единственный источник, синхронизированный со всеми разделами и одинаково
+    применимый к любой роли (см. спеку 0042 → «Решение по открытым вопросам»).
+
+    Оцениваются задачи, где сотрудник — среди `assignees`, с `deadline` в
+    периоде и уже прошедшим (иначе не с чем сравнивать «в срок»): выполненная
+    до дедлайна — вес 1, с опозданием — 0.5, не выполненная — 0.
+    `kpi = round(100 * Σweight / N)`, `None` — если оценённых задач нет
+    (отсутствие данных не равно провалу по KPI).
+
+    Текущий (незакрытый) период перезаписывается при каждом вызове; вызывать
+    для прошлых периодов не нужно — они не пересчитываются (история)."""
+    now = _utcnow()
+    period_start_dt = datetime(period_start.year, period_start.month, period_start.day, tzinfo=timezone.utc)
+    period_end_dt = datetime(period_end.year, period_end.month, period_end.day, tzinfo=timezone.utc)
+
+    tasks = (
+        db.query(Task)
+        .join(task_assignees, task_assignees.c.task_id == Task.id)
+        .filter(
+            task_assignees.c.user_id == employee_id,
+            Task.deadline >= period_start_dt,
+            Task.deadline < period_end_dt,
+            Task.deadline < now,
+        )
+        .all()
+    )
+
+    durations: dict[int, TaskWorkDuration] = {}
+    task_ids = [t.id for t in tasks]
+    if task_ids:
+        durations = {
+            d.task_id: d
+            for d in db.query(TaskWorkDuration).filter(TaskWorkDuration.task_id.in_(task_ids)).all()
+        }
+
+    on_time = late = overdue = 0
+    for t in tasks:
+        duration = durations.get(t.id)
+        if t.status is TaskStatus.DONE and duration and duration.completed_at:
+            if _aware(duration.completed_at) <= _aware(t.deadline):
+                on_time += 1
+            else:
+                late += 1
+        elif t.status is TaskStatus.DONE:
+            on_time += 1
+        else:
+            overdue += 1
+
+    total = on_time + late + overdue
+    kpi = round(100 * (on_time + 0.5 * late) / total) if total else None
+
+    row = (
+        db.query(EmployeeKpi)
+        .filter(EmployeeKpi.employee_id == employee_id, EmployeeKpi.period_start == period_start)
+        .one_or_none()
+    )
+    if row is None:
+        row = EmployeeKpi(employee_id=employee_id, period_start=period_start)
+        db.add(row)
+    row.period_end = period_end
+    row.tasks_total = total
+    row.tasks_on_time = on_time
+    row.tasks_late = late
+    row.tasks_overdue = overdue
+    row.kpi = kpi
+    db.flush()
+    return row
+
+
+def get_employee_kpi_history(db: Session, employee_id: int, limit: int = 6) -> list[EmployeeKpi]:
+    """0042: текущий месяц пересчитывается, затем читаем до `limit` последних
+    сохранённых периодов (включая только что пересчитанный), новые сверху."""
+    employee = db.query(User).filter(User.id == employee_id, User.is_active.is_(True)).one_or_none()
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
+
+    period_start, period_end = _month_range(_utcnow().date())
+    _compute_kpi_for_period(db, employee_id, period_start, period_end)
+    db.commit()
+    return (
+        db.query(EmployeeKpi)
+        .filter(EmployeeKpi.employee_id == employee_id)
+        .order_by(EmployeeKpi.period_start.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
     """0023: сотрудники (все активные пользователи — worker и admin) с их
     текущей незакрытой (draft/approved) зарплатной проводкой, если есть,
-    датой/суммой последней проведённой проводки и KPI-заглушкой (0041)."""
+    датой/суммой последней проведённой проводки и настоящим KPI за текущий
+    месяц (0042 — заменяет случайную заглушку 0041)."""
     employees = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name).all()
     open_by_employee: dict[int, MoneyMovement] = {
         mm.employee_id: mm
@@ -396,7 +504,8 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
     for mm in posted_movements:
         last_posted_by_employee.setdefault(mm.employee_id, mm)
 
-    return [
+    period_start, period_end = _month_range(_utcnow().date())
+    rows = [
         EmployeeSalaryOverview(
             employee_id=employee.id,
             full_name=employee.full_name,
@@ -409,10 +518,12 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
             last_posted_amount=last_posted_by_employee[employee.id].amount
             if employee.id in last_posted_by_employee
             else None,
-            kpi=random.randint(0, 100),
+            kpi=_compute_kpi_for_period(db, employee.id, period_start, period_end).kpi,
         )
         for employee in employees
     ]
+    db.commit()
+    return rows
 
 
 def _adjust_supplier_paid(db: Session, mm: MoneyMovement, delta: float) -> None:

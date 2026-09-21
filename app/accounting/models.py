@@ -19,7 +19,21 @@
 import enum
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, Column, Date, DateTime, Enum, ForeignKey, Numeric, String, Table, Text, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -229,3 +243,43 @@ class MoneyMovement(Base):
     employee: Mapped["User"] = relationship(foreign_keys=[employee_id])  # noqa: F821
     documents: Mapped[list["FileAsset"]] = relationship(secondary=money_movement_documents)  # noqa: F821
     supply: Mapped["SupplierOrder"] = relationship(foreign_keys=[supply_id])
+
+
+class EmployeeKpi(Base):
+    """Снимок KPI сотрудника за календарный месяц (задача 0042, заменяет
+    случайную заглушку из 0041).
+
+    Формула (см. `backlog/DONE/0042-employee-kpi-calculation.md` → «Решение по
+    открытым вопросам»): доля задач (`app.tasks.Task`), где сотрудник — среди
+    `assignees`, с `deadline` в этом месяце и уже прошедшим, выполненных в
+    срок (вес 1) или с опозданием (вес 0.5); просроченные незакрытые — 0.
+    Единственный источник — `tasks`, единственный раздел, синхронизированный
+    со всеми остальными и одинаково применимый к любой роли.
+
+    Текущий (незакрытый) месяц пересчитывается и перезаписывается при каждом
+    обращении к `salary-overview`; прошлые периоды — замороженный снимок, не
+    пересчитываются («история не переписывается», `docs/PROJECT.md`)."""
+
+    __tablename__ = "employee_kpis"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "period_start", name="uq_employee_kpi_period"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+
+    tasks_total: Mapped[int] = mapped_column(nullable=False, default=0)
+    tasks_on_time: Mapped[int] = mapped_column(nullable=False, default=0)
+    tasks_late: Mapped[int] = mapped_column(nullable=False, default=0)
+    tasks_overdue: Mapped[int] = mapped_column(nullable=False, default=0)
+    # null — за период не нашлось ни одной оценённой задачи (не 0: отсутствие
+    # данных не равно провалу по KPI).
+    kpi: Mapped[int | None] = mapped_column(nullable=True)
+
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    employee: Mapped["User"] = relationship(foreign_keys=[employee_id])  # noqa: F821
