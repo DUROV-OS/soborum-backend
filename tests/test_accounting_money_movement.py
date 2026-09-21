@@ -383,3 +383,37 @@ def test_salary_overview_lists_active_employees_with_open_movement(db, api, acc_
 def test_salary_overview_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/salary-overview")
     assert r.status_code == 403
+
+
+def test_salary_overview_reports_last_posted_movement_and_kpi_stub(db, api, acc_user, make_user):
+    """0041: `last_posted_at`/`last_posted_amount` — последняя ПРОВЕДЁННАЯ
+    проводка (не текущая открытая); `kpi` — временная заглушка 0–100."""
+    employee = make_user()
+    never_paid = make_user()
+    api_client = api(acc_user)
+
+    first = _create(api_client, subkind="salary_payout", employee_id=employee.id, amount=40000).json()
+    api_client.post(f"/api/accounting/money-movements/{first['id']}/status", json={"to": "approved"})
+    posted_first = api_client.post(
+        f"/api/accounting/money-movements/{first['id']}/status", json={"to": "posted"}
+    ).json()
+
+    # Новая открытая проводка сверху последней проведённой — last_posted не путается
+    # с open_movement (0041, п. 1: обе даты в карточке — разные вещи).
+    second = _create(api_client, subkind="salary_payout", employee_id=employee.id, amount=55000).json()
+
+    overview = {
+        row["employee_id"]: row
+        for row in api_client.get("/api/accounting/salary-overview").json()
+    }
+
+    row = overview[employee.id]
+    assert row["open_movement"]["id"] == second["id"]
+    assert row["last_posted_amount"] == 40000
+    assert row["last_posted_at"] == posted_first["posted_at"]
+    assert 0 <= row["kpi"] <= 100
+
+    never_row = overview[never_paid.id]
+    assert never_row["last_posted_at"] is None
+    assert never_row["last_posted_amount"] is None
+    assert 0 <= never_row["kpi"] <= 100
