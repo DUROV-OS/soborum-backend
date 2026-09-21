@@ -35,6 +35,12 @@ class FilePurpose(str, enum.Enum):
     HOUSE_MODEL_PLANNING = "house_model_planning"
     KR_PAGE_IMAGE = "kr_page_image"
     MONEY_MOVEMENT_DOCUMENT = "money_movement_document"
+    # Скриншоты и лог сессии, приложенные к заявке «Пожелания/предложения»
+    # (0075). Намеренно НЕ в PURPOSE_MODULE: у раздела нет своего `Module`,
+    # и общий GET /api/files/{id} эти файлы отдавать не должен — скачивание
+    # идёт через /api/feedback/requests/{id}/files/{file_id} с проверкой
+    # «автор заявки или администратор».
+    FEEDBACK_ATTACHMENT = "feedback_attachment"
 
 
 PURPOSE_MODULE = {
