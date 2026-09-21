@@ -41,6 +41,12 @@ class FilePurpose(str, enum.Enum):
     # Module.CLIENTS), чтобы права доступа не смешивались.
     TYPICAL_ARCHITECTURAL_DECISIONS = "typical_architectural_decisions"
     TYPICAL_CONSTRUCTIVE_DECISIONS = "typical_constructive_decisions"
+    # Скриншоты и лог сессии, приложенные к заявке «Пожелания/предложения»
+    # (0075). Намеренно НЕ в PURPOSE_MODULE: у раздела нет своего `Module`,
+    # и общий GET /api/files/{id} эти файлы отдавать не должен — скачивание
+    # идёт через /api/feedback/requests/{id}/files/{file_id} с проверкой
+    # «автор заявки или администратор».
+    FEEDBACK_ATTACHMENT = "feedback_attachment"
 
 
 PURPOSE_MODULE = {

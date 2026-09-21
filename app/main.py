@@ -27,6 +27,7 @@ from app.house_models.router import app as house_models_app
 from app.installation.router import app as installation_app
 from app.marketing.router import app as marketing_app
 from app.max.router import app as max_app
+from app.feedback.router import app as feedback_app
 from app.production.router import app as production_app
 from app.tasks.demo_seed import ensure_demo_workforce_seed
 from app.tasks.router import app as tasks_app
@@ -122,3 +123,4 @@ app.mount("/api/dashboard", dashboard_app)
 app.mount("/api/board", board_app)
 app.mount("/api/agents", agents_app)
 app.mount("/api/accounting", accounting_app)
+app.mount("/api/feedback", feedback_app)
