@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -19,16 +20,20 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    mapping_confidence = sa.Enum('high', 'medium', name='mapping_confidence')
-    mapping_confidence.create(op.get_bind(), checkfirst=True)
-
+    # `mapping_confidence` is used on two tables. Standard Alembic/Postgres
+    # enum-reuse pattern: the FIRST use (inside create_table below) creates
+    # the type implicitly; the SECOND use (add_column further down) must pass
+    # `create_type=False`, otherwise SQLAlchemy tries to CREATE TYPE it again
+    # and fails with "type already exists" on a real Postgres - this was only
+    # caught by an actual `alembic upgrade head` run against a live database,
+    # not by the (SQLite-backed) test suite, which doesn't have native enums.
     op.create_table(
         'template_material_mappings',
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('normalized_name', sa.String(length=255), nullable=False),
         sa.Column('unit', sa.String(length=32), nullable=False),
         sa.Column('warehouse_material_id', sa.Integer(), nullable=False),
-        sa.Column('confidence', mapping_confidence, nullable=False),
+        sa.Column('confidence', sa.Enum('high', 'medium', name='mapping_confidence'), nullable=False),
         sa.Column('matched_by', sa.Enum('ai', 'human', name='mapping_matched_by'), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.ForeignKeyConstraint(['warehouse_material_id'], ['warehouse_materials.id']),
@@ -41,7 +46,11 @@ def upgrade() -> None:
     # сопоставлены), новые генерации/backfill заполняют его сами.
     op.add_column(
         'template_block_materials',
-        sa.Column('confidence', mapping_confidence, nullable=True),
+        sa.Column(
+            'confidence',
+            postgresql.ENUM('high', 'medium', name='mapping_confidence', create_type=False),
+            nullable=True,
+        ),
     )
 
 
