@@ -129,6 +129,11 @@ def apply_account_change(
 
     if role is not None:
         target.role = role
+        if role == UserRole.ADMIN:
+            # Админу гранты не нужны — `access_levels()` и так отдаёт FULL на
+            # всё. Чистим их здесь, чтобы при снятии админки человек оказался
+            # в матрице без доступа, а не со старыми правами (0074).
+            db.query(UserModuleAccess).filter(UserModuleAccess.user_id == target.id).delete()
     if is_active is not None:
         target.is_active = is_active
 
