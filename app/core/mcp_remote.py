@@ -13,6 +13,7 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -99,11 +100,21 @@ def as_rows(payload) -> list[dict]:
 
 
 class RemoteMcp:
-    def __init__(self, target: McpTarget):
+    def __init__(self, target: McpTarget, token_provider: "Callable[[bool], str] | None" = None):
+        """`token_provider`, when given, replaces this class's own OAuth grant
+        as the source of the bearer token - e.g. app/ai/mcp_write.py passes
+        one backed by app.ai.mcp_auth.get_access_token(db), so the write
+        channel shares the same DB-persisted credential as the read-only
+        connector instead of running a second, independent headless grant.
+        It is called with `force=True` right after a 401/403 (see
+        _forget_auth) so a caller backed by a cache with its own bookkeeping
+        (like mcp_auth's DB row) knows to skip straight to a fresh grant."""
         self.target = target
+        self._token_provider = token_provider
         self._token = ""
         self._token_exp = 0.0
         self._refresh = ""
+        self._force_next = False
         self._session_id = ""
         self._ready = False
         self._meta: dict | None = None
@@ -178,6 +189,12 @@ class RemoteMcp:
             self._session_id = sid
 
     def _access_token(self) -> str:
+        if self._token_provider is not None:
+            if self._token and not self._force_next:
+                return self._token
+            self._token = self._token_provider(self._force_next)
+            self._force_next = False
+            return self._token
         if self._token and time.monotonic() < self._token_exp - 30:
             return self._token
         if self._refresh:
@@ -197,6 +214,7 @@ class RemoteMcp:
 
     def _forget_auth(self) -> None:
         self._token = ""
+        self._force_next = True
         self._token_exp = 0.0
         self._refresh = ""
         self._ready = False

@@ -237,3 +237,17 @@ class MeetingDetailOut(MeetingOut):
 class TaskPrioritiesOut(BaseModel):
     generated_at: datetime
     priorities: list[PriorityTaskOut]
+
+
+# --- 0010: ручная проверка канала записи в базу знаний ----------------------
+
+
+class McpNoteCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    body: str = Field(min_length=1)
+    source: str = Field(min_length=1, max_length=255)  # тег идемпотентности, напр. "manual-test:1"
+    folder: str | None = None
+
+
+class McpNoteOut(BaseModel):
+    path: str

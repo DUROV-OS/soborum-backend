@@ -235,11 +235,21 @@ def exchange_code_for_tokens(db: Session, code: str, state: str) -> McpCredentia
     )
 
 
-def get_access_token(db: Session) -> str:
+def get_access_token(db: Session, *, force: bool = False) -> str:
     """A token that is valid right now, obtaining or renewing one as needed.
-    Requires no human intervention as long as the headless grant works."""
+    Requires no human intervention as long as the headless grant works.
+
+    `force=True` skips the "still valid per our own bookkeeping" fast path and
+    goes straight to refresh/re-grant. Needed by app/ai/mcp_write.py after the
+    MCP server rejects a call with 401/403: per this module's docstring, the
+    server forgets every token on restart, so our stored expires_at can say
+    "valid" while the server itself no longer honours the token."""
     credential = db.get(McpCredential, 1)
-    if credential is not None and _aware(credential.expires_at) > datetime.now(timezone.utc) + timedelta(seconds=30):
+    if (
+        not force
+        and credential is not None
+        and _aware(credential.expires_at) > datetime.now(timezone.utc) + timedelta(seconds=30)
+    ):
         return credential.access_token
 
     if credential is not None and credential.refresh_token:

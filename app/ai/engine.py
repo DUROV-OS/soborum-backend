@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 # Every mode therefore gets only this explicit read allowlist.
 MCP_READ_ONLY_TOOLS = ["read_index", "list_notes", "search_notes", "read_note", "get_unread_files"]
 
+# The same MCP server also exposes write tools (see the "Разведка" section of
+# backlog/PROCESS/0010-knowledge-base-write-connector.md for how this was
+# established without a live probe). They are declared here, next to the read
+# allowlist, purely as documentation of the write surface app/ai/mcp_write.py
+# is allowed to use - they are NEVER added to allowed_tools above or to any
+# chat's tool list. Marina cannot call create_note/append_note/edit_note from
+# free-form tool-use in a chat; mcp_write.py calls the MCP server for them
+# directly (JSON-RPC tools/call), only from trusted server code (meeting
+# finish) or an admin hitting POST /api/ai/mcp/notes.
+MCP_WRITE_TOOLS = ["create_note", "edit_note", "append_note"]
+
 # Anthropic-hosted web tools. The _20260209 variants (dynamic filtering) need
 # no beta header and run on Sonnet 5. They execute on Anthropic's side, so
 # there is no handler and no gateway hop - results come back inline as
