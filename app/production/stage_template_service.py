@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.clients.models import Client
 from app.core.config import settings
-from app.production import kr_extraction
+from app.production import kr_extraction, material_matching
+from app.production.models import MappingConfidence
 from app.production.stage_templates import (
     ProductionStageTemplate,
     TemplateBlock,
@@ -230,12 +231,19 @@ def _persist_draft(db: Session, client: Client, graph: dict) -> ProductionStageT
                 )
             )
         for raw_material in raw_block.get("materials", []):
+            # Сопоставление со складом (0073-a) — best-effort, "сразу" в этом
+            # же проходе: любой сбой ИИ оставляет warehouse_material_id
+            # пустым, генерация шаблона не падает и не блокируется
+            # (см. material_matching.match_template_material).
+            match = material_matching.match_template_material(db, raw_material["name"], raw_material["unit"])
             db.add(
                 TemplateBlockMaterial(
                     template_block_id=block.id,
                     name=raw_material["name"],
                     unit=raw_material["unit"],
                     kr_page_ref=raw_material.get("kr_page_ref"),
+                    warehouse_material_id=match.warehouse_material_id,
+                    confidence=MappingConfidence(match.confidence) if match.confidence else None,
                 )
             )
     db.flush()
@@ -337,8 +345,24 @@ def update_material(
     db: Session, template: ProductionStageTemplate, material: TemplateBlockMaterial, payload
 ) -> TemplateBlockMaterial:
     _require_editable(template)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if "warehouse_material_id" in data and data["warehouse_material_id"] is not None:
+        from app.warehouse.models import WarehouseMaterial
+
+        if db.get(WarehouseMaterial, data["warehouse_material_id"]) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Материал склада не найден")
+    for field, value in data.items():
         setattr(material, field, value)
+    if "warehouse_material_id" in data:
+        if data["warehouse_material_id"] is not None:
+            # Человек выбрал/поправил сопоставление вручную — это всегда
+            # надёжнее ИИ, поэтому запоминаем без "требует проверки" и
+            # переиспользуем при следующей генерации (0073-a), без
+            # повторного обращения к ИИ по этой же паре имя/ед.
+            material.confidence = MappingConfidence.HIGH
+            material_matching.record_human_match(db, material.name, material.unit, data["warehouse_material_id"])
+        else:
+            material.confidence = None
     _mark_reviewed(db, template)
     return material
 

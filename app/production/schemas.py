@@ -188,6 +188,8 @@ class TemplateBlockMaterialOut(BaseModel):
     unit: str
     kr_page_ref: KrPageRefOut | None
     warehouse_material_id: int | None
+    warehouse_material_title: str | None = None
+    confidence: str | None = None
 
 
 class TemplateBlockOut(BaseModel):

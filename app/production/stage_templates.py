@@ -14,6 +14,7 @@ from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.production.models import MappingConfidence
 
 
 class TemplateStatus(str, enum.Enum):
@@ -113,7 +114,22 @@ class TemplateBlockMaterial(Base):
     unit: Mapped[str] = mapped_column(String(32), nullable=False)
     kr_page_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Не всегда однозначно сопоставляется с каталогом при генерации —
-    # донаполняется инженером на проверке ([[0066-e]]).
+    # донаполняется инженером на проверке ([[0066-e]]). С 0073-a заполняется
+    # автоматически при генерации через app.production.material_matching
+    # (см. stage_template_service._persist_draft); ручная правка на проверке
+    # ([[0066-e]]) продолжает работать поверх этого поля как раньше.
     warehouse_material_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=True)
+    # Уверенность автосопоставления (0073-a): NULL — сопоставлено вручную или
+    # не сопоставлено вовсе; HIGH/MEDIUM — предложено ИИ (см.
+    # app.production.material_matching.MatchResult). MEDIUM показывается на
+    # проверке шаблона как «требует проверки».
+    confidence: Mapped[MappingConfidence | None] = mapped_column(
+        Enum(MappingConfidence, name="mapping_confidence"), nullable=True
+    )
 
     block: Mapped["TemplateBlock"] = relationship(back_populates="materials")
+    warehouse_material: Mapped["WarehouseMaterial | None"] = relationship()  # noqa: F821
+
+    @property
+    def warehouse_material_title(self) -> str | None:
+        return self.warehouse_material.title if self.warehouse_material_id else None
