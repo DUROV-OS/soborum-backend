@@ -97,3 +97,45 @@ def users_with_access(db: Session, module: Module) -> list[User]:
     for u in workers:
         seen[u.id] = u
     return list(seen.values())
+
+
+def apply_account_change(
+    db: Session,
+    actor: User,
+    target: User,
+    *,
+    role: UserRole | None = None,
+    is_active: bool | None = None,
+) -> None:
+    """Проверки вокруг роли и активности учётной записи (0074).
+
+    Администратор управляет чужими ролями, но не своей, и не может оставить
+    систему без единого активного администратора — иначе матрицу доступа и
+    список админов станет некому открыть."""
+    changes_role = role is not None and role != target.role
+    disables = is_active is False and target.is_active
+
+    if actor.id == target.id:
+        if changes_role:
+            raise ValueError("Нельзя изменить собственную роль")
+        if disables:
+            raise ValueError("Нельзя отключить собственную учётную запись")
+
+    loses_admin = target.role == UserRole.ADMIN and (
+        (changes_role and role != UserRole.ADMIN) or disables
+    )
+    if loses_admin and target.is_active and _active_admin_count(db) <= 1:
+        raise ValueError("В системе должен остаться хотя бы один администратор")
+
+    if role is not None:
+        target.role = role
+    if is_active is not None:
+        target.is_active = is_active
+
+
+def _active_admin_count(db: Session) -> int:
+    return (
+        db.query(User)
+        .filter(User.role == UserRole.ADMIN, User.is_active.is_(True))
+        .count()
+    )
