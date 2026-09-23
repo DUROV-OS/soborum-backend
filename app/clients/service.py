@@ -394,7 +394,13 @@ def delete_client(db: Session, client: Client) -> None:
     open_task = (
         db.query(Task)
         .filter(
-            Task.link_type.in_([TaskLinkType.CLIENT_STAGE, TaskLinkType.CLIENT_BALANCE_PAYMENT]),
+            Task.link_type.in_(
+                [
+                    TaskLinkType.CLIENT_STAGE,
+                    TaskLinkType.CLIENT_BALANCE_PAYMENT,
+                    TaskLinkType.CLIENT_FOLLOWUP,
+                ]
+            ),
             Task.link_id == client.id,
             Task.status != TaskStatus.DONE,
         )
@@ -442,6 +448,12 @@ def transition_stage(db: Session, client: Client) -> Client:
                 f"Стадия «{stage_label(client.stage)}» двигается автоматически "
                 "по разделу «Монтаж» — вручную её не переводят"
             ),
+        )
+    blocker = _blocking_followup_task(db, client.id)
+    if blocker is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Сначала закройте задачу «{blocker.title}»",
         )
     next_stage = _next_stage(client.stage)
 
