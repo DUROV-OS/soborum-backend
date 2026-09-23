@@ -19,6 +19,10 @@ from app.clients.schemas import (
     ClientPaymentEditUnlockUpdate,
     ClientPaymentUpdate,
     ClientSourceUpdate,
+    ClientTaskClose,
+    ClientTaskCreate,
+    ClientTaskDeadlineUpdate,
+    ClientTaskOut,
 )
 from app.common.files import FilePurpose, save_upload_file
 from app.common.module_access import Module
@@ -315,6 +319,64 @@ def reconcile_stage_tasks(db: Session = Depends(get_db), _: User = Depends(requi
     report = client_reconcile.reconcile_client_stage_tasks(db)
     db.commit()
     return report
+
+
+@app.get("/{client_id}/tasks", response_model=list[ClientTaskOut])
+def list_client_tasks(
+    client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients_view)
+):
+    """Задачи менеджера по клиенту (0079-d) — и открытые, и закрытые."""
+    client = client_service.get_client_or_404(db, client_id)
+    return [ClientTaskOut.from_task(task) for task in client.followup_tasks]
+
+
+@app.post("/{client_id}/tasks", response_model=ClientTaskOut, status_code=status.HTTP_201_CREATED)
+def create_client_task(
+    client_id: int,
+    payload: ClientTaskCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_clients_edit),
+):
+    client = client_service.get_client_or_404(db, client_id)
+    task = client_service.create_followup_task(db, client, payload, user)
+    db.commit()
+    db.refresh(task)
+    return ClientTaskOut.from_task(task)
+
+
+@app.post("/{client_id}/tasks/{task_id}/deadline", response_model=ClientTaskOut)
+def shift_client_task_deadline(
+    client_id: int,
+    task_id: int,
+    payload: ClientTaskDeadlineUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_clients_edit),
+):
+    """Перенести срок задачи с причиной — причина уходит в журнал задачи."""
+    client = client_service.get_client_or_404(db, client_id)
+    task = client_service.get_followup_task_or_404(db, client, task_id)
+    task = client_service.shift_followup_deadline(db, task, payload, user)
+    db.commit()
+    db.refresh(task)
+    return ClientTaskOut.from_task(task)
+
+
+@app.post("/{client_id}/tasks/{task_id}/close", response_model=ClientTaskOut)
+def close_client_task(
+    client_id: int,
+    task_id: int,
+    payload: ClientTaskClose,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_clients_edit),
+):
+    """Закрыть задачу описанием решения и, если передана, сразу завести
+    вытекающую."""
+    client = client_service.get_client_or_404(db, client_id)
+    task = client_service.get_followup_task_or_404(db, client, task_id)
+    task = client_service.close_followup_task(db, client, task, payload, user)
+    db.commit()
+    db.refresh(task)
+    return ClientTaskOut.from_task(task)
 
 
 @app.post("/{client_id}/transition", response_model=ClientOut)
