@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'd5e2a90c1b77'
@@ -21,10 +22,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    counterparty_kind = sa.Enum(
+    # Тип создаём явно, а в create_table передаём его с create_type=False —
+    # иначе SQLAlchemy выпустит CREATE TYPE второй раз и миграция упадёт на
+    # «type counterparty_kind already exists» (тот же приём, что в
+    # 1b47820961ec).
+    sa.Enum(
         "CLIENT", "SUPPLIER", "EMPLOYEE", "GOVERNMENT", "OTHER", name="counterparty_kind"
+    ).create(op.get_bind(), checkfirst=True)
+    counterparty_kind = postgresql.ENUM(
+        "CLIENT",
+        "SUPPLIER",
+        "EMPLOYEE",
+        "GOVERNMENT",
+        "OTHER",
+        name="counterparty_kind",
+        create_type=False,
     )
-    counterparty_kind.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "counterparties",
