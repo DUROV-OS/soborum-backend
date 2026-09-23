@@ -35,11 +35,14 @@ TOP_N = 3
 
 # Человеческое название текущей стадии + запасной процент, если ИИ недоступен.
 CLIENT_STAGE_LABEL: dict[ClientStage, tuple[str, int]] = {
-    ClientStage.LEAD: ("Первичный контакт", 10),
-    ClientStage.DISCUSSION: ("Обсуждение проекта", 30),
-    ClientStage.APPROVAL: ("Согласование документов", 55),
-    ClientStage.PAYMENT: ("Ожидание оплаты", 75),
-    ClientStage.POSTPAYMENT: ("Оплата после получения", 90),
+    ClientStage.LEAD: ("Лид", 10),
+    ClientStage.DISCUSSION: ("Обсуждение", 25),
+    ClientStage.SITE_VISIT: ("Гость на объекте", 35),
+    ClientStage.APPROVAL: ("Ипотека/Одобрение в банке", 50),
+    ClientStage.PAYMENT: ("Договор подписан/Аванс внесён", 65),
+    ClientStage.POSTPAYMENT: ("Дом в производстве", 80),
+    ClientStage.ACCEPTANCE: ("Приёмка", 92),
+    ClientStage.COMPLETED: ("Успешно реализовано", 100),
 }
 INSTALLATION_STAGE_LABEL: dict[InstallationStage, tuple[str, int]] = {
     InstallationStage.DELIVERY: ("Доставка дома", 70),
