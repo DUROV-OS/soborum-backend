@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.ids import AgentId
 from app.agents.types import ContextHit
-from app.clients.models import STAGE_LABELS, Client, ClientStage, stages_after
+from app.clients.models import Client, ClientStage, stages_after
 from app.dashboard import service as dashboard
 from app.db.session import SessionLocal
 from app.production.models import ProductionBlock
@@ -158,6 +158,23 @@ def _section_hit(section: str, data: dict) -> ContextHit | None:
     )
 
 
+# Короткие нейтральные названия стадий для сводки агентам. Полные подписи
+# (app.clients.models.STAGE_LABELS) сюда не годятся: «Договор подписан/Аванс
+# внесён» ловится юридическим фильтром на слова «договор»/«подпись»
+# (app.agents.legal), и чисто статистическая строка уходила бы на эскалацию
+# человеку.
+_STAGE_SHORT: dict[ClientStage, str] = {
+    ClientStage.LEAD: "лид",
+    ClientStage.DISCUSSION: "обсуждение",
+    ClientStage.SITE_VISIT: "показ объекта",
+    ClientStage.APPROVAL: "одобрение банка",
+    ClientStage.PAYMENT: "аванс внесён",
+    ClientStage.POSTPAYMENT: "в производстве",
+    ClientStage.ACCEPTANCE: "приёмка",
+    ClientStage.COMPLETED: "реализовано",
+}
+
+
 def _clients_line(d: dict) -> tuple[str, str]:
     s = d.get("stage_counts", {})
     return (
@@ -165,9 +182,7 @@ def _clients_line(d: dict) -> tuple[str, str]:
         (
             f"Клиентов в базе {d.get('total_clients', 0)} "
             + "("
-            + ", ".join(
-                f"{label.lower()} {s.get(stage.value, 0)}" for stage, label in STAGE_LABELS.items()
-            )
+            + ", ".join(f"{label} {s.get(stage.value, 0)}" for stage, label in _STAGE_SHORT.items())
             + "). "
             f"Ждут подтверждения оплаты {d.get('awaiting_payment_confirmation', 0)}, "
             f"ждут остаток {d.get('awaiting_balance_payment', 0)}. "
