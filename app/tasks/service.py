@@ -1,13 +1,13 @@
 from datetime import datetime
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.common.files import FileAsset
+from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.common.module_access import Module
 from app.tasks import sync as task_sync
 from app.tasks import timelog
-from app.tasks.models import Task, TaskLinkType, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskReport, TaskStatus
 from app.users.models import User
 
 ALLOWED_MANUAL_TRANSITIONS = {
@@ -261,6 +261,51 @@ def set_status(db: Session, task: Task, new_status: TaskStatus, actor: User) -> 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Перевести задачу может только проверяющий")
 
     return _finalize_status(db, task, new_status, actor=actor)
+
+
+def submit_report(
+    db: Session,
+    task: Task,
+    actor: User,
+    *,
+    comment: str,
+    files: list[UploadFile] = (),
+) -> Task:
+    """Сдать задачу с отчётом: исполнитель пишет, что сделано, и при
+    необходимости прикладывает файлы. Отчёт и перевод in_progress -> in_review
+    происходят вместе — при любой ошибке (не тот статус, не исполнитель,
+    пустой комментарий) не сохраняется ни то, ни другое.
+
+    Задача без проверяющих после этого сразу становится DONE (обычное
+    поведение _finalize_status), отчёт при этом остаётся у задачи.
+    """
+    text = (comment or "").strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Напишите комментарий о выполненной задаче",
+        )
+    if task.status != TaskStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сдать можно только задачу в работе",
+        )
+    if actor not in task.assignees:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Сдать задачу может только исполнитель",
+        )
+
+    report = TaskReport(task_id=task.id, author_id=actor.id, comment=text)
+    report.files = [
+        save_upload_file(db, upload, FilePurpose.TASK_REPORT_FILE, actor)
+        for upload in files
+        if upload is not None and upload.filename
+    ]
+    db.add(report)
+    db.flush()
+
+    return _finalize_status(db, task, TaskStatus.IN_REVIEW, actor=actor)
 
 
 def force_close(db: Session, task: Task) -> None:
