@@ -8,7 +8,14 @@ from app.core.deps import require_edit, require_view
 from app.db.session import get_db
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
-from app.tasks.schemas import TaskCreate, TaskOut, TaskScope, TaskStatusUpdate, TaskUpdate
+from app.tasks.schemas import (
+    TaskCreate,
+    TaskOut,
+    TaskReportCommentUpdate,
+    TaskScope,
+    TaskStatusUpdate,
+    TaskUpdate,
+)
 from app.users.models import User
 
 app = FastAPI(
@@ -156,6 +163,23 @@ def review_task(
     файлов работает так же, как PATCH /{task_id}/status."""
     task = task_service.get_task_or_404(db, task_id)
     task = task_service.review_task(db, task, actor, accept=accept, comment=comment, files=files)
+    db.commit()
+    db.refresh(task)
+    return TaskOut.from_model(task)
+
+
+@app.patch("/{task_id}/reports/{report_id}", response_model=TaskOut)
+def edit_report_comment(
+    task_id: int,
+    report_id: int,
+    payload: TaskReportCommentUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_tasks_edit),
+):
+    """Поправить текст своего комментария в журнале отчётов. Доступно в любом
+    статусе задачи, включая уже принятую."""
+    task = task_service.get_task_or_404(db, task_id)
+    task_service.edit_report_comment(db, task, report_id, actor, payload.comment)
     db.commit()
     db.refresh(task)
     return TaskOut.from_model(task)

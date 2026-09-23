@@ -155,6 +155,10 @@ class TaskReport(Base):
 
     Записей у задачи может быть несколько: каждый круг «сдал — вернули —
     сдал заново» добавляет свои.
+
+    Сам текст комментария автор может поправить в любой момент, в том числе
+    после приёмки задачи (`updated_at` помечает такую правку); вид записи,
+    автор и вложения при этом не меняются.
     """
 
     __tablename__ = "task_reports"
@@ -175,6 +179,11 @@ class TaskReport(Base):
         nullable=False,
         default=_utcnow,
         server_default=func.now(),
+    )
+    # Проставляется только когда автор отредактировал комментарий; None — текст
+    # такой же, каким его отправили.
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     author: Mapped["User"] = relationship()  # noqa: F821

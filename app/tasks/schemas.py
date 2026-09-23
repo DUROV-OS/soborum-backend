@@ -44,6 +44,10 @@ class TaskStatusUpdate(BaseModel):
     status: TaskStatus
 
 
+class TaskReportCommentUpdate(BaseModel):
+    comment: str
+
+
 class TaskReportOut(BaseModel):
     """Запись журнала отчётов задачи: сдача исполнителя или решение
     проверяющего с комментарием и файлами (0077)."""
@@ -53,6 +57,8 @@ class TaskReportOut(BaseModel):
     kind: TaskReportKind
     comment: str
     created_at: datetime
+    # Не None, если автор правил комментарий уже после отправки.
+    updated_at: datetime | None
     files: list[FileAssetOut]
 
     @staticmethod
@@ -63,6 +69,7 @@ class TaskReportOut(BaseModel):
             kind=report.kind,
             comment=report.comment,
             created_at=report.created_at,
+            updated_at=report.updated_at,
             files=[FileAssetOut.model_validate(f) for f in report.files],
         )
 

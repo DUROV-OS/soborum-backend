@@ -183,3 +183,45 @@ def test_only_reviewer_of_task_on_review_can_decide(db, make_user, api):
     assert not_reviewer.status_code == 403
     db.expire_all()
     assert db.query(TaskReport).count() == 1
+
+
+def test_author_can_edit_comment_after_task_is_accepted(db, make_user, api):
+    worker = make_user(Module.TASKS)
+    reviewer = make_user(Module.TASKS)
+    task = _task_in_progress(db, task_service, worker, [reviewer])
+    submitted = api(worker).post(f"/api/tasks/{task.id}/report", data={"comment": "Сделано"}).json()
+    report_id = submitted["reports"][0]["id"]
+    accepted = api(reviewer).post(f"/api/tasks/{task.id}/review", data={"accept": "true", "comment": "Принято"})
+    assert accepted.json()["status"] == "done"
+
+    response = api(worker).patch(
+        f"/api/tasks/{task.id}/reports/{report_id}",
+        json={"comment": "Сделано, добавил фото стыка"},
+    )
+
+    assert response.status_code == 200, response.text
+    edited = response.json()["reports"][0]
+    assert edited["comment"] == "Сделано, добавил фото стыка"
+    assert edited["updated_at"] is not None
+    assert response.json()["status"] == "done"  # правка не трогает статус
+
+
+def test_only_author_edits_and_comment_cannot_be_emptied(db, make_user, api):
+    worker = make_user(Module.TASKS)
+    reviewer = make_user(Module.TASKS)
+    task = _task_in_progress(db, task_service, worker, [reviewer])
+    submitted = api(worker).post(f"/api/tasks/{task.id}/report", data={"comment": "Сделано"}).json()
+    report_id = submitted["reports"][0]["id"]
+
+    foreign = api(reviewer).patch(f"/api/tasks/{task.id}/reports/{report_id}", json={"comment": "Чужая правка"})
+    assert foreign.status_code == 403
+
+    emptied = api(worker).patch(f"/api/tasks/{task.id}/reports/{report_id}", json={"comment": "   "})
+    assert emptied.status_code == 400
+
+    missing = api(worker).patch(f"/api/tasks/{task.id}/reports/999", json={"comment": "Нет такого"})
+    assert missing.status_code == 404
+
+    db.expire_all()
+    assert db.get(TaskReport, report_id).comment == "Сделано"
+    assert db.get(TaskReport, report_id).updated_at is None

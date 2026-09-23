@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -363,6 +363,37 @@ def review_task(
         )
 
     return set_status(db, task, target, actor)
+
+
+def edit_report_comment(db: Session, task: Task, report_id: int, actor: User, comment: str) -> TaskReport:
+    """Поправить текст своей записи журнала — в любой момент, в том числе
+    после того, как задачу приняли: отчёт часто дополняют по итогам разговора,
+    и закрытая задача не должна этому мешать.
+
+    Менять можно только свой комментарий и только текст: вид записи, автора,
+    дату отправки и вложения правка не трогает.
+    """
+    report = db.get(TaskReport, report_id)
+    if report is None or report.task_id != task.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отчёт не найден")
+    if report.author_id != actor.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Изменить комментарий может только его автор",
+        )
+
+    text = (comment or "").strip()
+    if not text and not report.files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Комментарий нельзя оставить пустым",
+        )
+
+    if text != report.comment:
+        report.comment = text
+        report.updated_at = datetime.now(timezone.utc)
+        db.flush()
+    return report
 
 
 def force_close(db: Session, task: Task) -> None:
