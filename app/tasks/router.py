@@ -142,6 +142,25 @@ def submit_task_report(
     return TaskOut.from_model(task)
 
 
+@app.post("/{task_id}/review", response_model=TaskOut)
+def review_task(
+    task_id: int,
+    accept: bool = Form(..., description="true — принять задачу, false — вернуть в работу"),
+    comment: str = Form("", description="Комментарий проверяющего, по желанию"),
+    files: list[UploadFile] = File(default=[], description="Файлы проверяющего, по желанию"),
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_tasks_edit),
+):
+    """Решение проверяющего с отчётом: принять («на проверке» → «выполнена»)
+    или вернуть в работу, приложив комментарий и файлы. Без комментария и
+    файлов работает так же, как PATCH /{task_id}/status."""
+    task = task_service.get_task_or_404(db, task_id)
+    task = task_service.review_task(db, task, actor, accept=accept, comment=comment, files=files)
+    db.commit()
+    db.refresh(task)
+    return TaskOut.from_model(task)
+
+
 @app.post("/{task_id}/claim", response_model=TaskOut)
 def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depends(require_tasks_edit)):
     task = task_service.get_task_or_404(db, task_id)

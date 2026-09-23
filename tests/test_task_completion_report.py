@@ -1,6 +1,7 @@
 """Задача 0077: сдать задачу можно только с отчётом — комментарием исполнителя
 о выполненной работе и, по желанию, файлами. Отчёт виден проверяющему в
-карточке задачи и не исчезает после приёмки.
+карточке задачи и не исчезает после приёмки. Проверяющий, принимая работу или
+возвращая её, тоже может оставить комментарий и приложить файлы.
 """
 from app.common.files import FileAsset, FilePurpose
 from app.common.module_access import Module
@@ -115,3 +116,70 @@ def test_task_without_reviewers_closes_immediately_keeping_report(db, make_user,
     body = response.json()
     assert body["status"] == "done"
     assert [r["comment"] for r in body["reports"]] == ["Сдал без проверки"]
+
+
+def test_reviewer_can_attach_comment_and_file_when_accepting(db, make_user, api):
+    worker = make_user(Module.TASKS)
+    reviewer = make_user(Module.TASKS)
+    task = _task_in_progress(db, task_service, worker, [reviewer])
+    api(worker).post(f"/api/tasks/{task.id}/report", data={"comment": "Сделано"})
+
+    response = api(reviewer).post(
+        f"/api/tasks/{task.id}/review",
+        data={"accept": "true", "comment": "Принято, замечаний нет"},
+        files={"files": ("akt-priemki.pdf", b"%PDF-1.4 fake", "application/pdf")},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "done"
+    assert [(r["kind"], r["comment"]) for r in body["reports"]] == [
+        ("submission", "Сделано"),
+        ("review_accepted", "Принято, замечаний нет"),
+    ]
+    review = body["reports"][1]
+    assert review["author"]["id"] == reviewer.id
+    assert [f["filename"] for f in review["files"]] == ["akt-priemki.pdf"]
+
+
+def test_reviewer_comment_on_return_and_empty_decision_adds_no_record(db, make_user, api):
+    worker = make_user(Module.TASKS)
+    reviewer = make_user(Module.TASKS)
+    task = _task_in_progress(db, task_service, worker, [reviewer])
+    api(worker).post(f"/api/tasks/{task.id}/report", data={"comment": "Первая сдача"})
+
+    returned = api(reviewer).post(
+        f"/api/tasks/{task.id}/review",
+        data={"accept": "false", "comment": "Переделать угол примыкания"},
+    )
+    assert returned.status_code == 200, returned.text
+    assert returned.json()["status"] == "in_progress"
+    assert returned.json()["reports"][-1]["kind"] == "review_returned"
+
+    api(worker).post(f"/api/tasks/{task.id}/report", data={"comment": "Исправил"})
+    # Принятие без комментария и файлов — запись в журнал не добавляется.
+    accepted = api(reviewer).post(f"/api/tasks/{task.id}/review", data={"accept": "true", "comment": "  "})
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "done"
+    assert [r["kind"] for r in accepted.json()["reports"]] == [
+        "submission",
+        "review_returned",
+        "submission",
+    ]
+
+
+def test_only_reviewer_of_task_on_review_can_decide(db, make_user, api):
+    worker = make_user(Module.TASKS)
+    reviewer = make_user(Module.TASKS)
+    task = _task_in_progress(db, task_service, worker, [reviewer])
+
+    too_early = api(reviewer).post(f"/api/tasks/{task.id}/review", data={"accept": "true", "comment": "Рано"})
+    assert too_early.status_code == 400
+
+    api(worker).post(f"/api/tasks/{task.id}/report", data={"comment": "Сделано"})
+    not_reviewer = api(worker).post(
+        f"/api/tasks/{task.id}/review", data={"accept": "true", "comment": "Сам себе приёмка"}
+    )
+    assert not_reviewer.status_code == 403
+    db.expire_all()
+    assert db.query(TaskReport).count() == 1

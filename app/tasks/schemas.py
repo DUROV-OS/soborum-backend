@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.common.files import FileAssetOut
-from app.tasks.models import TaskLinkType, TaskStatus
+from app.tasks.models import TaskLinkType, TaskReportKind, TaskStatus
 from app.users.schemas import UserOut
 
 
@@ -45,10 +45,12 @@ class TaskStatusUpdate(BaseModel):
 
 
 class TaskReportOut(BaseModel):
-    """Отчёт исполнителя о сдаче задачи (0077)."""
+    """Запись журнала отчётов задачи: сдача исполнителя или решение
+    проверяющего с комментарием и файлами (0077)."""
 
     id: int
     author: UserOut
+    kind: TaskReportKind
     comment: str
     created_at: datetime
     files: list[FileAssetOut]
@@ -58,6 +60,7 @@ class TaskReportOut(BaseModel):
         return TaskReportOut(
             id=report.id,
             author=UserOut.from_model(report.author),
+            kind=report.kind,
             comment=report.comment,
             created_at=report.created_at,
             files=[FileAssetOut.model_validate(f) for f in report.files],
