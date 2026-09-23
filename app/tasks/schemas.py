@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.common.files import FileAssetOut
-from app.tasks.models import TaskLinkType, TaskPriority, TaskStatus
+from app.tasks.models import TaskLinkType, TaskPriority, TaskReportKind, TaskStatus
 from app.users.schemas import UserOut
 
 
@@ -46,6 +46,36 @@ class TaskStatusUpdate(BaseModel):
     status: TaskStatus
 
 
+class TaskReportCommentUpdate(BaseModel):
+    comment: str
+
+
+class TaskReportOut(BaseModel):
+    """Запись журнала отчётов задачи: сдача исполнителя или решение
+    проверяющего с комментарием и файлами (0077)."""
+
+    id: int
+    author: UserOut
+    kind: TaskReportKind
+    comment: str
+    created_at: datetime
+    # Не None, если автор правил комментарий уже после отправки.
+    updated_at: datetime | None
+    files: list[FileAssetOut]
+
+    @staticmethod
+    def from_model(report) -> "TaskReportOut":
+        return TaskReportOut(
+            id=report.id,
+            author=UserOut.from_model(report.author),
+            kind=report.kind,
+            comment=report.comment,
+            created_at=report.created_at,
+            updated_at=report.updated_at,
+            files=[FileAssetOut.model_validate(f) for f in report.files],
+        )
+
+
 class TaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -64,6 +94,7 @@ class TaskOut(BaseModel):
     reviewers: list[UserOut]
     responsible: UserOut | None
     images: list[FileAssetOut]
+    reports: list[TaskReportOut]
     depends_on_ids: list[int]
 
     @staticmethod
@@ -84,6 +115,7 @@ class TaskOut(BaseModel):
             reviewers=[UserOut.from_model(u) for u in task.reviewers],
             responsible=UserOut.from_model(task.responsible) if task.responsible else None,
             images=[FileAssetOut.model_validate(f) for f in task.images],
+            reports=[TaskReportOut.from_model(r) for r in task.reports],
             depends_on_ids=[t.id for t in task.depends_on],
         )
 

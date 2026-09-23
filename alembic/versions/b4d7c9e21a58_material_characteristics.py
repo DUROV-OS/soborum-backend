@@ -13,6 +13,10 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'b4d7c9e21a58'
+# На стейдже эта миграция уже применена с перецепкой на голову стейджа (0078),
+# поэтому здесь она остаётся такой: перецепка на предка из main заставила бы
+# alembic считать миграции 0077 уже накатанными, и таблиц отчётов на стейдже
+# не появилось бы.
 down_revision: Union[str, None] = '18acd0e89e98'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

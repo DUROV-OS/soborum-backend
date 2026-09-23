@@ -1,14 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.ai import story_points as ai_story_points
-from app.common.files import FileAsset
+from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.common.module_access import Module
 from app.tasks import sync as task_sync
 from app.tasks import timelog
-from app.tasks.models import Task, TaskLinkType, TaskPriority, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskPriority, TaskReport, TaskReportKind, TaskStatus
 from app.users.models import User
 
 ALLOWED_MANUAL_TRANSITIONS = {
@@ -280,6 +280,139 @@ def set_status(db: Session, task: Task, new_status: TaskStatus, actor: User) -> 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Перевести задачу может только проверяющий")
 
     return _finalize_status(db, task, new_status, actor=actor)
+
+
+def _add_report(
+    db: Session,
+    task: Task,
+    actor: User,
+    *,
+    kind: TaskReportKind,
+    comment: str,
+    files: list[UploadFile],
+) -> None:
+    report = TaskReport(task_id=task.id, author_id=actor.id, kind=kind, comment=comment)
+    report.files = [
+        save_upload_file(db, upload, FilePurpose.TASK_REPORT_FILE, actor)
+        for upload in files
+        if upload is not None and upload.filename
+    ]
+    db.add(report)
+    db.flush()
+
+
+def submit_report(
+    db: Session,
+    task: Task,
+    actor: User,
+    *,
+    comment: str,
+    files: list[UploadFile] = (),
+) -> Task:
+    """Сдать задачу с отчётом: исполнитель пишет, что сделано, и при
+    необходимости прикладывает файлы. Отчёт и перевод in_progress -> in_review
+    происходят вместе — при любой ошибке (не тот статус, не исполнитель,
+    пустой комментарий) не сохраняется ни то, ни другое.
+
+    Задача без проверяющих после этого сразу становится DONE (обычное
+    поведение _finalize_status), отчёт при этом остаётся у задачи.
+    """
+    text = (comment or "").strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Напишите комментарий о выполненной задаче",
+        )
+    if task.status != TaskStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сдать можно только задачу в работе",
+        )
+    if actor not in task.assignees:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Сдать задачу может только исполнитель",
+        )
+
+    _add_report(
+        db, task, actor,
+        kind=TaskReportKind.SUBMISSION, comment=text, files=list(files),
+    )
+    return _finalize_status(db, task, TaskStatus.IN_REVIEW, actor=actor)
+
+
+def review_task(
+    db: Session,
+    task: Task,
+    actor: User,
+    *,
+    accept: bool,
+    comment: str = "",
+    files: list[UploadFile] = (),
+) -> Task:
+    """Решение проверяющего с отчётом: принять задачу (in_review -> done) или
+    вернуть в работу (in_review -> in_progress), приложив комментарий и файлы.
+
+    В отличие от сдачи исполнителем, комментарий и файлы необязательны: если
+    не приложено ничего, запись в журнал отчётов не добавляется — просто
+    меняется статус. Проверки статуса и роли — те же, что у обычного перехода
+    (см. set_status), поэтому решение идёт через него.
+    """
+    attachments = [f for f in files if f is not None and f.filename]
+    text = (comment or "").strip()
+    target = TaskStatus.DONE if accept else TaskStatus.IN_PROGRESS
+
+    if task.status != TaskStatus.IN_REVIEW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Принять или вернуть можно только задачу на проверке",
+        )
+    if actor not in task.reviewers:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Перевести задачу может только проверяющий",
+        )
+
+    if text or attachments:
+        _add_report(
+            db, task, actor,
+            kind=TaskReportKind.REVIEW_ACCEPTED if accept else TaskReportKind.REVIEW_RETURNED,
+            comment=text,
+            files=attachments,
+        )
+
+    return set_status(db, task, target, actor)
+
+
+def edit_report_comment(db: Session, task: Task, report_id: int, actor: User, comment: str) -> TaskReport:
+    """Поправить текст своей записи журнала — в любой момент, в том числе
+    после того, как задачу приняли: отчёт часто дополняют по итогам разговора,
+    и закрытая задача не должна этому мешать.
+
+    Менять можно только свой комментарий и только текст: вид записи, автора,
+    дату отправки и вложения правка не трогает.
+    """
+    report = db.get(TaskReport, report_id)
+    if report is None or report.task_id != task.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отчёт не найден")
+    if report.author_id != actor.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Изменить комментарий может только его автор",
+        )
+
+    text = (comment or "").strip()
+    if not text and not report.files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Комментарий нельзя оставить пустым",
+        )
+
+    if text != report.comment:
+        report.comment = text
+        report.updated_at = datetime.now(timezone.utc)
+        db.flush()
+    return report
 
 
 def force_close(db: Session, task: Task) -> None:
