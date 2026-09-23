@@ -23,6 +23,7 @@ from app.clients.schemas import (
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
     ClientPaymentUpdate,
+    ClientSourceUpdate,
 )
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
@@ -90,6 +91,30 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     )
 
 
+def _clean_source(payload: ClientSourceUpdate) -> dict:
+    """Приводит источник клиента к одному из двух валидных состояний: «привело
+    агентство, известно какое» или «пришёл сам, полей агентства нет»."""
+    name = (payload.agency_name or "").strip()
+    contact = (payload.agency_contact or "").strip()
+    if not payload.via_agency:
+        return {"via_agency": False, "agency_name": None, "agency_contact": None}
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите, какое агентство привело клиента",
+        )
+    return {"via_agency": True, "agency_name": name, "agency_contact": contact or None}
+
+
+def update_source(db: Session, client: Client, payload: ClientSourceUpdate) -> Client:
+    """Источник, в отличие от ФИО/телефона/почты, не замораживается после
+    создания: то, что клиента привело агентство, нередко выясняется позже."""
+    for field, value in _clean_source(payload).items():
+        setattr(client, field, value)
+    db.flush()
+    return client
+
+
 def create_client(db: Session, payload: ClientCreate) -> Client:
     cycle = Cycle(status=CycleStatus.CLIENT)
     db.add(cycle)
@@ -101,6 +126,7 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
         phone=payload.phone,
         email=payload.email,
         contacts=[c.model_dump() for c in payload.contacts],
+        **_clean_source(payload),
     )
     db.add(client)
     db.flush()

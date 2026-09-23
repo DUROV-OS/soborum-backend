@@ -14,7 +14,19 @@ class ClientContact(BaseModel):
     contact: str
 
 
-class ClientCreate(BaseModel):
+class ClientSourceUpdate(BaseModel):
+    """Источник клиента: пришёл сам или его привело агентство-партнёр (0079-c).
+
+    `agency_name` обязательно при `via_agency = True`; при `via_agency = False`
+    поля агентства чистятся, чтобы у клиента, помеченного прямым, не осталось
+    названия от прошлой правки."""
+
+    via_agency: bool = False
+    agency_name: str | None = None
+    agency_contact: str | None = None
+
+
+class ClientCreate(ClientSourceUpdate):
     full_name: str
     phone: str
     email: str
@@ -102,6 +114,10 @@ class ClientOut(BaseModel):
     email: str
     contacts: list[ClientContact] = []
     chat_links: list[ClientChatLinkOut] = []
+
+    via_agency: bool
+    agency_name: str | None
+    agency_contact: str | None
 
     order_type: OrderType | None
     house_model_key: str | None
