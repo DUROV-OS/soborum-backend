@@ -21,6 +21,8 @@ from app.accounting.models import (
     MONEY_SUBKIND_LABELS,
     SUBKIND_REQUIRED_SOURCE,
     BankAccount,
+    Counterparty,
+    CounterpartyKind,
     EmployeeKpi,
     MoneyAssessment,
     MoneyDirection,
@@ -34,6 +36,9 @@ from app.accounting.models import (
 )
 from app.accounting.schemas import (
     AccountSummary,
+    CounterpartyCreate,
+    CounterpartyOut,
+    CounterpartyUpdate,
     BankAccountCreate,
     BankAccountUpdate,
     EmployeeSalaryOverview,
@@ -448,6 +453,212 @@ def money_summary(
     return MoneySummaryOut(total=total, organizations=organizations)
 
 
+
+# --------------------------------------------------------------------------- #
+# Единый справочник контрагентов (0081-c)                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _counterparty_links(
+    db: Session, kind: CounterpartyKind, client_id: int | None, supplier_id: int | None
+) -> CounterpartyKind:
+    """Проверяет, что контрагент ссылается не более чем на одну запись, и что
+    тип согласован со ссылкой. Возвращает согласованный тип."""
+    if client_id is not None and supplier_id is not None:
+        raise _bad_request("Контрагент не может быть одновременно клиентом и поставщиком")
+    if client_id is not None:
+        if db.get(Client, client_id) is None:
+            raise _bad_request("Клиент не найден")
+        return CounterpartyKind.CLIENT
+    if supplier_id is not None:
+        if db.get(Supplier, supplier_id) is None:
+            raise _bad_request("Поставщик не найден")
+        return CounterpartyKind.SUPPLIER
+    return kind
+
+
+def _assert_inn_free(db: Session, inn: str | None, *, exclude_id: int | None = None) -> None:
+    if not inn:
+        return
+    query = db.query(Counterparty.id).filter(Counterparty.inn == inn)
+    if exclude_id is not None:
+        query = query.filter(Counterparty.id != exclude_id)
+    if query.first() is not None:
+        raise _conflict(f"Контрагент с ИНН {inn} уже есть в справочнике")
+
+
+def list_counterparties(
+    db: Session,
+    *,
+    query: str | None = None,
+    kind: CounterpartyKind | None = None,
+    is_active: bool | None = True,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[Counterparty]:
+    stmt = select(Counterparty)
+    if kind is not None:
+        stmt = stmt.where(Counterparty.kind == kind)
+    if is_active is not None:
+        stmt = stmt.where(Counterparty.is_active.is_(is_active))
+    if query and query.strip():
+        needle = f"%{query.strip().lower()}%"
+        stmt = stmt.where(
+            func.lower(Counterparty.name).like(needle) | Counterparty.inn.like(needle)
+        )
+    stmt = stmt.order_by(Counterparty.name).limit(limit).offset(offset)
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_counterparty_or_404(db: Session, counterparty_id: int) -> Counterparty:
+    counterparty = db.get(Counterparty, counterparty_id)
+    if counterparty is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Контрагент не найден")
+    return counterparty
+
+
+def create_counterparty(db: Session, data: CounterpartyCreate) -> Counterparty:
+    name = (data.name or "").strip()
+    if not name:
+        raise _bad_request("У контрагента должно быть наименование")
+    inn = (data.inn or "").strip() or None
+    _assert_inn_free(db, inn)
+    kind = _counterparty_links(db, data.kind, data.client_id, data.supplier_id)
+    counterparty = Counterparty(
+        name=name,
+        inn=inn,
+        kind=kind,
+        client_id=data.client_id,
+        supplier_id=data.supplier_id,
+        comment=data.comment,
+        is_active=True,
+    )
+    db.add(counterparty)
+    db.commit()
+    db.refresh(counterparty)
+    return counterparty
+
+
+def update_counterparty(
+    db: Session, counterparty: Counterparty, data: CounterpartyUpdate
+) -> Counterparty:
+    payload = data.model_dump(exclude_unset=True)
+    if "name" in payload:
+        name = (payload["name"] or "").strip()
+        if not name:
+            raise _bad_request("У контрагента должно быть наименование")
+        counterparty.name = name
+    if "inn" in payload:
+        inn = (payload["inn"] or "").strip() or None
+        _assert_inn_free(db, inn, exclude_id=counterparty.id)
+        counterparty.inn = inn
+    if "comment" in payload:
+        counterparty.comment = payload["comment"]
+    if "is_active" in payload:
+        counterparty.is_active = bool(payload["is_active"])
+
+    new_client = payload.get("client_id", counterparty.client_id)
+    new_supplier = payload.get("supplier_id", counterparty.supplier_id)
+    new_kind = payload.get("kind", counterparty.kind)
+    counterparty.kind = _counterparty_links(db, new_kind, new_client, new_supplier)
+    counterparty.client_id = new_client
+    counterparty.supplier_id = new_supplier
+
+    db.commit()
+    db.refresh(counterparty)
+    return counterparty
+
+
+def counterparty_out(db: Session, counterparty: Counterparty) -> CounterpartyOut:
+    """Карточка контрагента: запись плюс агрегаты по его **проведённым**
+    платежам (черновик — ещё не движение денег)."""
+    out = CounterpartyOut.model_validate(counterparty)
+    rows = db.execute(
+        select(
+            MoneyMovement.direction,
+            func.coalesce(func.sum(MoneyMovement.amount), 0.0),
+            func.count(MoneyMovement.id),
+            func.max(_effective_date()),
+        )
+        .where(
+            MoneyMovement.counterparty_id == counterparty.id,
+            MoneyMovement.status == MoneyMovementStatus.POSTED,
+        )
+        .group_by(MoneyMovement.direction)
+    ).all()
+    last: datetime | None = None
+    for direction, amount, count, last_at in rows:
+        if direction is MoneyDirection.INCOME:
+            out.total_income = float(amount or 0)
+        else:
+            out.total_expense = float(amount or 0)
+        out.payments_count += int(count or 0)
+        last_at = _aware(last_at if isinstance(last_at, datetime) else None)
+        if last_at is not None and (last is None or last_at > last):
+            last = last_at
+    out.last_payment_at = last
+    return out
+
+
+def match_or_create_counterparty(
+    db: Session, name: str | None, inn: str | None = None
+) -> Counterparty | None:
+    """Контрагент строки выписки: сначала по ИНН, затем по нормализованному
+    наименованию (без ОПФ, кавычек и регистра — тот же `_norm_name`, что уже
+    сопоставляет клиентов при импорте 0011-k). Не нашёлся — заводим нового с
+    типом `other`: платёж без контрагента теряет историю, а лишняя запись в
+    справочнике правится руками.
+
+    Пустое имя без ИНН — None: выдумывать контрагента не из чего."""
+    inn = (inn or "").strip() or None
+    name = (name or "").strip() or None
+
+    if inn:
+        existing = db.query(Counterparty).filter(Counterparty.inn == inn).first()
+        if existing is not None:
+            return existing
+
+    if not name:
+        return None
+
+    target = _norm_name(name)
+    if target:
+        for candidate in db.query(Counterparty).all():
+            if _norm_name(candidate.name) == target:
+                if inn and not candidate.inn:
+                    candidate.inn = inn
+                return candidate
+
+    counterparty = Counterparty(name=name, inn=inn, kind=CounterpartyKind.OTHER, is_active=True)
+    db.add(counterparty)
+    db.flush()
+    return counterparty
+
+
+def list_counterparty_payments(
+    db: Session,
+    counterparty_id: int,
+    *,
+    account_id: int | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[MoneyMovement]:
+    """История платежей контрагента, новые сверху — по дате операции, а не по
+    дате заведения записи: выписка импортируется задним числом."""
+    effective_date = _effective_date()
+    stmt = select(MoneyMovement).where(MoneyMovement.counterparty_id == counterparty_id)
+    if account_id is not None:
+        stmt = stmt.where(MoneyMovement.account_id == account_id)
+    if date_from is not None:
+        stmt = stmt.where(effective_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(effective_date <= date_to)
+    stmt = stmt.order_by(effective_date.desc(), MoneyMovement.id.desc()).limit(limit).offset(offset)
+    return list(db.execute(stmt).scalars().all())
+
+
 def create_money_movement(
     db: Session, data: MoneyMovementCreate, initiator_id: int
 ) -> MoneyMovement:
@@ -460,6 +671,9 @@ def create_money_movement(
         db, data.subkind, data.client_id, data.employee_id, data.supply_id
     )
     account_id = _resolve_account(db, data.account_id)
+    if data.counterparty_id is not None:
+        if db.get(Counterparty, data.counterparty_id) is None:
+            raise _bad_request("Контрагент не найден")
 
     if data.subkind is MoneySubkind.SALARY_PAYOUT:
         _assert_no_open_salary_payout(db, data.employee_id)
@@ -483,6 +697,7 @@ def create_money_movement(
         comment=data.comment,
         external_number=data.external_number,
         source_kind=source_kind,
+        counterparty_id=data.counterparty_id,
         client_id=data.client_id,
         employee_id=data.employee_id,
         supply_id=data.supply_id,
@@ -526,6 +741,7 @@ def list_money_movements(
     client_id: int | None = None,
     employee_id: int | None = None,
     supply_id: int | None = None,
+    counterparty_id: int | None = None,
     initiator_id: int | None = None,
     account_id: int | None = None,
     organization_id: int | None = None,
@@ -558,6 +774,8 @@ def list_money_movements(
         stmt = stmt.where(MoneyMovement.employee_id == employee_id)
     if supply_id is not None:
         stmt = stmt.where(MoneyMovement.supply_id == supply_id)
+    if counterparty_id is not None:
+        stmt = stmt.where(MoneyMovement.counterparty_id == counterparty_id)
     if initiator_id is not None:
         stmt = stmt.where(MoneyMovement.initiator_id == initiator_id)
     if account_id is not None:
@@ -613,10 +831,14 @@ def update_money_movement(
     if "account_id" in payload:
         mm.account_id = _resolve_account(db, payload["account_id"])
 
+    if payload.get("counterparty_id") is not None:
+        if db.get(Counterparty, payload["counterparty_id"]) is None:
+            raise _bad_request("Контрагент не найден")
+
     for field in (
         "amount", "currency", "tax", "assessment", "affects_profit",
         "payment_purpose", "comment", "external_number", "link",
-        "subkind", "client_id", "employee_id", "supply_id",
+        "subkind", "client_id", "employee_id", "supply_id", "counterparty_id",
     ):
         if field in payload:
             setattr(mm, field, payload[field])

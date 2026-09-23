@@ -3,6 +3,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.accounting.models import (
+    CounterpartyKind,
     MoneyAssessment,
     MoneyDirection,
     MoneyMovement,
@@ -113,9 +114,51 @@ class MoneySummaryOut(BaseModel):
     organizations: list[OrganizationSummary] = []
 
 
+
+# --- Единый справочник контрагентов (0081-c) ---
+
+
+class CounterpartyCreate(BaseModel):
+    name: str
+    inn: str | None = None
+    kind: CounterpartyKind = CounterpartyKind.OTHER
+    client_id: int | None = None
+    supplier_id: int | None = None
+    comment: str | None = None
+
+
+class CounterpartyUpdate(BaseModel):
+    name: str | None = None
+    inn: str | None = None
+    kind: CounterpartyKind | None = None
+    client_id: int | None = None
+    supplier_id: int | None = None
+    comment: str | None = None
+    is_active: bool | None = None
+
+
+class CounterpartyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    inn: str | None
+    kind: CounterpartyKind
+    client_id: int | None
+    supplier_id: int | None
+    comment: str | None
+    is_active: bool
+    # Агрегаты по проведённым платежам — заполняет service.counterparty_out().
+    total_income: float = 0
+    total_expense: float = 0
+    payments_count: int = 0
+    last_payment_at: datetime | None = None
+
+
 class MoneyMovementCreate(BaseModel):
     subkind: MoneySubkind
     amount: float
+    counterparty_id: int | None = None
     # Счёт, по которому прошёл платёж (0081-a). Обязателен для проводки,
     # заводимой человеком; None оставлен для авто-проводок внутри бэка
     # (record_sale_income / pay_supplier_order) — им счёт подставляет
@@ -145,6 +188,7 @@ class MoneyMovementCreate(BaseModel):
 
 class MoneyMovementUpdate(BaseModel):
     subkind: MoneySubkind | None = None
+    counterparty_id: int | None = None
     account_id: int | None = None
     amount: float | None = None
     currency: str | None = None
@@ -202,6 +246,8 @@ class MoneyMovementOut(BaseModel):
     payment_purpose: str | None
     comment: str | None
     external_number: str | None
+    counterparty_id: int | None
+    counterparty_name: str | None = None
     source_kind: MoneySourceKind
     client_id: int | None
     employee_id: int | None
@@ -216,6 +262,7 @@ class MoneyMovementOut(BaseModel):
     def from_movement(cls, mm: MoneyMovement) -> "MoneyMovementOut":
         out = cls.model_validate(mm)
         out.initiator_name = mm.initiator.full_name if mm.initiator else None
+        out.counterparty_name = mm.counterparty.name if mm.counterparty else None
         if mm.account is not None:
             out.account_name = mm.account.name
             out.organization_id = mm.account.organization_id
