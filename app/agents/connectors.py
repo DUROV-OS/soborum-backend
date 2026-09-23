@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.ids import AgentId
 from app.agents.types import ContextHit
-from app.clients.models import Client, ClientStage
+from app.clients.models import Client, ClientStage, stages_after
 from app.dashboard import service as dashboard
 from app.db.session import SessionLocal
 from app.production.models import ProductionBlock
@@ -111,7 +111,7 @@ def _legal_facts(db: Session) -> dict:
         "past_approval_without_locked_docs": sum(
             1
             for c in rows
-            if c.stage in (ClientStage.PAYMENT, ClientStage.POSTPAYMENT)
+            if c.stage in stages_after(ClientStage.APPROVAL)
             and c.documents_locked_at is None
         ),
     }
@@ -158,15 +158,32 @@ def _section_hit(section: str, data: dict) -> ContextHit | None:
     )
 
 
+# Короткие нейтральные названия стадий для сводки агентам. Полные подписи
+# (app.clients.models.STAGE_LABELS) сюда не годятся: «Договор подписан/Аванс
+# внесён» ловится юридическим фильтром на слова «договор»/«подпись»
+# (app.agents.legal), и чисто статистическая строка уходила бы на эскалацию
+# человеку.
+_STAGE_SHORT: dict[ClientStage, str] = {
+    ClientStage.LEAD: "лид",
+    ClientStage.DISCUSSION: "обсуждение",
+    ClientStage.SITE_VISIT: "показ объекта",
+    ClientStage.APPROVAL: "одобрение банка",
+    ClientStage.PAYMENT: "аванс внесён",
+    ClientStage.POSTPAYMENT: "в производстве",
+    ClientStage.ACCEPTANCE: "приёмка",
+    ClientStage.COMPLETED: "реализовано",
+}
+
+
 def _clients_line(d: dict) -> tuple[str, str]:
     s = d.get("stage_counts", {})
     return (
         "База DurovOS · Клиенты",
         (
             f"Клиентов в базе {d.get('total_clients', 0)} "
-            f"(лид {s.get('lead', 0)}, обсуждение {s.get('discussion', 0)}, "
-            f"согласование {s.get('approval', 0)}, оплата {s.get('payment', 0)}, "
-            f"постоплата {s.get('postpayment', 0)}). "
+            + "("
+            + ", ".join(f"{label} {s.get(stage.value, 0)}" for stage, label in _STAGE_SHORT.items())
+            + "). "
             f"Ждут подтверждения оплаты {d.get('awaiting_payment_confirmation', 0)}, "
             f"ждут остаток {d.get('awaiting_balance_payment', 0)}. "
             f"Лидов зависло дольше 14 дней {d.get('leads_stuck_over_14_days', 0)}."

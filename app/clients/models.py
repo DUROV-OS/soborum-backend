@@ -21,11 +21,22 @@ from app.db.base import Base
 
 
 class ClientStage(str, enum.Enum):
+    """Путь клиента от первого обращения до принятого дома (0079).
+
+    Значения первых пяти стадий остались от пятиколоночного пути — поменялись
+    только человеческие подписи (см. STAGE_LABELS):
+    `approval` — «Ипотека/Одобрение в банке», `payment` — «Договор подписан/
+    Аванс внесён», `postpayment` — «Дом в производстве».
+    """
+
     LEAD = "lead"
     DISCUSSION = "discussion"
+    SITE_VISIT = "site_visit"
     APPROVAL = "approval"
     PAYMENT = "payment"
     POSTPAYMENT = "postpayment"
+    ACCEPTANCE = "acceptance"
+    COMPLETED = "completed"
 
 
 class ClientChatState(str, enum.Enum):
@@ -97,10 +108,46 @@ def parse_payment_plan(value: str) -> PaymentPlan:
 CLIENT_STAGE_ORDER = [
     ClientStage.LEAD,
     ClientStage.DISCUSSION,
+    ClientStage.SITE_VISIT,
     ClientStage.APPROVAL,
     ClientStage.PAYMENT,
     ClientStage.POSTPAYMENT,
+    ClientStage.ACCEPTANCE,
+    ClientStage.COMPLETED,
 ]
+
+STAGE_LABELS: dict[ClientStage, str] = {
+    ClientStage.LEAD: "Лид",
+    ClientStage.DISCUSSION: "Обсуждение",
+    ClientStage.SITE_VISIT: "Гость на объекте",
+    ClientStage.APPROVAL: "Ипотека/Одобрение в банке",
+    ClientStage.PAYMENT: "Договор подписан/Аванс внесён",
+    ClientStage.POSTPAYMENT: "Дом в производстве",
+    ClientStage.ACCEPTANCE: "Приёмка",
+    ClientStage.COMPLETED: "Успешно реализовано",
+}
+
+# Стадии, с которых клиента двигает человек кнопкой «следующая стадия».
+# Всё, что после «Дом в производстве», двигается автоматически по монтажу
+# (app.installation.service) — руками такие стадии не переводят, и задача
+# «перевести на следующую стадию» на них не заводится.
+MANUAL_TRANSITION_STAGES = [
+    ClientStage.LEAD,
+    ClientStage.DISCUSSION,
+    ClientStage.SITE_VISIT,
+    ClientStage.APPROVAL,
+    ClientStage.PAYMENT,
+]
+
+
+def stage_label(stage: ClientStage) -> str:
+    return STAGE_LABELS[stage]
+
+
+def stages_after(stage: ClientStage) -> list[ClientStage]:
+    """Стадии строго позже указанной — чтобы проверки «клиент уже прошёл X»
+    не перечисляли стадии руками и не отставали при добавлении новых."""
+    return CLIENT_STAGE_ORDER[CLIENT_STAGE_ORDER.index(stage) + 1 :]
 
 
 class Client(Base):

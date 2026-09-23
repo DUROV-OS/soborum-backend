@@ -1,7 +1,8 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.clients.models import PaymentPlan
+from app.clients import service as client_service
+from app.clients.models import ClientStage, PaymentPlan
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import INSTALLATION_STAGE_ORDER, Installation, InstallationStage
 from app.installation.schemas import InstallationUpdate
@@ -50,7 +51,13 @@ def transition_stage(db: Session, installation: Installation) -> Installation:
     db.flush()
 
     if next_stage == InstallationStage.FOLLOWUP:
-        pass  # last stage reached; cycle is marked COMPLETED once followup itself finishes (see below)
+        # Последняя стадия монтажа: дом у клиента, идёт приёмка. Карточка
+        # клиента переезжает в «Приёмку» сама — вручную эту стадию не
+        # переводят (0079). Цикл станет COMPLETED, когда проработка
+        # закончится, — см. complete_installation ниже.
+        client_service.advance_stage_automatically(
+            db, installation.cycle.client, ClientStage.ACCEPTANCE
+        )
 
     return installation
 
@@ -70,4 +77,6 @@ def complete_installation(db: Session, installation: Installation) -> Installati
         )
     installation.cycle.status = CycleStatus.COMPLETED
     db.flush()
+    # Цикл закрыт — клиент доведён до конца пути (0079).
+    client_service.advance_stage_automatically(db, client, ClientStage.COMPLETED)
     return installation

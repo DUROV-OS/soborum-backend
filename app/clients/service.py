@@ -6,12 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.clients.models import (
     CLIENT_STAGE_ORDER,
+    MANUAL_TRANSITION_STAGES,
     Client,
     ClientChatLink,
     ClientNote,
     ClientStage,
     OrderType,
     PaymentPlan,
+    stage_label,
 )
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
@@ -39,6 +41,15 @@ def _next_stage(stage: ClientStage) -> ClientStage | None:
     return None
 
 
+def needs_stage_task(stage: ClientStage) -> bool:
+    """Нужна ли клиенту на этой стадии задача «перевести на следующую».
+
+    Нужна только там, где переводит человек. Стадии после «Дом в
+    производстве» двигает сама система по монтажу — см.
+    `advance_stage_automatically`."""
+    return stage in MANUAL_TRANSITION_STAGES
+
+
 def _open_stage_tasks(db: Session, client_id: int) -> list[Task]:
     return (
         db.query(Task)
@@ -57,10 +68,12 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
 
     Идемпотентна: если открытая задача под текущую стадию уже есть (или её
     стадия неизвестна — старые задачи без link_meta), ничего не создаёт.
-    На последней стадии не создаёт ничего. Вызывается при создании клиента,
-    при смене стадии и фоновой сверкой (app/clients/reconcile.py).
+    На стадиях, которые двигаются автоматически по монтажу («Дом в
+    производстве», «Приёмка», «Успешно реализовано» — 0079), не создаёт
+    ничего: переводить их руками некому и нечего. Вызывается при создании
+    клиента, при смене стадии и фоновой сверкой (app/clients/reconcile.py).
     """
-    if _next_stage(client.stage) is None:
+    if not needs_stage_task(client.stage):
         return None
     for task in _open_stage_tasks(db, client.id):
         meta_stage = (task.link_meta or {}).get("stage")
@@ -69,7 +82,7 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     assignees = user_service.users_with_access(db, Module.CLIENTS)
     return task_service.create_link_task(
         db,
-        title=f"Клиент «{client.full_name}»: перевести со стадии «{client.stage.value}» на следующую",
+        title=f"Клиент «{client.full_name}»: перевести со стадии «{stage_label(client.stage)}» на следующую",
         link_type=TaskLinkType.CLIENT_STAGE,
         link_id=client.id,
         assignees=assignees,
@@ -200,18 +213,21 @@ def record_balance_payment(
     payload: ClientBalancePaymentUpdate,
     initiator_id: int | None = None,
 ) -> Client:
-    """Отметить приём остатка «после получения». Осмысленно только на
-    «постоплате» и только для планов с оплатой после получения дома —
-    у полной предоплаты остаток погашен ещё на стадии «оплата»."""
+    """Отметить приём остатка «после получения». Осмысленно только после
+    старта производства (стадии «Дом в производстве» и «Приёмка») и только для
+    планов с оплатой после получения дома — у полной предоплаты остаток
+    погашен ещё на стадии «Договор подписан/Аванс внесён». На «Успешно
+    реализовано» цикл уже закрыт, а закрыть его с непогашенным остатком
+    нельзя (app.installation.service.complete_installation)."""
     if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="У клиента полная предоплата — остаток «после получения» не предусмотрен",
         )
-    if client.stage != ClientStage.POSTPAYMENT:
+    if client.stage not in (ClientStage.POSTPAYMENT, ClientStage.ACCEPTANCE):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Остаток «после получения» принимается на стадии «постоплата»",
+            detail="Остаток «после получения» принимается на стадиях «Дом в производстве» и «Приёмка»",
         )
     was_paid = client.balance_paid
     client.balance_paid = payload.balance_paid
@@ -387,9 +403,17 @@ _DOCUMENTS_REQUIRED = [
 
 
 def transition_stage(db: Session, client: Client) -> Client:
-    next_stage = _next_stage(client.stage)
-    if next_stage is None:
+    if client.stage == ClientStage.COMPLETED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Клиент уже на последней стадии")
+    if not needs_stage_task(client.stage):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Стадия «{stage_label(client.stage)}» двигается автоматически "
+                "по разделу «Монтаж» — вручную её не переводят"
+            ),
+        )
+    next_stage = _next_stage(client.stage)
 
     # DISCUSSION requires nothing (0044 removed the wishes/area/price/layout
     # "project" group that used to be filled and locked here) — the stage
@@ -476,12 +500,34 @@ def transition_stage(db: Session, client: Client) -> Client:
         if client.payment_plan != PaymentPlan.FULL_PREPAYMENT:
             _create_balance_payment_task(db, client)
 
-    # Закрываем все открытые задачи прошлой стадии (обычно одна; сверка могла
-    # оставить дубликат) и заводим одну под новую стадию.
+    _reset_stage_tasks(db, client)
+    return client
+
+
+def _reset_stage_tasks(db: Session, client: Client) -> None:
+    """Закрывает все открытые задачи прошлой стадии (обычно одна; сверка могла
+    оставить дубликат) и заводит одну под новую стадию."""
     for task in _open_stage_tasks(db, client.id):
         task_service.force_close(db, task)
     ensure_stage_transition_task(db, client)
 
+
+def advance_stage_automatically(db: Session, client: Client | None, target: ClientStage) -> Client | None:
+    """Двигает клиента на стадию, которой управляет не человек, а ход работ
+    («Приёмка» по выходу монтажа на проработку, «Успешно реализовано» по
+    завершению монтажа — 0079).
+
+    Только вперёд: клиента, уже стоящего на `target` или дальше, не трогает,
+    поэтому повторный вызов из монтажа ничего не ломает. Задачи стадии
+    пересобираются так же, как при ручном переходе.
+    """
+    if client is None:
+        return None
+    if CLIENT_STAGE_ORDER.index(client.stage) >= CLIENT_STAGE_ORDER.index(target):
+        return client
+    client.stage = target
+    db.flush()
+    _reset_stage_tasks(db, client)
     return client
 
 
