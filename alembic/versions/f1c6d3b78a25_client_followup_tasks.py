@@ -17,7 +17,13 @@ revision: str = 'f1c6d3b78a25'
 # головы alembic — это неподнявшийся бэкенд в проде.
 down_revision: Union[str, None] = 'e7b3c5a29f14'
 branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+# Миграция добавляет значение в тип task_report_kind, который создаёт 0077.
+# В main эта ревизия — предок по цепочке, и порядок гарантирован сам собой; на
+# стейдже цепочки 0077 и 0079 растут двумя параллельными ветками от одной
+# ревизии, и alembic волен взять 0079 первой — тогда ALTER TYPE падает на
+# «type task_report_kind does not exist». Явная зависимость чинит порядок в
+# обоих случаях.
+depends_on: Union[str, Sequence[str], None] = ('e5a9c247b108',)
 
 
 def upgrade() -> None:
