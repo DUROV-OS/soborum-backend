@@ -49,6 +49,12 @@ def list_warehouses(_: User = Depends(require_warehouse_view)):
     return [w.value for w in Warehouse]
 
 
+@app.get("/material-units", response_model=list[str])
+def list_material_units(_: User = Depends(require_warehouse_view)):
+    """Единицы измерения для формы нового материала (0078)."""
+    return warehouse_service.MATERIAL_UNITS
+
+
 @app.get("/categories", response_model=list[str])
 def list_categories(_: User = Depends(require_warehouse_view)):
     return [c.value for c in MaterialCategory]
