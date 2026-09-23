@@ -44,6 +44,26 @@ class TaskStatusUpdate(BaseModel):
     status: TaskStatus
 
 
+class TaskReportOut(BaseModel):
+    """Отчёт исполнителя о сдаче задачи (0077)."""
+
+    id: int
+    author: UserOut
+    comment: str
+    created_at: datetime
+    files: list[FileAssetOut]
+
+    @staticmethod
+    def from_model(report) -> "TaskReportOut":
+        return TaskReportOut(
+            id=report.id,
+            author=UserOut.from_model(report.author),
+            comment=report.comment,
+            created_at=report.created_at,
+            files=[FileAssetOut.model_validate(f) for f in report.files],
+        )
+
+
 class TaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -61,6 +81,7 @@ class TaskOut(BaseModel):
     reviewers: list[UserOut]
     responsible: UserOut | None
     images: list[FileAssetOut]
+    reports: list[TaskReportOut]
     depends_on_ids: list[int]
 
     @staticmethod
@@ -80,5 +101,6 @@ class TaskOut(BaseModel):
             reviewers=[UserOut.from_model(u) for u in task.reviewers],
             responsible=UserOut.from_model(task.responsible) if task.responsible else None,
             images=[FileAssetOut.model_validate(f) for f in task.images],
+            reports=[TaskReportOut.from_model(r) for r in task.reports],
             depends_on_ids=[t.id for t in task.depends_on],
         )

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
@@ -112,8 +112,31 @@ def update_task_status(
     db: Session = Depends(get_db),
     actor: User = Depends(require_tasks_edit),
 ):
+    if payload.status == TaskStatus.IN_REVIEW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сдать задачу можно только с отчётом — POST /api/tasks/{id}/report",
+        )
     task = task_service.get_task_or_404(db, task_id)
     task = task_service.set_status(db, task, payload.status, actor)
+    db.commit()
+    db.refresh(task)
+    return TaskOut.from_model(task)
+
+
+@app.post("/{task_id}/report", response_model=TaskOut)
+def submit_task_report(
+    task_id: int,
+    comment: str = Form(..., description="Комментарий исполнителя о выполненной задаче"),
+    files: list[UploadFile] = File(default=[], description="Файлы отчёта, по желанию"),
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_tasks_edit),
+):
+    """Сдать задачу с отчётом: «в работе» → «на проверке» вместе с
+    комментарием и файлами. Единственный способ сдать задачу вручную —
+    PATCH /{task_id}/status со статусом in_review отклоняется."""
+    task = task_service.get_task_or_404(db, task_id)
+    task = task_service.submit_report(db, task, actor, comment=comment, files=files)
     db.commit()
     db.refresh(task)
     return TaskOut.from_model(task)
