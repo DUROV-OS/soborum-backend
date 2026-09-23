@@ -23,7 +23,8 @@ def _make_locked_client(db):
         db, ClientCreate(full_name="Иван Тест", phone="+70000000000", email="ivan@example.com")
     )
     client_service.transition_stage(db, client)  # LEAD -> DISCUSSION
-    client_service.transition_stage(db, client)  # DISCUSSION -> APPROVAL
+    client_service.transition_stage(db, client)  # DISCUSSION -> SITE_VISIT
+    client_service.transition_stage(db, client)  # SITE_VISIT -> APPROVAL
     client.contract_file_id = 1
     client.house_project_file_id = 1
     client.contract_appendix_file_id = 1
