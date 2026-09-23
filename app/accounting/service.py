@@ -1084,8 +1084,13 @@ class ImportOutcome:
     skipped: int = 0
     created_ids: list[int] = field(default_factory=list)
     preliminary_subkind: int = 0  # проводок с «предварительным» видом
-    unmatched_source: int = 0  # строк с контрагентом, не сопоставленным клиенту
+    # строк, где колонка контрагента оказалась пустой — привязывать не к чему
+    unmatched_source: int = 0
     missing_payment_purpose: int = 0
+    # строк, совпавших с уже существующей проводкой этого счёта (0081-e)
+    duplicates: int = 0
+    counterparties_created: int = 0
+    counterparties_matched: int = 0
 
 
 def _norm_name(value: str) -> str:
@@ -1116,33 +1121,109 @@ def _match_client_by_name(db: Session, name: str | None) -> Client | None:
     return contained[0] if len(contained) == 1 else None
 
 
+
+def _counterparty_ids(db: Session) -> set[int]:
+    return {cid for (cid,) in db.query(Counterparty.id)}
+
+
+def _duplicate_movement_exists(db: Session, account_id: int, row) -> bool:
+    """Строка считается дублем, если на этом счёте уже есть проводка с тем же
+    номером документа, датой и суммой. Номер документа — критичная колонка
+    импорта, так что он есть всегда; счёт в условии обязателен: одна и та же
+    выписка, загруженная на счёт другого юрлица, — не дубль."""
+    if not row.external_number:
+        return False
+    query = db.query(MoneyMovement.id).filter(
+        MoneyMovement.account_id == account_id,
+        MoneyMovement.external_number == row.external_number,
+        MoneyMovement.amount == row.amount,
+    )
+    if row.doc_date is not None:
+        query = query.filter(MoneyMovement.doc_date == row.doc_date)
+    else:
+        query = query.filter(MoneyMovement.doc_date.is_(None))
+    return query.first() is not None
+
+
+def _settled_subkind_for(
+    db: Session, counterparty_id: int, direction: MoneyDirection
+) -> MoneySubkind | None:
+    """Единственная статья, которой проводились все прошлые платежи этого
+    контрагента в этом направлении. Разнобой или пустая история — None."""
+    rows = (
+        db.query(MoneyMovement.subkind)
+        .filter(
+            MoneyMovement.counterparty_id == counterparty_id,
+            MoneyMovement.direction == direction,
+            MoneyMovement.status == MoneyMovementStatus.POSTED,
+        )
+        .distinct()
+        .all()
+    )
+    if len(rows) != 1:
+        return None
+    subkind = rows[0][0]
+    return subkind if subkind not in _PRELIMINARY.values() else None
+
+
 def import_payments(
     db: Session,
     headers: list[str],
     data: list[list[str]],
     mapping: payment_import.PaymentColumnMapping,
     initiator_id: int,
+    account_id: int,
 ) -> ImportOutcome:
+    """Выписка из банк-клиента ложится на конкретный счёт (0081-e): каждая
+    строка становится проводкой в `draft` на `account_id`, её контрагент
+    сопоставляется с единым справочником, повторная загрузка того же файла на
+    тот же счёт дублей не плодит."""
+    account_id = _resolve_account(db, account_id)
     built = payment_import.build_rows(headers, data, mapping)
     outcome = ImportOutcome(skipped=built.skipped)
 
     for row in built.items:
+        if _duplicate_movement_exists(db, account_id, row):
+            outcome.duplicates += 1
+            continue
+
         subkind = row.subkind or _PRELIMINARY[row.direction]
         preliminary = row.subkind is None
 
-        client = _match_client_by_name(db, row.counterparty)
+        known_before = _counterparty_ids(db)
+        counterparty = match_or_create_counterparty(db, row.counterparty, row.counterparty_inn)
+        if counterparty is None:
+            outcome.unmatched_source += 1
+        elif counterparty.id in known_before:
+            outcome.counterparties_matched += 1
+        else:
+            outcome.counterparties_created += 1
+
+        # Операционная привязка (клиент/поставщик) — из контрагента, если он
+        # ссылается на нашу запись; на ней держится 0011-f, поэтому она
+        # остаётся рядом с новой, а не вместо неё.
+        client = (
+            db.get(Client, counterparty.client_id)
+            if counterparty is not None and counterparty.client_id is not None
+            else _match_client_by_name(db, row.counterparty)
+        )
         source_kind = MoneySourceKind.NONE
         client_id: int | None = None
-        comment = None
         if client is not None:
             client_id = client.id
             source_kind = MoneySourceKind.CLIENT
             if preliminary and row.direction is MoneyDirection.INCOME:
                 subkind = MoneySubkind.SALE_INCOME
                 preliminary = False
-        elif row.counterparty:
-            comment = f"Контрагент: {row.counterparty.strip()}"
-            outcome.unmatched_source += 1
+
+        if preliminary and counterparty is not None:
+            # Если по этому контрагенту уже проводили платежи и все они одной
+            # статьи — берём её, не дёргая ИИ. Разнобой в истории — оставляем
+            # предварительную: гадать не будем.
+            settled = _settled_subkind_for(db, counterparty.id, row.direction)
+            if settled is not None:
+                subkind = settled
+                preliminary = False
 
         mm = MoneyMovement(
             direction=_direction_for(subkind),
@@ -1153,12 +1234,14 @@ def import_payments(
             assessment=MoneyAssessment.ACTUAL,
             affects_profit=True,
             initiator_id=initiator_id,
+            account_id=account_id,
             status=MoneyMovementStatus.DRAFT,
             doc_date=row.doc_date,
             payment_purpose=row.payment_purpose,
-            comment=comment,
+            comment=None,
             external_number=row.external_number,
             source_kind=source_kind,
+            counterparty_id=counterparty.id if counterparty is not None else None,
             client_id=client_id,
         )
         db.add(mm)
