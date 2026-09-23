@@ -84,6 +84,10 @@ def update_material(db: Session, material: WarehouseMaterial, payload: Warehouse
     for field, value in fields.items():
         setattr(material, field, value)
     db.flush()
+    if "supplier_id" in fields:
+        # relationship уже загружен прежним значением - сбросить, чтобы
+        # `to_out` отдал имя нового поставщика, а не старое.
+        db.expire(material, ["supplier"])
     sync_shortage_task(db, material)
     return material
 
