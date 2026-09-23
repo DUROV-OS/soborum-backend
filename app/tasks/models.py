@@ -19,6 +19,17 @@ class TaskStatus(str, enum.Enum):
     DONE = "done"
 
 
+class TaskReportKind(str, enum.Enum):
+    """Кто и в какой момент оставил запись отчёта (см. TaskReport, 0077)."""
+
+    # Исполнитель сдал задачу: in_progress -> in_review.
+    SUBMISSION = "submission"
+    # Проверяющий принял работу: in_review -> done.
+    REVIEW_ACCEPTED = "review_accepted"
+    # Проверяющий вернул в работу: in_review -> in_progress.
+    REVIEW_RETURNED = "review_returned"
+
+
 class TaskLinkType(str, enum.Enum):
     """What auto-created this task, if anything. Domain sections that create
     linked tasks (clients, marketing, warehouse) look up their own entity by
@@ -133,12 +144,17 @@ class Task(Base):
 
 
 class TaskReport(Base):
-    """Отчёт исполнителя о сдаче задачи: комментарий о том, что сделано, и
-    приложенные файлы. Пишется в момент перехода in_progress -> in_review
-    (см. app.tasks.service.submit_report) и больше не меняется — это журнал
-    сдачи, а не редактируемое поле задачи. Отчётов у задачи может быть
-    несколько: каждый возврат проверяющим в работу и повторная сдача дают
-    новую запись.
+    """Запись отчёта по задаче: комментарий и приложенные файлы.
+
+    Пишется в момент перехода, к которому относится (см.
+    app.tasks.service.submit_report и review_task), и больше не меняется —
+    это журнал сдачи и приёмки, а не редактируемое поле задачи. `kind`
+    говорит, чья это запись: сдача исполнителя (комментарий обязателен) или
+    решение проверяющего — принято / возвращено в работу (комментарий и файлы
+    по желанию, запись создаётся только если что-то из них есть).
+
+    Записей у задачи может быть несколько: каждый круг «сдал — вернули —
+    сдал заново» добавляет свои.
     """
 
     __tablename__ = "task_reports"
@@ -148,6 +164,11 @@ class TaskReport(Base):
         ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
     )
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    kind: Mapped[TaskReportKind] = mapped_column(
+        Enum(TaskReportKind, name="task_report_kind"),
+        nullable=False,
+        default=TaskReportKind.SUBMISSION,
+    )
     comment: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

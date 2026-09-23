@@ -7,7 +7,7 @@ from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.common.module_access import Module
 from app.tasks import sync as task_sync
 from app.tasks import timelog
-from app.tasks.models import Task, TaskLinkType, TaskReport, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskReport, TaskReportKind, TaskStatus
 from app.users.models import User
 
 ALLOWED_MANUAL_TRANSITIONS = {
@@ -263,6 +263,25 @@ def set_status(db: Session, task: Task, new_status: TaskStatus, actor: User) -> 
     return _finalize_status(db, task, new_status, actor=actor)
 
 
+def _add_report(
+    db: Session,
+    task: Task,
+    actor: User,
+    *,
+    kind: TaskReportKind,
+    comment: str,
+    files: list[UploadFile],
+) -> None:
+    report = TaskReport(task_id=task.id, author_id=actor.id, kind=kind, comment=comment)
+    report.files = [
+        save_upload_file(db, upload, FilePurpose.TASK_REPORT_FILE, actor)
+        for upload in files
+        if upload is not None and upload.filename
+    ]
+    db.add(report)
+    db.flush()
+
+
 def submit_report(
     db: Session,
     task: Task,
@@ -296,16 +315,54 @@ def submit_report(
             detail="Сдать задачу может только исполнитель",
         )
 
-    report = TaskReport(task_id=task.id, author_id=actor.id, comment=text)
-    report.files = [
-        save_upload_file(db, upload, FilePurpose.TASK_REPORT_FILE, actor)
-        for upload in files
-        if upload is not None and upload.filename
-    ]
-    db.add(report)
-    db.flush()
-
+    _add_report(
+        db, task, actor,
+        kind=TaskReportKind.SUBMISSION, comment=text, files=list(files),
+    )
     return _finalize_status(db, task, TaskStatus.IN_REVIEW, actor=actor)
+
+
+def review_task(
+    db: Session,
+    task: Task,
+    actor: User,
+    *,
+    accept: bool,
+    comment: str = "",
+    files: list[UploadFile] = (),
+) -> Task:
+    """Решение проверяющего с отчётом: принять задачу (in_review -> done) или
+    вернуть в работу (in_review -> in_progress), приложив комментарий и файлы.
+
+    В отличие от сдачи исполнителем, комментарий и файлы необязательны: если
+    не приложено ничего, запись в журнал отчётов не добавляется — просто
+    меняется статус. Проверки статуса и роли — те же, что у обычного перехода
+    (см. set_status), поэтому решение идёт через него.
+    """
+    attachments = [f for f in files if f is not None and f.filename]
+    text = (comment or "").strip()
+    target = TaskStatus.DONE if accept else TaskStatus.IN_PROGRESS
+
+    if task.status != TaskStatus.IN_REVIEW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Принять или вернуть можно только задачу на проверке",
+        )
+    if actor not in task.reviewers:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Перевести задачу может только проверяющий",
+        )
+
+    if text or attachments:
+        _add_report(
+            db, task, actor,
+            kind=TaskReportKind.REVIEW_ACCEPTED if accept else TaskReportKind.REVIEW_RETURNED,
+            comment=text,
+            files=attachments,
+        )
+
+    return set_status(db, task, target, actor)
 
 
 def force_close(db: Session, task: Task) -> None:
