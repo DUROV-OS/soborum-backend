@@ -211,6 +211,55 @@ class BankAccount(Base):
     organization: Mapped["Organization"] = relationship(back_populates="accounts")
 
 
+class CounterpartyKind(str, enum.Enum):
+    """Тип контрагента. Клиент и поставщик дублируют существующие реестры
+    (`clients`, `suppliers`) ссылкой, а не копией данных; `government` и
+    `other` — то, чего в системе нет вовсе (налоговая, арендодатель, разовый
+    подрядчик) и из-за чего платёж раньше оставался без привязки."""
+
+    CLIENT = "client"
+    SUPPLIER = "supplier"
+    EMPLOYEE = "employee"
+    GOVERNMENT = "government"
+    OTHER = "other"
+
+
+class Counterparty(Base):
+    """Единый справочник контрагентов (0081-c).
+
+    Не отменяет `MoneyMovement.source_kind`: та привязка операционная (на ней
+    держатся оплата поставки и состояние оплаты клиента, 0011-f), эта —
+    денежная и общая, существует для любого платежа, включая налоги и аренду.
+    Поэтому у проводки могут быть заполнены обе."""
+
+    __tablename__ = "counterparties"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # ИНН уникален среди непустых; NULL-ы Postgres в UNIQUE не сравнивает,
+    # так что контрагентов без ИНН может быть сколько угодно.
+    inn: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    kind: Mapped[CounterpartyKind] = mapped_column(
+        Enum(CounterpartyKind, name="counterparty_kind"),
+        nullable=False,
+        default=CounterpartyKind.OTHER,
+        server_default=CounterpartyKind.OTHER.name,
+    )
+    # Заполнено не более одного: контрагент — либо наш клиент, либо поставщик,
+    # либо никто из известных системе (валидируется в service).
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    client: Mapped["Client"] = relationship(foreign_keys=[client_id])  # noqa: F821
+    supplier: Mapped["Supplier"] = relationship(foreign_keys=[supplier_id])  # noqa: F821
+
+
 class MoneyMovement(Base):
     __tablename__ = "money_movements"
 
@@ -273,6 +322,11 @@ class MoneyMovement(Base):
     # `POST /money-movements` без счёта — 422 (service._resolve_account).
     account_id: Mapped[int | None] = mapped_column(ForeignKey("bank_accounts.id"), nullable=True)
 
+    # Контрагент из единого справочника (0081-c). Отдельно от source_kind:
+    # та привязка операционная и есть не у каждого платежа, эта — денежная и
+    # общая (налоговая, арендодатель, разовый подрядчик тоже контрагенты).
+    counterparty_id: Mapped[int | None] = mapped_column(ForeignKey("counterparties.id"), nullable=True)
+
     # Полиморфная привязка: заполнено не более одного из client/employee/supply,
     # source_kind согласован с тем, что заполнено (валидируется в service).
     source_kind: Mapped[MoneySourceKind] = mapped_column(
@@ -298,6 +352,7 @@ class MoneyMovement(Base):
     documents: Mapped[list["FileAsset"]] = relationship(secondary=money_movement_documents)  # noqa: F821
     supply: Mapped["SupplierOrder"] = relationship(foreign_keys=[supply_id])
     account: Mapped["BankAccount"] = relationship(foreign_keys=[account_id])
+    counterparty: Mapped["Counterparty"] = relationship(foreign_keys=[counterparty_id])
 
 
 class EmployeeKpi(Base):
