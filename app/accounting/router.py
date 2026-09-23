@@ -308,7 +308,7 @@ def update_supplier_order(
 
 @app.delete("/supplier-orders/{order_id}", status_code=204)
 def delete_supplier_order(
-    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting_edit)
+    order_id: int, db: Session = Depends(get_db), _: User = Depends(require_accounting_full)
 ):
     order = accounting_service.get_supplier_order_or_404(db, order_id)
     accounting_service.delete_supplier_order(db, order)
