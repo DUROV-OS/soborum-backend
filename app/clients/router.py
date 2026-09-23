@@ -18,6 +18,7 @@ from app.clients.schemas import (
     ClientOut,
     ClientPaymentEditUnlockUpdate,
     ClientPaymentUpdate,
+    ClientSourceUpdate,
 )
 from app.common.files import FilePurpose, save_upload_file
 from app.common.module_access import Module
@@ -63,6 +64,21 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User 
 @app.get("/{client_id}", response_model=ClientOut)
 def get_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients_view)):
     return client_service.get_client_or_404(db, client_id)
+
+
+@app.patch("/{client_id}/source", response_model=ClientOut)
+def update_source(
+    client_id: int,
+    payload: ClientSourceUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_clients_edit),
+):
+    """Кто привёл клиента — сам пришёл или агентство-партнёр (0079-c)."""
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.update_source(db, client, payload)
+    db.commit()
+    db.refresh(client)
+    return client
 
 
 @app.patch("/{client_id}/documents", response_model=ClientOut)

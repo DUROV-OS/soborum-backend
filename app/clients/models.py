@@ -169,6 +169,16 @@ class Client(Base):
     # достаточно знать, где и как с ним связаться.
     contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
+    # --- Источник клиента (0079-c) ---
+    # Часть клиентов приходит через агентства недвижимости-партнёров. Без
+    # отметки связь с агентством после сделки теряется. Прямой клиент —
+    # via_agency = False и пустые agency_*; у клиентов, заведённых до 0079,
+    # так и есть (server_default). В отличие от остальных базовых данных
+    # источник редактируется после создания: агентство часто выясняется позже.
+    via_agency: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    agency_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agency_contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at
     # DISCUSSION (with wishes/area/price/layout free-text fields) — removed by
