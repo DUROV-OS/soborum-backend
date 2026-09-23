@@ -70,6 +70,13 @@ task_images = Table(
     Column("file_id", ForeignKey("file_assets.id", ondelete="CASCADE"), primary_key=True),
 )
 
+task_report_files = Table(
+    "task_report_files",
+    Base.metadata,
+    Column("report_id", ForeignKey("task_reports.id", ondelete="CASCADE"), primary_key=True),
+    Column("file_id", ForeignKey("file_assets.id", ondelete="CASCADE"), primary_key=True),
+)
+
 task_dependencies = Table(
     "task_dependencies",
     Base.metadata,
@@ -112,12 +119,45 @@ class Task(Base):
     responsible: Mapped["User | None"] = relationship(foreign_keys=[responsible_id])  # noqa: F821
     images: Mapped[list["FileAsset"]] = relationship(secondary=task_images)  # noqa: F821
 
+    reports: Mapped[list["TaskReport"]] = relationship(
+        order_by="TaskReport.created_at",
+        cascade="all, delete-orphan",
+    )
+
     depends_on: Mapped[list["Task"]] = relationship(
         secondary=task_dependencies,
         primaryjoin=id == task_dependencies.c.task_id,
         secondaryjoin=id == task_dependencies.c.depends_on_id,
         backref="blocks",
     )
+
+
+class TaskReport(Base):
+    """Отчёт исполнителя о сдаче задачи: комментарий о том, что сделано, и
+    приложенные файлы. Пишется в момент перехода in_progress -> in_review
+    (см. app.tasks.service.submit_report) и больше не меняется — это журнал
+    сдачи, а не редактируемое поле задачи. Отчётов у задачи может быть
+    несколько: каждый возврат проверяющим в работу и повторная сдача дают
+    новую запись.
+    """
+
+    __tablename__ = "task_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+    )
+
+    author: Mapped["User"] = relationship()  # noqa: F821
+    files: Mapped[list["FileAsset"]] = relationship(secondary=task_report_files)  # noqa: F821
 
 
 class TaskStageEvent(Base):
