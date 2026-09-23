@@ -35,8 +35,19 @@ def _supplier(db, name="ООО «Брус»"):
     return supplier
 
 
+def _default_account_id(api_client) -> int:
+    """Счёт обязателен с 0081-a; здесь он не предмет проверки — берём первый."""
+    accounts = api_client.get("/api/accounting/accounts").json()
+    return next(a["id"] for a in accounts if a["is_default"])
+
+
 def _create_movement(api_client, counterparty_id, **overrides):
-    body = {"subkind": "other_expense", "amount": 1000, "counterparty_id": counterparty_id}
+    body = {
+        "subkind": "other_expense",
+        "amount": 1000,
+        "counterparty_id": counterparty_id,
+        "account_id": _default_account_id(api_client),
+    }
     body.update(overrides)
     return api_client.post("/api/accounting/money-movements", json=body)
 
