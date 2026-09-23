@@ -3,6 +3,7 @@
 - материал заводится с видом/размером/диаметром/серийным номером/количеством в
   упаковке и поставщиком из справочника снабжения;
 - характеристики необязательны — материал без них заводится как раньше;
+- характеристики правятся и очищаются из карточки материала (PATCH, `null`);
 - `pack_quantity <= 0` отклоняется, несуществующий поставщик — 404;
 - справочник единиц измерения отдаётся отдельным эндпоинтом.
 """
@@ -105,3 +106,23 @@ def test_patch_updates_characteristics(api, make_user, db):
 
     bad = worker.patch(f"/api/warehouse/materials/{material_id}", json={"supplier_id": 987654})
     assert bad.status_code == 404
+
+
+def test_characteristics_can_be_cleared(api, make_user, db):
+    supplier = _supplier(db, name="ТД Метиз")
+    worker = api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT))
+    material_id = worker.post(
+        "/api/warehouse/materials",
+        json=_payload(kind="метизы", pack_quantity=100, supplier_id=supplier.id),
+    ).json()["id"]
+
+    resp = worker.patch(
+        f"/api/warehouse/materials/{material_id}",
+        json={"kind": None, "pack_quantity": None, "supplier_id": None},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] is None
+    assert body["pack_quantity"] is None
+    assert body["supplier_id"] is None
+    assert body["supplier_name"] is None
