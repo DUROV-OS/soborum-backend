@@ -40,6 +40,12 @@ from app.warehouse.schemas import (
 )
 
 
+# Единицы измерения для формы заведения материала (0078). Колонка `unit`
+# остаётся свободной строкой: в складе уже есть позиции с единицами вне этого
+# списка (импорт прайс-листов, записи до 0078) — их ломать нельзя.
+MATERIAL_UNITS = ["шт.", "рулон", "палета", "кв. м", "куб. м", "пог.м"]
+
+
 def get_material_or_404(db: Session, material_id: int) -> WarehouseMaterial:
     material = db.get(WarehouseMaterial, material_id)
     if not material:
@@ -54,7 +60,16 @@ def get_request_or_404(db: Session, request_id: int) -> MaterialRequest:
     return request
 
 
+def ensure_supplier_exists(db: Session, supplier_id: int | None) -> None:
+    """Поставщик материала — из справочника снабжения (`suppliers`)."""
+    if supplier_id is None:
+        return
+    if not db.get(Supplier, supplier_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Поставщик не найден")
+
+
 def create_material(db: Session, payload: WarehouseMaterialCreate) -> WarehouseMaterial:
+    ensure_supplier_exists(db, payload.supplier_id)
     material = WarehouseMaterial(**payload.model_dump())
     db.add(material)
     db.flush()
@@ -63,7 +78,10 @@ def create_material(db: Session, payload: WarehouseMaterialCreate) -> WarehouseM
 
 
 def update_material(db: Session, material: WarehouseMaterial, payload: WarehouseMaterialUpdate) -> WarehouseMaterial:
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    if "supplier_id" in fields:
+        ensure_supplier_exists(db, fields["supplier_id"])
+    for field, value in fields.items():
         setattr(material, field, value)
     db.flush()
     sync_shortage_task(db, material)
@@ -121,6 +139,13 @@ def to_out(db: Session, material: WarehouseMaterial) -> WarehouseMaterialOut:
         quantity_in_stock=float(material.quantity_in_stock),
         purchase_price=float(material.purchase_price),
         threshold=float(material.threshold),
+        kind=material.kind,
+        size=material.size,
+        diameter=material.diameter,
+        serial_number=material.serial_number,
+        pack_quantity=float(material.pack_quantity) if material.pack_quantity is not None else None,
+        supplier_id=material.supplier_id,
+        supplier_name=material.supplier.name if material.supplier else None,
         total_requested=requested,
         needs_supply=needs_supply(material, requested),
         request_breakdown=breakdown,
