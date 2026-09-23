@@ -15,6 +15,9 @@ from app.accounting.models import (
 from app.accounting.schemas import (
     AiFillSubkindRequest,
     AiFillSubkindResult,
+    BankAccountCreate,
+    BankAccountOut,
+    BankAccountUpdate,
     EmployeeKpiPeriod,
     EmployeeSalaryOverview,
     ImportBackfillRequest,
@@ -24,6 +27,10 @@ from app.accounting.schemas import (
     MoneyMovementOut,
     MoneyMovementStatusChange,
     MoneyMovementUpdate,
+    MoneySummaryOut,
+    OrganizationCreate,
+    OrganizationOut,
+    OrganizationUpdate,
     SupplierOrderCreate,
     SupplierOrderOut,
     SupplierOrderStatusChange,
@@ -152,6 +159,96 @@ def employee_kpi_history(
     return accounting_service.get_employee_kpi_history(db, employee_id)
 
 
+
+# --- Организации и банковские счета (0081-a) ---
+
+
+@app.get("/organizations", response_model=list[OrganizationOut])
+def list_organizations(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    include_inactive: bool = False,
+):
+    """Юрлица компании со вложенными счетами — вкладки раздела «Бухгалтерия»."""
+    return accounting_service.list_organizations(db, include_inactive=include_inactive)
+
+
+@app.post("/organizations", response_model=OrganizationOut, status_code=201)
+def create_organization(
+    payload: OrganizationCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    return accounting_service.create_organization(db, payload)
+
+
+@app.patch("/organizations/{org_id}", response_model=OrganizationOut)
+def update_organization(
+    org_id: int,
+    payload: OrganizationUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    org = accounting_service.get_organization_or_404(db, org_id)
+    return accounting_service.update_organization(db, org, payload)
+
+
+@app.get("/accounts", response_model=list[BankAccountOut])
+def list_accounts(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    organization_id: int | None = None,
+    include_inactive: bool = False,
+):
+    return accounting_service.list_accounts(
+        db, organization_id=organization_id, include_inactive=include_inactive
+    )
+
+
+@app.post("/accounts", response_model=BankAccountOut, status_code=201)
+def create_account(
+    payload: BankAccountCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    return accounting_service.create_account(db, payload)
+
+
+@app.patch("/accounts/{account_id}", response_model=BankAccountOut)
+def update_account(
+    account_id: int,
+    payload: BankAccountUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    """Счёт не удаляется — закрывается через `is_active = false`: у него
+    остаются проводки, которые нельзя осиротить."""
+    account = accounting_service.get_account_or_404(db, account_id)
+    return accounting_service.update_account(db, account, payload)
+
+
+@app.get("/money-summary", response_model=MoneySummaryOut)
+def money_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    organization_id: int | None = None,
+    account_id: int | None = None,
+    status_filter: MoneyMovementStatus | None = Query(MoneyMovementStatus.POSTED, alias="status"),
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+):
+    """Приход, расход и сальдо — по каждому счёту, организации и итогом.
+    По умолчанию считаются только проведённые проводки."""
+    return accounting_service.money_summary(
+        db,
+        organization_id=organization_id,
+        account_id=account_id,
+        status_=status_filter,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
 @app.get("/money-movements", response_model=list[MoneyMovementOut])
 def list_money_movements(
     db: Session = Depends(get_db),
@@ -164,6 +261,8 @@ def list_money_movements(
     employee_id: int | None = None,
     supply_id: int | None = None,
     initiator_id: int | None = None,
+    account_id: int | None = None,
+    organization_id: int | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     tax_min: float | None = None,
@@ -183,6 +282,8 @@ def list_money_movements(
         employee_id=employee_id,
         supply_id=supply_id,
         initiator_id=initiator_id,
+        account_id=account_id,
+        organization_id=organization_id,
         amount_min=amount_min,
         amount_max=amount_max,
         tax_min=tax_min,
@@ -217,6 +318,14 @@ def create_money_movement(
     db: Session = Depends(get_db),
     user: User = Depends(require_accounting_edit),
 ):
+    """Счёт (`account_id`) обязателен: проводка, заведённая человеком, всегда
+    относится к конкретному счёту организации (0081-a). Подстановка счёта по
+    умолчанию оставлена только авто-проводкам внутри бэка (0011-f)."""
+    if payload.account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Выберите счёт, по которому прошёл платёж",
+        )
     mm = accounting_service.create_money_movement(
         db, payload, initiator_id=payload.initiator_id or user.id
     )
