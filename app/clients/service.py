@@ -139,6 +139,49 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
     return client
 
 
+def search_clients(clients: list[Client], search: str | None) -> list[Client]:
+    """Отбор клиентов по фамилии/имени и телефону (0079-f).
+
+    По ФИО — вхождение без учёта регистра в любую часть строки, так что
+    работает и по фамилии, и по имени. По телефону — по цифрам: в базе он
+    лежит как его записал менеджер (`+7 900 123-45-67`), а ищут и
+    `89001234567`, и последние цифры. Ведущая 8/7 отбрасывается с обеих
+    сторон, чтобы записи одного российского номера сходились.
+
+    Отбор идёт в Python, а не в SQL, осознанно: список клиентов эндпоинт и
+    так отдаёт целиком, а регистронезависимое сравнение кириллицы в SQL
+    ведёт себя по-разному в PostgreSQL и SQLite (на котором гоняются тесты)
+    — поведение разъехалось бы между продом и проверками.
+
+    Почта, адрес и заметки сознательно не ищутся — заказчик просил искать по
+    фамилии или телефону.
+    """
+    text = (search or "").strip()
+    if not text:
+        return clients
+
+    lowered = text.lower()
+    digits = _phone_tail("".join(ch for ch in text if ch.isdigit()))
+    found = []
+    for client in clients:
+        if lowered in (client.full_name or "").lower():
+            found.append(client)
+            continue
+        if digits and _phone_tail(
+            "".join(ch for ch in (client.phone or "") if ch.isdigit())
+        ).endswith(digits):
+            found.append(client)
+    return found
+
+
+def _phone_tail(digits: str) -> str:
+    """Отбрасывает ведущую 8/7 у номера длиннее 10 цифр: `89001234567`,
+    `79001234567` и `9001234567` — один и тот же человек."""
+    if len(digits) > 10 and digits[0] in "78":
+        return digits[1:]
+    return digits
+
+
 def get_client_or_404(db: Session, client_id: int) -> Client:
     client = db.get(Client, client_id)
     if not client:

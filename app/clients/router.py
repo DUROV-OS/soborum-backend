@@ -50,11 +50,14 @@ def list_clients(
     db: Session = Depends(get_db),
     _: User = Depends(require_clients_view),
     stage: ClientStage | None = None,
+    search: str | None = None,
 ):
+    """`search` — поиск по фамилии/имени и номеру телефона (0079-f), по всем
+    стадиям сразу."""
     query = db.query(Client)
     if stage is not None:
         query = query.filter(Client.stage == stage)
-    return query.order_by(Client.id.desc()).all()
+    return client_service.search_clients(query.order_by(Client.id.desc()).all(), search)
 
 
 @app.post("/", response_model=ClientOut, status_code=status.HTTP_201_CREATED)
