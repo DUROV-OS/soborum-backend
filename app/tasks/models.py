@@ -34,6 +34,8 @@ class TaskReportKind(str, enum.Enum):
     REVIEW_ACCEPTED = "review_accepted"
     # Проверяющий вернул в работу: in_review -> in_progress.
     REVIEW_RETURNED = "review_returned"
+    # Срок задачи перенесён с указанием причины (задачи по клиенту, 0079-d).
+    DEADLINE_SHIFT = "deadline_shift"
 
 
 class TaskLinkType(str, enum.Enum):
@@ -43,6 +45,10 @@ class TaskLinkType(str, enum.Enum):
 
     NONE = "none"
     CLIENT_STAGE = "client_stage"
+    # Задача менеджера по клиенту: связаться, выслать каталог, уточнить по
+    # ипотеке и т.п. (0079-d). link_id — id клиента, link_meta — стадия на
+    # момент постановки и признак «блокирует переход на следующую стадию».
+    CLIENT_FOLLOWUP = "client_followup"
     # Приём остатка «после получения» для клиента с планом оплаты
     # ADVANCE_THEN_BALANCE / POST_PAYMENT (см. app.clients.models.PaymentPlan).
     CLIENT_BALANCE_PAYMENT = "client_balance_payment"

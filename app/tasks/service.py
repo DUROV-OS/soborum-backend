@@ -301,6 +301,34 @@ def _add_report(
     db.flush()
 
 
+def add_report(
+    db: Session,
+    task: Task,
+    actor: User,
+    *,
+    kind: TaskReportKind,
+    comment: str,
+) -> None:
+    """Записать в журнал задачи строку без смены статуса — например перенос
+    срока задачи по клиенту (0079-d). Файлы здесь не прикладываются: для
+    сдачи с вложениями есть submit_report."""
+    _add_report(db, task, actor, kind=kind, comment=comment, files=[])
+
+
+def close_with_resolution(db: Session, task: Task, actor: User, *, comment: str) -> Task:
+    """Закрыть задачу, записав в журнал, чем дело кончилось.
+
+    В отличие от submit_report не требует, чтобы закрывающий был исполнителем
+    и чтобы задача была ровно «в работе»: задачами по клиенту (0079-d)
+    занимается тот менеджер, который сейчас ведёт карточку, а не обязательно
+    тот, на кого её завели.
+    """
+    if task.status == TaskStatus.DONE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Задача уже закрыта")
+    _add_report(db, task, actor, kind=TaskReportKind.SUBMISSION, comment=comment, files=[])
+    return _finalize_status(db, task, TaskStatus.DONE, actor=actor)
+
+
 def submit_report(
     db: Session,
     task: Task,

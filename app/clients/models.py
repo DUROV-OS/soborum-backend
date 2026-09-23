@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    and_,
     Boolean,
     DateTime,
     Enum,
@@ -15,17 +16,29 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.db.base import Base
+from app.tasks.models import Task, TaskLinkType
 
 
 class ClientStage(str, enum.Enum):
+    """Путь клиента от первого обращения до принятого дома (0079).
+
+    Значения первых пяти стадий остались от пятиколоночного пути — поменялись
+    только человеческие подписи (см. STAGE_LABELS):
+    `approval` — «Ипотека/Одобрение в банке», `payment` — «Договор подписан/
+    Аванс внесён», `postpayment` — «Дом в производстве».
+    """
+
     LEAD = "lead"
     DISCUSSION = "discussion"
+    SITE_VISIT = "site_visit"
     APPROVAL = "approval"
     PAYMENT = "payment"
     POSTPAYMENT = "postpayment"
+    ACCEPTANCE = "acceptance"
+    COMPLETED = "completed"
 
 
 class ClientChatState(str, enum.Enum):
@@ -97,10 +110,46 @@ def parse_payment_plan(value: str) -> PaymentPlan:
 CLIENT_STAGE_ORDER = [
     ClientStage.LEAD,
     ClientStage.DISCUSSION,
+    ClientStage.SITE_VISIT,
     ClientStage.APPROVAL,
     ClientStage.PAYMENT,
     ClientStage.POSTPAYMENT,
+    ClientStage.ACCEPTANCE,
+    ClientStage.COMPLETED,
 ]
+
+STAGE_LABELS: dict[ClientStage, str] = {
+    ClientStage.LEAD: "Лид",
+    ClientStage.DISCUSSION: "Обсуждение",
+    ClientStage.SITE_VISIT: "Гость на объекте",
+    ClientStage.APPROVAL: "Ипотека/Одобрение в банке",
+    ClientStage.PAYMENT: "Договор подписан/Аванс внесён",
+    ClientStage.POSTPAYMENT: "Дом в производстве",
+    ClientStage.ACCEPTANCE: "Приёмка",
+    ClientStage.COMPLETED: "Успешно реализовано",
+}
+
+# Стадии, с которых клиента двигает человек кнопкой «следующая стадия».
+# Всё, что после «Дом в производстве», двигается автоматически по монтажу
+# (app.installation.service) — руками такие стадии не переводят, и задача
+# «перевести на следующую стадию» на них не заводится.
+MANUAL_TRANSITION_STAGES = [
+    ClientStage.LEAD,
+    ClientStage.DISCUSSION,
+    ClientStage.SITE_VISIT,
+    ClientStage.APPROVAL,
+    ClientStage.PAYMENT,
+]
+
+
+def stage_label(stage: ClientStage) -> str:
+    return STAGE_LABELS[stage]
+
+
+def stages_after(stage: ClientStage) -> list[ClientStage]:
+    """Стадии строго позже указанной — чтобы проверки «клиент уже прошёл X»
+    не перечисляли стадии руками и не отставали при добавлении новых."""
+    return CLIENT_STAGE_ORDER[CLIENT_STAGE_ORDER.index(stage) + 1 :]
 
 
 class Client(Base):
@@ -121,6 +170,16 @@ class Client(Base):
     # Паспорт/ИНН/дата рождения больше не собираются — для работы с клиентом
     # достаточно знать, где и как с ним связаться.
     contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+    # --- Источник клиента (0079-c) ---
+    # Часть клиентов приходит через агентства недвижимости-партнёров. Без
+    # отметки связь с агентством после сделки теряется. Прямой клиент —
+    # via_agency = False и пустые agency_*; у клиентов, заведённых до 0079,
+    # так и есть (server_default). В отличие от остальных базовых данных
+    # источник редактируется после создания: агентство часто выясняется позже.
+    via_agency: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    agency_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agency_contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at
@@ -179,6 +238,18 @@ class Client(Base):
 
     cycle: Mapped["Cycle"] = relationship(back_populates="client")  # noqa: F821
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    # Задачи менеджера по клиенту (0079-d) — обычные задачи системы, связанные
+    # с клиентом через link_type/link_id, поэтому связь только на чтение и без
+    # внешнего ключа: задачами владеет раздел «Задачи», здесь их только видно.
+    followup_tasks: Mapped[list["Task"]] = relationship(  # noqa: F821
+        "Task",
+        primaryjoin=lambda: and_(
+            foreign(Task.link_id) == Client.id,
+            Task.link_type == TaskLinkType.CLIENT_FOLLOWUP,
+        ),
+        order_by="Task.id.desc()",
+        viewonly=True,
+    )
     chat_links: Mapped[list["ClientChatLink"]] = relationship(
         back_populates="client", cascade="all, delete-orphan", order_by="ClientChatLink.id"
     )

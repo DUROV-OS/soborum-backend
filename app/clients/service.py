@@ -6,12 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.clients.models import (
     CLIENT_STAGE_ORDER,
+    MANUAL_TRANSITION_STAGES,
     Client,
     ClientChatLink,
     ClientNote,
     ClientStage,
     OrderType,
     PaymentPlan,
+    stage_label,
 )
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
@@ -21,13 +23,18 @@ from app.clients.schemas import (
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
     ClientPaymentUpdate,
+    ClientSourceUpdate,
+    ClientTaskClose,
+    ClientTaskCreate,
+    ClientTaskDeadlineUpdate,
 )
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.tasks import service as task_service
 from app.tasks import sync as task_sync
-from app.tasks.models import Task, TaskLinkType, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskReportKind, TaskStatus
 from app.users import service as user_service
+from app.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +44,15 @@ def _next_stage(stage: ClientStage) -> ClientStage | None:
     if idx + 1 < len(CLIENT_STAGE_ORDER):
         return CLIENT_STAGE_ORDER[idx + 1]
     return None
+
+
+def needs_stage_task(stage: ClientStage) -> bool:
+    """Нужна ли клиенту на этой стадии задача «перевести на следующую».
+
+    Нужна только там, где переводит человек. Стадии после «Дом в
+    производстве» двигает сама система по монтажу — см.
+    `advance_stage_automatically`."""
+    return stage in MANUAL_TRANSITION_STAGES
 
 
 def _open_stage_tasks(db: Session, client_id: int) -> list[Task]:
@@ -57,10 +73,12 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
 
     Идемпотентна: если открытая задача под текущую стадию уже есть (или её
     стадия неизвестна — старые задачи без link_meta), ничего не создаёт.
-    На последней стадии не создаёт ничего. Вызывается при создании клиента,
-    при смене стадии и фоновой сверкой (app/clients/reconcile.py).
+    На стадиях, которые двигаются автоматически по монтажу («Дом в
+    производстве», «Приёмка», «Успешно реализовано» — 0079), не создаёт
+    ничего: переводить их руками некому и нечего. Вызывается при создании
+    клиента, при смене стадии и фоновой сверкой (app/clients/reconcile.py).
     """
-    if _next_stage(client.stage) is None:
+    if not needs_stage_task(client.stage):
         return None
     for task in _open_stage_tasks(db, client.id):
         meta_stage = (task.link_meta or {}).get("stage")
@@ -69,12 +87,36 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     assignees = user_service.users_with_access(db, Module.CLIENTS)
     return task_service.create_link_task(
         db,
-        title=f"Клиент «{client.full_name}»: перевести со стадии «{client.stage.value}» на следующую",
+        title=f"Клиент «{client.full_name}»: перевести со стадии «{stage_label(client.stage)}» на следующую",
         link_type=TaskLinkType.CLIENT_STAGE,
         link_id=client.id,
         assignees=assignees,
         link_meta={"stage": client.stage.value},
     )
+
+
+def _clean_source(payload: ClientSourceUpdate) -> dict:
+    """Приводит источник клиента к одному из двух валидных состояний: «привело
+    агентство, известно какое» или «пришёл сам, полей агентства нет»."""
+    name = (payload.agency_name or "").strip()
+    contact = (payload.agency_contact or "").strip()
+    if not payload.via_agency:
+        return {"via_agency": False, "agency_name": None, "agency_contact": None}
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите, какое агентство привело клиента",
+        )
+    return {"via_agency": True, "agency_name": name, "agency_contact": contact or None}
+
+
+def update_source(db: Session, client: Client, payload: ClientSourceUpdate) -> Client:
+    """Источник, в отличие от ФИО/телефона/почты, не замораживается после
+    создания: то, что клиента привело агентство, нередко выясняется позже."""
+    for field, value in _clean_source(payload).items():
+        setattr(client, field, value)
+    db.flush()
+    return client
 
 
 def create_client(db: Session, payload: ClientCreate) -> Client:
@@ -88,12 +130,56 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
         phone=payload.phone,
         email=payload.email,
         contacts=[c.model_dump() for c in payload.contacts],
+        **_clean_source(payload),
     )
     db.add(client)
     db.flush()
 
     ensure_stage_transition_task(db, client)
     return client
+
+
+def search_clients(clients: list[Client], search: str | None) -> list[Client]:
+    """Отбор клиентов по фамилии/имени и телефону (0079-f).
+
+    По ФИО — вхождение без учёта регистра в любую часть строки, так что
+    работает и по фамилии, и по имени. По телефону — по цифрам: в базе он
+    лежит как его записал менеджер (`+7 900 123-45-67`), а ищут и
+    `89001234567`, и последние цифры. Ведущая 8/7 отбрасывается с обеих
+    сторон, чтобы записи одного российского номера сходились.
+
+    Отбор идёт в Python, а не в SQL, осознанно: список клиентов эндпоинт и
+    так отдаёт целиком, а регистронезависимое сравнение кириллицы в SQL
+    ведёт себя по-разному в PostgreSQL и SQLite (на котором гоняются тесты)
+    — поведение разъехалось бы между продом и проверками.
+
+    Почта, адрес и заметки сознательно не ищутся — заказчик просил искать по
+    фамилии или телефону.
+    """
+    text = (search or "").strip()
+    if not text:
+        return clients
+
+    lowered = text.lower()
+    digits = _phone_tail("".join(ch for ch in text if ch.isdigit()))
+    found = []
+    for client in clients:
+        if lowered in (client.full_name or "").lower():
+            found.append(client)
+            continue
+        if digits and _phone_tail(
+            "".join(ch for ch in (client.phone or "") if ch.isdigit())
+        ).endswith(digits):
+            found.append(client)
+    return found
+
+
+def _phone_tail(digits: str) -> str:
+    """Отбрасывает ведущую 8/7 у номера длиннее 10 цифр: `89001234567`,
+    `79001234567` и `9001234567` — один и тот же человек."""
+    if len(digits) > 10 and digits[0] in "78":
+        return digits[1:]
+    return digits
 
 
 def get_client_or_404(db: Session, client_id: int) -> Client:
@@ -200,18 +286,21 @@ def record_balance_payment(
     payload: ClientBalancePaymentUpdate,
     initiator_id: int | None = None,
 ) -> Client:
-    """Отметить приём остатка «после получения». Осмысленно только на
-    «постоплате» и только для планов с оплатой после получения дома —
-    у полной предоплаты остаток погашен ещё на стадии «оплата»."""
+    """Отметить приём остатка «после получения». Осмысленно только после
+    старта производства (стадии «Дом в производстве» и «Приёмка») и только для
+    планов с оплатой после получения дома — у полной предоплаты остаток
+    погашен ещё на стадии «Договор подписан/Аванс внесён». На «Успешно
+    реализовано» цикл уже закрыт, а закрыть его с непогашенным остатком
+    нельзя (app.installation.service.complete_installation)."""
     if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="У клиента полная предоплата — остаток «после получения» не предусмотрен",
         )
-    if client.stage != ClientStage.POSTPAYMENT:
+    if client.stage not in (ClientStage.POSTPAYMENT, ClientStage.ACCEPTANCE):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Остаток «после получения» принимается на стадии «постоплата»",
+            detail="Остаток «после получения» принимается на стадиях «Дом в производстве» и «Приёмка»",
         )
     was_paid = client.balance_paid
     client.balance_paid = payload.balance_paid
@@ -348,7 +437,13 @@ def delete_client(db: Session, client: Client) -> None:
     open_task = (
         db.query(Task)
         .filter(
-            Task.link_type.in_([TaskLinkType.CLIENT_STAGE, TaskLinkType.CLIENT_BALANCE_PAYMENT]),
+            Task.link_type.in_(
+                [
+                    TaskLinkType.CLIENT_STAGE,
+                    TaskLinkType.CLIENT_BALANCE_PAYMENT,
+                    TaskLinkType.CLIENT_FOLLOWUP,
+                ]
+            ),
             Task.link_id == client.id,
             Task.status != TaskStatus.DONE,
         )
@@ -387,9 +482,23 @@ _DOCUMENTS_REQUIRED = [
 
 
 def transition_stage(db: Session, client: Client) -> Client:
-    next_stage = _next_stage(client.stage)
-    if next_stage is None:
+    if client.stage == ClientStage.COMPLETED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Клиент уже на последней стадии")
+    if not needs_stage_task(client.stage):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Стадия «{stage_label(client.stage)}» двигается автоматически "
+                "по разделу «Монтаж» — вручную её не переводят"
+            ),
+        )
+    blocker = _blocking_followup_task(db, client.id)
+    if blocker is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Сначала закройте задачу «{blocker.title}»",
+        )
+    next_stage = _next_stage(client.stage)
 
     # DISCUSSION requires nothing (0044 removed the wishes/area/price/layout
     # "project" group that used to be filled and locked here) — the stage
@@ -476,13 +585,130 @@ def transition_stage(db: Session, client: Client) -> Client:
         if client.payment_plan != PaymentPlan.FULL_PREPAYMENT:
             _create_balance_payment_task(db, client)
 
-    # Закрываем все открытые задачи прошлой стадии (обычно одна; сверка могла
-    # оставить дубликат) и заводим одну под новую стадию.
+    _reset_stage_tasks(db, client)
+    return client
+
+
+def _reset_stage_tasks(db: Session, client: Client) -> None:
+    """Закрывает все открытые задачи прошлой стадии (обычно одна; сверка могла
+    оставить дубликат) и заводит одну под новую стадию."""
     for task in _open_stage_tasks(db, client.id):
         task_service.force_close(db, task)
     ensure_stage_transition_task(db, client)
 
+
+def advance_stage_automatically(db: Session, client: Client | None, target: ClientStage) -> Client | None:
+    """Двигает клиента на стадию, которой управляет не человек, а ход работ
+    («Приёмка» по выходу монтажа на проработку, «Успешно реализовано» по
+    завершению монтажа — 0079).
+
+    Только вперёд: клиента, уже стоящего на `target` или дальше, не трогает,
+    поэтому повторный вызов из монтажа ничего не ломает. Задачи стадии
+    пересобираются так же, как при ручном переходе.
+    """
+    if client is None:
+        return None
+    if CLIENT_STAGE_ORDER.index(client.stage) >= CLIENT_STAGE_ORDER.index(target):
+        return client
+    client.stage = target
+    db.flush()
+    _reset_stage_tasks(db, client)
     return client
+
+
+# --- Задачи менеджера по клиенту (0079-d) -------------------------------
+
+
+def _followup_tasks_query(db: Session, client_id: int):
+    return db.query(Task).filter(
+        Task.link_type == TaskLinkType.CLIENT_FOLLOWUP,
+        Task.link_id == client_id,
+    )
+
+
+def open_followup_tasks(db: Session, client_id: int) -> list[Task]:
+    return (
+        _followup_tasks_query(db, client_id)
+        .filter(Task.status != TaskStatus.DONE)
+        .order_by(Task.id.desc())
+        .all()
+    )
+
+
+def _blocking_followup_task(db: Session, client_id: int) -> Task | None:
+    for task in open_followup_tasks(db, client_id):
+        if (task.link_meta or {}).get("blocking", True):
+            return task
+    return None
+
+
+def get_followup_task_or_404(db: Session, client: Client, task_id: int) -> Task:
+    task = (
+        _followup_tasks_query(db, client.id).filter(Task.id == task_id).first()
+    )
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача по клиенту не найдена")
+    return task
+
+
+def create_followup_task(db: Session, client: Client, payload: ClientTaskCreate, actor: User) -> Task:
+    """Завести задачу менеджера по клиенту: связаться, выслать каталог,
+    уточнить по ипотеке. Срок обязателен — без него задача теряется, поэтому
+    он в схеме не опционален. Исполнители по умолчанию — тот, кто ставит."""
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Напишите, что нужно сделать")
+    return task_service.create_task(
+        db,
+        title=title,
+        description=payload.description,
+        deadline=payload.deadline,
+        # Проверку, что такие пользователи есть, делает сам create_task.
+        assignee_ids=payload.assignee_ids or [actor.id],
+        link_type=TaskLinkType.CLIENT_FOLLOWUP,
+        link_id=client.id,
+        link_meta={"stage": client.stage.value, "blocking": payload.blocking},
+    )
+
+
+def shift_followup_deadline(
+    db: Session, task: Task, payload: ClientTaskDeadlineUpdate, actor: User
+) -> Task:
+    """Перенести срок задачи с причиной. Причина обязательна: по ней потом
+    видно, почему клиент стоит на стадии."""
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Напишите причину переноса срока")
+    if task.status == TaskStatus.DONE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Задача закрыта — срок не переносят")
+    was = task.deadline.strftime("%d.%m.%Y") if task.deadline else "без срока"
+    task.deadline = payload.deadline
+    db.flush()
+    task_service.add_report(
+        db,
+        task,
+        actor,
+        kind=TaskReportKind.DEADLINE_SHIFT,
+        comment=f"Срок перенесён с {was} на {payload.deadline.strftime('%d.%m.%Y')}: {reason}",
+    )
+    return task
+
+
+def close_followup_task(
+    db: Session, client: Client, task: Task, payload: ClientTaskClose, actor: User
+) -> Task:
+    """Закрыть задачу описанием решения и, если передана, сразу завести
+    вытекающую — обычный ход работы с клиентом: «дозвонился, просит каталог»
+    → «выслать каталог»."""
+    resolution = payload.resolution.strip()
+    if not resolution:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Опишите, чем закончилась задача"
+        )
+    task_service.close_with_resolution(db, task, actor, comment=resolution)
+    if payload.next_task is not None:
+        create_followup_task(db, client, payload.next_task, actor)
+    return task
 
 
 def _apply_stage_plan(db: Session, client: Client, production, template_cache: dict[str, object]) -> None:

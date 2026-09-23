@@ -54,7 +54,9 @@ def _snapshot_clients(db: Session) -> dict:
         .count(),
         "awaiting_balance_payment": db.query(Client)
         .filter(
-            Client.stage == ClientStage.POSTPAYMENT,
+            # Остаток «после получения» принимают на «Доме в производстве» и
+            # на «Приёмке» — после неё цикл закрыть уже нельзя без оплаты.
+            Client.stage.in_([ClientStage.POSTPAYMENT, ClientStage.ACCEPTANCE]),
             Client.payment_plan != PaymentPlan.FULL_PREPAYMENT,
             Client.balance_paid.isnot(True),
         )

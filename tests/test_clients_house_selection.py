@@ -23,24 +23,30 @@ def _make_client(db, name="Клиент"):
     )
 
 
-def test_discussion_to_approval_requires_nothing(api, make_user, db):
+def _advance_to_approval(worker, client_id: int) -> None:
+    """LEAD -> DISCUSSION -> SITE_VISIT -> APPROVAL: до «Ипотеки/Одобрения в
+    банке» ни одна стадия ничего не требует."""
+    for _ in range(3):
+        resp = worker.post(f"/api/clients/{client_id}/transition")
+        assert resp.status_code == 200, resp.text
+
+
+def test_stages_before_approval_require_nothing(api, make_user, db):
     client = _make_client(db)
     db.commit()
     worker = api(make_user(Module.CLIENTS))
 
-    resp = worker.post(f"/api/clients/{client.id}/transition")  # LEAD -> DISCUSSION
-    assert resp.status_code == 200, resp.text
-    resp = worker.post(f"/api/clients/{client.id}/transition")  # DISCUSSION -> APPROVAL
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["stage"] == "approval"
+    for expected in ("discussion", "site_visit", "approval"):
+        resp = worker.post(f"/api/clients/{client.id}/transition")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["stage"] == expected
 
 
 def test_order_type_required_to_leave_approval_house_model_key_is_not(api, make_user, db):
     client = _make_client(db)
     db.commit()
     worker = api(make_user(Module.CLIENTS))
-    worker.post(f"/api/clients/{client.id}/transition")
-    worker.post(f"/api/clients/{client.id}/transition")
+    _advance_to_approval(worker, client.id)
 
     worker.patch(
         f"/api/clients/{client.id}/documents",
@@ -71,8 +77,7 @@ def test_houses_count_editable_after_documents_locked(api, make_user, db):
     client = _make_client(db)
     db.commit()
     worker = api(make_user(Module.CLIENTS))
-    worker.post(f"/api/clients/{client.id}/transition")
-    worker.post(f"/api/clients/{client.id}/transition")
+    _advance_to_approval(worker, client.id)
 
     client_from_db = db.get(Client, client.id)
     client_from_db.contract_file_id = 1
@@ -101,8 +106,7 @@ def test_houses_count_validates_against_order_type(api, make_user, db):
     client = _make_client(db)
     db.commit()
     worker = api(make_user(Module.CLIENTS))
-    worker.post(f"/api/clients/{client.id}/transition")
-    worker.post(f"/api/clients/{client.id}/transition")
+    _advance_to_approval(worker, client.id)
     worker.patch(f"/api/clients/{client.id}/documents", json={"order_type": "single"})
 
     resp = worker.patch(f"/api/clients/{client.id}/houses-count", json={"houses_count": 2})
@@ -115,8 +119,7 @@ def test_client_out_has_no_removed_fields_and_links_real_house_model(api, make_u
     client = _make_client(db)
     db.commit()
     worker = api(make_user(Module.CLIENTS))
-    worker.post(f"/api/clients/{client.id}/transition")
-    worker.post(f"/api/clients/{client.id}/transition")
+    _advance_to_approval(worker, client.id)
 
     resp = worker.patch(f"/api/clients/{client.id}/documents", json={"house_model_key": "barn-dh96"})
     assert resp.status_code == 200, resp.text
