@@ -24,13 +24,17 @@ from app.clients.schemas import (
     ClientHousesCountUpdate,
     ClientPaymentUpdate,
     ClientSourceUpdate,
+    ClientTaskClose,
+    ClientTaskCreate,
+    ClientTaskDeadlineUpdate,
 )
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.tasks import service as task_service
 from app.tasks import sync as task_sync
-from app.tasks.models import Task, TaskLinkType, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskReportKind, TaskStatus
 from app.users import service as user_service
+from app.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -555,6 +559,101 @@ def advance_stage_automatically(db: Session, client: Client | None, target: Clie
     db.flush()
     _reset_stage_tasks(db, client)
     return client
+
+
+# --- Задачи менеджера по клиенту (0079-d) -------------------------------
+
+
+def _followup_tasks_query(db: Session, client_id: int):
+    return db.query(Task).filter(
+        Task.link_type == TaskLinkType.CLIENT_FOLLOWUP,
+        Task.link_id == client_id,
+    )
+
+
+def open_followup_tasks(db: Session, client_id: int) -> list[Task]:
+    return (
+        _followup_tasks_query(db, client_id)
+        .filter(Task.status != TaskStatus.DONE)
+        .order_by(Task.id.desc())
+        .all()
+    )
+
+
+def _blocking_followup_task(db: Session, client_id: int) -> Task | None:
+    for task in open_followup_tasks(db, client_id):
+        if (task.link_meta or {}).get("blocking", True):
+            return task
+    return None
+
+
+def get_followup_task_or_404(db: Session, client: Client, task_id: int) -> Task:
+    task = (
+        _followup_tasks_query(db, client.id).filter(Task.id == task_id).first()
+    )
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача по клиенту не найдена")
+    return task
+
+
+def create_followup_task(db: Session, client: Client, payload: ClientTaskCreate, actor: User) -> Task:
+    """Завести задачу менеджера по клиенту: связаться, выслать каталог,
+    уточнить по ипотеке. Срок обязателен — без него задача теряется, поэтому
+    он в схеме не опционален. Исполнители по умолчанию — тот, кто ставит."""
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Напишите, что нужно сделать")
+    return task_service.create_task(
+        db,
+        title=title,
+        description=payload.description,
+        deadline=payload.deadline,
+        # Проверку, что такие пользователи есть, делает сам create_task.
+        assignee_ids=payload.assignee_ids or [actor.id],
+        link_type=TaskLinkType.CLIENT_FOLLOWUP,
+        link_id=client.id,
+        link_meta={"stage": client.stage.value, "blocking": payload.blocking},
+    )
+
+
+def shift_followup_deadline(
+    db: Session, task: Task, payload: ClientTaskDeadlineUpdate, actor: User
+) -> Task:
+    """Перенести срок задачи с причиной. Причина обязательна: по ней потом
+    видно, почему клиент стоит на стадии."""
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Напишите причину переноса срока")
+    if task.status == TaskStatus.DONE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Задача закрыта — срок не переносят")
+    was = task.deadline.strftime("%d.%m.%Y") if task.deadline else "без срока"
+    task.deadline = payload.deadline
+    db.flush()
+    task_service.add_report(
+        db,
+        task,
+        actor,
+        kind=TaskReportKind.DEADLINE_SHIFT,
+        comment=f"Срок перенесён с {was} на {payload.deadline.strftime('%d.%m.%Y')}: {reason}",
+    )
+    return task
+
+
+def close_followup_task(
+    db: Session, client: Client, task: Task, payload: ClientTaskClose, actor: User
+) -> Task:
+    """Закрыть задачу описанием решения и, если передана, сразу завести
+    вытекающую — обычный ход работы с клиентом: «дозвонился, просит каталог»
+    → «выслать каталог»."""
+    resolution = payload.resolution.strip()
+    if not resolution:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Опишите, чем закончилась задача"
+        )
+    task_service.close_with_resolution(db, task, actor, comment=resolution)
+    if payload.next_task is not None:
+        create_followup_task(db, client, payload.next_task, actor)
+    return task
 
 
 def _apply_stage_plan(db: Session, client: Client, production, template_cache: dict[str, object]) -> None:

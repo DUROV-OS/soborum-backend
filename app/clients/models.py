@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    and_,
     Boolean,
     DateTime,
     Enum,
@@ -15,9 +16,10 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.db.base import Base
+from app.tasks.models import Task, TaskLinkType
 
 
 class ClientStage(str, enum.Enum):
@@ -236,6 +238,18 @@ class Client(Base):
 
     cycle: Mapped["Cycle"] = relationship(back_populates="client")  # noqa: F821
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    # Задачи менеджера по клиенту (0079-d) — обычные задачи системы, связанные
+    # с клиентом через link_type/link_id, поэтому связь только на чтение и без
+    # внешнего ключа: задачами владеет раздел «Задачи», здесь их только видно.
+    followup_tasks: Mapped[list["Task"]] = relationship(  # noqa: F821
+        "Task",
+        primaryjoin=lambda: and_(
+            foreign(Task.link_id) == Client.id,
+            Task.link_type == TaskLinkType.CLIENT_FOLLOWUP,
+        ),
+        order_by="Task.id.desc()",
+        viewonly=True,
+    )
     chat_links: Mapped[list["ClientChatLink"]] = relationship(
         back_populates="client", cascade="all, delete-orphan", order_by="ClientChatLink.id"
     )
