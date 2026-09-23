@@ -45,9 +45,17 @@ def _supply(db, user):
     return order
 
 
+def _default_account_id(api_client) -> int:
+    """Счёт по умолчанию (0081-a): с этой задачи проводка без счёта не
+    создаётся, а сам счёт в этих проверках не предмет — берём первый."""
+    accounts = api_client.get("/api/accounting/accounts").json()
+    return next(a["id"] for a in accounts if a["is_default"])
+
+
 def _create(api_client, **overrides):
     body = {"subkind": "sale_income", "amount": 100000, "tax": 20000}
     body.update(overrides)
+    body.setdefault("account_id", _default_account_id(api_client))
     return api_client.post("/api/accounting/money-movements", json=body)
 
 

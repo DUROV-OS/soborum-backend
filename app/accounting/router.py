@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.accounting import payment_import, service as accounting_service
 from app.accounting.models import (
+    CounterpartyKind,
     MoneyDirection,
     MoneyMovementStatus,
     MoneySourceKind,
@@ -15,6 +16,12 @@ from app.accounting.models import (
 from app.accounting.schemas import (
     AiFillSubkindRequest,
     AiFillSubkindResult,
+    BankAccountCreate,
+    BankAccountOut,
+    BankAccountUpdate,
+    CounterpartyCreate,
+    CounterpartyOut,
+    CounterpartyUpdate,
     EmployeeKpiPeriod,
     EmployeeSalaryOverview,
     ImportBackfillRequest,
@@ -24,6 +31,10 @@ from app.accounting.schemas import (
     MoneyMovementOut,
     MoneyMovementStatusChange,
     MoneyMovementUpdate,
+    MoneySummaryOut,
+    OrganizationCreate,
+    OrganizationOut,
+    OrganizationUpdate,
     SupplierOrderCreate,
     SupplierOrderOut,
     SupplierOrderStatusChange,
@@ -64,7 +75,7 @@ def money_movement_enums(_: User = Depends(require_accounting_view)):
 
 @app.get("/money-movements/import/template")
 def download_import_template(_: User = Depends(require_accounting_view)):
-    """.xlsx-шаблон таблицы платежей для импорта."""
+    """.xlsx-шаблон выписки для импорта."""
     return Response(
         content=payment_import.generate_template(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -75,13 +86,17 @@ def download_import_template(_: User = Depends(require_accounting_view)):
 @app.post("/money-movements/import", response_model=MoneyMovementImportResult)
 def import_payments(
     file: UploadFile,
+    account_id: int = Query(..., description="Счёт, на который легли платежи выписки"),
     db: Session = Depends(get_db),
     user: User = Depends(require_accounting_edit),
 ):
-    """Импорт платежей таблицей (.xlsx/.csv). Колонки размечает ИИ (при
-    `ANTHROPIC_API_KEY`), иначе — словарь синонимов. Каждая строка → проводка в
-    `draft`. Без критичных колонок (сумма / направление / дата / контрагент /
-    НДС / номер документа) — отказ 400."""
+    """Импорт выписки из банк-клиента (.xlsx/.csv) на конкретный счёт.
+    Колонки размечает ИИ (при `ANTHROPIC_API_KEY`), иначе — словарь синонимов.
+    Каждая строка → проводка в `draft` на `account_id`, её контрагент
+    сопоставляется с единым справочником (0081-e). Без критичных колонок
+    (сумма / направление / дата / контрагент / НДС / номер документа) —
+    отказ 400; без счёта — 422."""
+    account = accounting_service.get_account_or_404(db, account_id)
     headers, data = payment_import.read_table(file)
     mapping = payment_import.resolve_mapping(headers, data)
 
@@ -93,7 +108,9 @@ def import_payments(
             detail=f"Не удалось определить колонку {which}. Заголовки файла: {headers}",
         )
 
-    outcome = accounting_service.import_payments(db, headers, data, mapping, user.id)
+    outcome = accounting_service.import_payments(
+        db, headers, data, mapping, user.id, account_id=account.id
+    )
     missing_optional = mapping.missing_optional()
     return MoneyMovementImportResult(
         imported=outcome.imported,
@@ -103,6 +120,13 @@ def import_payments(
         column_mapping=mapping.as_dict(),
         missing_fields=missing_optional,
         unmatched_source=outcome.unmatched_source,
+        duplicates=outcome.duplicates,
+        counterparties_created=outcome.counterparties_created,
+        counterparties_matched=outcome.counterparties_matched,
+        account_id=account.id,
+        account_label=f"{account.organization.short_name} — {account.name}"
+        if account.organization
+        else account.name,
         preliminary_subkind=outcome.preliminary_subkind,
         created_ids=outcome.created_ids,
         backfill_suggested=bool(outcome.imported)
@@ -152,6 +176,182 @@ def employee_kpi_history(
     return accounting_service.get_employee_kpi_history(db, employee_id)
 
 
+
+# --- Организации и банковские счета (0081-a) ---
+
+
+@app.get("/organizations", response_model=list[OrganizationOut])
+def list_organizations(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    include_inactive: bool = False,
+):
+    """Юрлица компании со вложенными счетами — вкладки раздела «Бухгалтерия»."""
+    return accounting_service.list_organizations(db, include_inactive=include_inactive)
+
+
+@app.post("/organizations", response_model=OrganizationOut, status_code=201)
+def create_organization(
+    payload: OrganizationCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    return accounting_service.create_organization(db, payload)
+
+
+@app.patch("/organizations/{org_id}", response_model=OrganizationOut)
+def update_organization(
+    org_id: int,
+    payload: OrganizationUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    org = accounting_service.get_organization_or_404(db, org_id)
+    return accounting_service.update_organization(db, org, payload)
+
+
+@app.get("/accounts", response_model=list[BankAccountOut])
+def list_accounts(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    organization_id: int | None = None,
+    include_inactive: bool = False,
+):
+    return accounting_service.list_accounts(
+        db, organization_id=organization_id, include_inactive=include_inactive
+    )
+
+
+@app.post("/accounts", response_model=BankAccountOut, status_code=201)
+def create_account(
+    payload: BankAccountCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    return accounting_service.create_account(db, payload)
+
+
+@app.patch("/accounts/{account_id}", response_model=BankAccountOut)
+def update_account(
+    account_id: int,
+    payload: BankAccountUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    """Счёт не удаляется — закрывается через `is_active = false`: у него
+    остаются проводки, которые нельзя осиротить."""
+    account = accounting_service.get_account_or_404(db, account_id)
+    return accounting_service.update_account(db, account, payload)
+
+
+@app.get("/money-summary", response_model=MoneySummaryOut)
+def money_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    organization_id: int | None = None,
+    account_id: int | None = None,
+    status_filter: MoneyMovementStatus | None = Query(MoneyMovementStatus.POSTED, alias="status"),
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+):
+    """Приход, расход и сальдо — по каждому счёту, организации и итогом.
+    По умолчанию считаются только проведённые проводки."""
+    return accounting_service.money_summary(
+        db,
+        organization_id=organization_id,
+        account_id=account_id,
+        status_=status_filter,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+
+# --- Единый справочник контрагентов (0081-c) ---
+
+
+@app.get("/counterparties", response_model=list[CounterpartyOut])
+def list_counterparties(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    query: str | None = None,
+    kind: CounterpartyKind | None = None,
+    include_inactive: bool = False,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Справочник с поиском по наименованию и ИНН. У каждой строки — суммы
+    прихода/расхода по её проведённым платежам."""
+    found = accounting_service.list_counterparties(
+        db,
+        query=query,
+        kind=kind,
+        is_active=None if include_inactive else True,
+        limit=limit,
+        offset=offset,
+    )
+    return [accounting_service.counterparty_out(db, c) for c in found]
+
+
+@app.post("/counterparties", response_model=CounterpartyOut, status_code=201)
+def create_counterparty(
+    payload: CounterpartyCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    counterparty = accounting_service.create_counterparty(db, payload)
+    return accounting_service.counterparty_out(db, counterparty)
+
+
+@app.get("/counterparties/{counterparty_id}", response_model=CounterpartyOut)
+def get_counterparty(
+    counterparty_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+):
+    counterparty = accounting_service.get_counterparty_or_404(db, counterparty_id)
+    return accounting_service.counterparty_out(db, counterparty)
+
+
+@app.patch("/counterparties/{counterparty_id}", response_model=CounterpartyOut)
+def update_counterparty(
+    counterparty_id: int,
+    payload: CounterpartyUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    """Контрагент не удаляется — уходит в `is_active = false`: на нём висит
+    история платежей, которую нельзя осиротить."""
+    counterparty = accounting_service.get_counterparty_or_404(db, counterparty_id)
+    counterparty = accounting_service.update_counterparty(db, counterparty, payload)
+    return accounting_service.counterparty_out(db, counterparty)
+
+
+@app.get("/counterparties/{counterparty_id}/payments", response_model=list[MoneyMovementOut])
+def counterparty_payments(
+    counterparty_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    account_id: int | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """История платежей контрагента по всем счетам, новые сверху."""
+    accounting_service.get_counterparty_or_404(db, counterparty_id)
+    payments = accounting_service.list_counterparty_payments(
+        db,
+        counterparty_id,
+        account_id=account_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    return [MoneyMovementOut.from_movement(mm) for mm in payments]
+
+
 @app.get("/money-movements", response_model=list[MoneyMovementOut])
 def list_money_movements(
     db: Session = Depends(get_db),
@@ -163,7 +363,10 @@ def list_money_movements(
     client_id: int | None = None,
     employee_id: int | None = None,
     supply_id: int | None = None,
+    counterparty_id: int | None = None,
     initiator_id: int | None = None,
+    account_id: int | None = None,
+    organization_id: int | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     tax_min: float | None = None,
@@ -182,7 +385,10 @@ def list_money_movements(
         client_id=client_id,
         employee_id=employee_id,
         supply_id=supply_id,
+        counterparty_id=counterparty_id,
         initiator_id=initiator_id,
+        account_id=account_id,
+        organization_id=organization_id,
         amount_min=amount_min,
         amount_max=amount_max,
         tax_min=tax_min,
@@ -217,6 +423,14 @@ def create_money_movement(
     db: Session = Depends(get_db),
     user: User = Depends(require_accounting_edit),
 ):
+    """Счёт (`account_id`) обязателен: проводка, заведённая человеком, всегда
+    относится к конкретному счёту организации (0081-a). Подстановка счёта по
+    умолчанию оставлена только авто-проводкам внутри бэка (0011-f)."""
+    if payload.account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Выберите счёт, по которому прошёл платёж",
+        )
     mm = accounting_service.create_money_movement(
         db, payload, initiator_id=payload.initiator_id or user.id
     )

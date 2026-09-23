@@ -182,6 +182,13 @@ def test_board_none_rejects_read(api, make_user, db):
 
 # ------------------------------------------------------------------ accounting --
 
+
+def _default_account_id(api_client) -> int:
+    """Счёт по умолчанию (0081-a): с этой задачи проводка без счёта — 422."""
+    accounts = api_client.get("/api/accounting/accounts").json()
+    return next(a["id"] for a in accounts if a["is_default"])
+
+
 def test_accounting_view_allows_read_rejects_write(api, make_user, db):
     viewer = api(make_user(Module.ACCOUNTING, level=AccessLevel.VIEW))
 
@@ -195,7 +202,13 @@ def test_accounting_view_allows_read_rejects_write(api, make_user, db):
 def test_accounting_edit_allows_write_rejects_delete(api, make_user, db):
     editor = api(make_user(Module.ACCOUNTING, level=AccessLevel.EDIT))
     resp = editor.post(
-        "/api/accounting/money-movements", json={"subkind": "other_income", "amount": 1000, "tax": 0}
+        "/api/accounting/money-movements",
+        json={
+            "subkind": "other_income",
+            "amount": 1000,
+            "tax": 0,
+            "account_id": _default_account_id(editor),
+        },
     )
     assert resp.status_code == 201, resp.text
     mm_id = resp.json()["id"]
@@ -206,7 +219,13 @@ def test_accounting_edit_allows_write_rejects_delete(api, make_user, db):
 def test_accounting_full_level_allows_delete_without_admin_role(api, make_user, db):
     full_worker = api(make_user(Module.ACCOUNTING, level=AccessLevel.FULL))
     mm_id = full_worker.post(
-        "/api/accounting/money-movements", json={"subkind": "other_income", "amount": 1000, "tax": 0}
+        "/api/accounting/money-movements",
+        json={
+            "subkind": "other_income",
+            "amount": 1000,
+            "tax": 0,
+            "account_id": _default_account_id(full_worker),
+        },
     ).json()["id"]
 
     assert full_worker.delete(f"/api/accounting/money-movements/{mm_id}").status_code == 204
@@ -290,7 +309,13 @@ def test_admin_passes_write_and_destructive_in_every_rolled_out_section(api, mak
     assert admin.post("/api/tasks/", json={"title": "Задача админа"}).status_code == 201
     assert admin.post("/api/marketing/content", json={"title": "Пост админа"}).status_code == 201
     mm_id = admin.post(
-        "/api/accounting/money-movements", json={"subkind": "other_income", "amount": 500, "tax": 0}
+        "/api/accounting/money-movements",
+        json={
+            "subkind": "other_income",
+            "amount": 500,
+            "tax": 0,
+            "account_id": _default_account_id(admin),
+        },
     ).json()["id"]
     assert admin.delete(f"/api/accounting/money-movements/{mm_id}").status_code == 204
     assert admin.get("/api/ai/mcp/status").status_code == 200
