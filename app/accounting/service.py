@@ -20,6 +20,7 @@ from app.accounting.models import (
     INCOME_SUBKINDS,
     MONEY_SUBKIND_LABELS,
     SUBKIND_REQUIRED_SOURCE,
+    BankAccount,
     EmployeeKpi,
     MoneyAssessment,
     MoneyDirection,
@@ -27,14 +28,23 @@ from app.accounting.models import (
     MoneyMovementStatus,
     MoneySourceKind,
     MoneySubkind,
+    Organization,
     SupplierOrder,
     SupplierOrderStatus,
 )
 from app.accounting.schemas import (
+    AccountSummary,
+    BankAccountCreate,
+    BankAccountUpdate,
     EmployeeSalaryOverview,
     MoneyMovementCreate,
     MoneyMovementOut,
     MoneyMovementUpdate,
+    MoneySummaryOut,
+    MoneyTotals,
+    OrganizationCreate,
+    OrganizationSummary,
+    OrganizationUpdate,
     SupplierOrderCreate,
     SupplierOrderUpdate,
 )
@@ -195,6 +205,249 @@ def _create_approval_task(db: Session, mm: MoneyMovement) -> None:
     )
 
 
+
+# --------------------------------------------------------------------------- #
+# Организации и банковские счета (0081-a)                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _effective_date():
+    """Дата операции: дата платёжного документа (импорт выпиской), иначе дата
+    проведения, иначе создание. Одно выражение для фильтра реестра и сводки."""
+    return func.coalesce(MoneyMovement.doc_date, MoneyMovement.posted_at, MoneyMovement.created_at)
+
+
+def list_organizations(db: Session, *, include_inactive: bool = False) -> list[Organization]:
+    stmt = select(Organization)
+    if not include_inactive:
+        stmt = stmt.where(Organization.is_active.is_(True))
+    return list(db.execute(stmt.order_by(Organization.id)).scalars().all())
+
+
+def get_organization_or_404(db: Session, org_id: int) -> Organization:
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Организация не найдена")
+    return org
+
+
+def create_organization(db: Session, data: OrganizationCreate) -> Organization:
+    name = (data.name or "").strip()
+    short_name = (data.short_name or "").strip()
+    if not name or not short_name:
+        raise _bad_request("У организации должны быть название и короткое название")
+    org = Organization(name=name, short_name=short_name, inn=(data.inn or None), is_active=True)
+    db.add(org)
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+def update_organization(db: Session, org: Organization, data: OrganizationUpdate) -> Organization:
+    payload = data.model_dump(exclude_unset=True)
+    for field_name in ("name", "short_name"):
+        if field_name in payload:
+            value = (payload[field_name] or "").strip()
+            if not value:
+                raise _bad_request("Название организации не может быть пустым")
+            setattr(org, field_name, value)
+    if "inn" in payload:
+        org.inn = payload["inn"] or None
+    if "is_active" in payload:
+        org.is_active = bool(payload["is_active"])
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+def list_accounts(
+    db: Session, *, organization_id: int | None = None, include_inactive: bool = False
+) -> list[BankAccount]:
+    stmt = select(BankAccount)
+    if organization_id is not None:
+        stmt = stmt.where(BankAccount.organization_id == organization_id)
+    if not include_inactive:
+        stmt = stmt.where(BankAccount.is_active.is_(True))
+    return list(db.execute(stmt.order_by(BankAccount.id)).scalars().all())
+
+
+def get_account_or_404(db: Session, account_id: int) -> BankAccount:
+    account = db.get(BankAccount, account_id)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
+    return account
+
+
+def _clear_other_defaults(db: Session, account: BankAccount) -> None:
+    """У организации ровно один счёт по умолчанию — снимаем флаг с остальных."""
+    others = (
+        db.query(BankAccount)
+        .filter(
+            BankAccount.organization_id == account.organization_id,
+            BankAccount.id != account.id,
+            BankAccount.is_default.is_(True),
+        )
+        .all()
+    )
+    for other in others:
+        other.is_default = False
+
+
+def create_account(db: Session, data: BankAccountCreate) -> BankAccount:
+    org = get_organization_or_404(db, data.organization_id)
+    name = (data.name or "").strip()
+    if not name:
+        raise _bad_request("У счёта должно быть название")
+    # первый счёт организации всегда становится счётом по умолчанию
+    has_default = any(a.is_default for a in list_accounts(db, organization_id=org.id))
+    account = BankAccount(
+        organization_id=org.id,
+        name=name,
+        bank_name=data.bank_name or None,
+        account_number=data.account_number or None,
+        currency=data.currency or "RUB",
+        is_default=bool(data.is_default) or not has_default,
+        is_active=True,
+    )
+    db.add(account)
+    db.flush()
+    if account.is_default:
+        _clear_other_defaults(db, account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+def update_account(db: Session, account: BankAccount, data: BankAccountUpdate) -> BankAccount:
+    payload = data.model_dump(exclude_unset=True)
+    if "name" in payload:
+        name = (payload["name"] or "").strip()
+        if not name:
+            raise _bad_request("У счёта должно быть название")
+        account.name = name
+    for field_name in ("bank_name", "account_number"):
+        if field_name in payload:
+            setattr(account, field_name, payload[field_name] or None)
+    if payload.get("is_default"):
+        account.is_default = True
+        _clear_other_defaults(db, account)
+    elif "is_default" in payload and not payload["is_default"]:
+        account.is_default = False
+    if "is_active" in payload:
+        account.is_active = bool(payload["is_active"])
+        if not account.is_active:
+            account.is_default = False
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+def _resolve_account(db: Session, account_id: int | None) -> int:
+    """Счёт проводки. Явно переданный — проверяем, что существует и активен;
+    без него берём счёт по умолчанию (авто-проводки 0011-f, которые про счета
+    ничего не знают). Счетов нет вовсе — 422, а не молчаливый NULL."""
+    if account_id is not None:
+        account = db.get(BankAccount, account_id)
+        if account is None:
+            raise _bad_request("Счёт не найден")
+        if not account.is_active:
+            raise _bad_request("Счёт закрыт — выберите действующий")
+        return account.id
+
+    default = (
+        db.query(BankAccount)
+        .filter(BankAccount.is_default.is_(True), BankAccount.is_active.is_(True))
+        .order_by(BankAccount.id)
+        .first()
+    )
+    if default is None:
+        raise _bad_request("Не заведено ни одного действующего счёта")
+    return default.id
+
+
+def money_summary(
+    db: Session,
+    *,
+    organization_id: int | None = None,
+    account_id: int | None = None,
+    status_: MoneyMovementStatus | None = MoneyMovementStatus.POSTED,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> MoneySummaryOut:
+    """Приход/расход/сальдо по каждому счёту, организации и итогом (0081-a).
+
+    Один агрегат по (счёт, направление), а не перебор проводок в Python.
+    По умолчанию считаются только проведённые (`posted`) проводки: черновик —
+    ещё не движение денег."""
+    stmt = (
+        select(
+            MoneyMovement.account_id,
+            MoneyMovement.direction,
+            func.coalesce(func.sum(MoneyMovement.amount), 0.0),
+            func.count(MoneyMovement.id),
+        )
+        .group_by(MoneyMovement.account_id, MoneyMovement.direction)
+    )
+    if status_ is not None:
+        stmt = stmt.where(MoneyMovement.status == status_)
+    if account_id is not None:
+        stmt = stmt.where(MoneyMovement.account_id == account_id)
+    if organization_id is not None:
+        stmt = stmt.where(
+            MoneyMovement.account_id.in_(
+                select(BankAccount.id).where(BankAccount.organization_id == organization_id)
+            )
+        )
+    effective_date = _effective_date()
+    if date_from is not None:
+        stmt = stmt.where(effective_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(effective_date <= date_to)
+
+    # {account_id: {"income": .., "expense": .., "count": ..}}
+    by_account: dict[int, dict[str, float]] = {}
+    for acc_id, direction, amount, count in db.execute(stmt).all():
+        if acc_id is None:
+            continue
+        bucket = by_account.setdefault(acc_id, {"income": 0.0, "expense": 0.0, "count": 0})
+        key = "income" if direction is MoneyDirection.INCOME else "expense"
+        bucket[key] += float(amount or 0)
+        bucket["count"] += int(count or 0)
+
+    organizations: list[OrganizationSummary] = []
+    total = MoneyTotals()
+    for org in list_organizations(db):
+        if organization_id is not None and org.id != organization_id:
+            continue
+        org_row = OrganizationSummary(
+            organization_id=org.id, name=org.name, short_name=org.short_name
+        )
+        for account in list_accounts(db, organization_id=org.id):
+            if account_id is not None and account.id != account_id:
+                continue
+            bucket = by_account.get(account.id, {"income": 0.0, "expense": 0.0, "count": 0})
+            org_row.accounts.append(
+                AccountSummary(
+                    account_id=account.id,
+                    name=account.name,
+                    income=bucket["income"],
+                    expense=bucket["expense"],
+                    balance=bucket["income"] - bucket["expense"],
+                    count=int(bucket["count"]),
+                )
+            )
+            org_row.income += bucket["income"]
+            org_row.expense += bucket["expense"]
+            org_row.count += int(bucket["count"])
+        org_row.balance = org_row.income - org_row.expense
+        organizations.append(org_row)
+        total.income += org_row.income
+        total.expense += org_row.expense
+        total.count += org_row.count
+    total.balance = total.income - total.expense
+    return MoneySummaryOut(total=total, organizations=organizations)
+
+
 def create_money_movement(
     db: Session, data: MoneyMovementCreate, initiator_id: int
 ) -> MoneyMovement:
@@ -206,6 +459,7 @@ def create_money_movement(
     source_kind = _resolve_source(
         db, data.subkind, data.client_id, data.employee_id, data.supply_id
     )
+    account_id = _resolve_account(db, data.account_id)
 
     if data.subkind is MoneySubkind.SALARY_PAYOUT:
         _assert_no_open_salary_payout(db, data.employee_id)
@@ -222,6 +476,7 @@ def create_money_movement(
         assessment=data.assessment,
         affects_profit=data.affects_profit,
         initiator_id=initiator_id,
+        account_id=account_id,
         status=MoneyMovementStatus.DRAFT,
         doc_date=data.doc_date,
         payment_purpose=data.payment_purpose,
@@ -272,6 +527,8 @@ def list_money_movements(
     employee_id: int | None = None,
     supply_id: int | None = None,
     initiator_id: int | None = None,
+    account_id: int | None = None,
+    organization_id: int | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     tax_min: float | None = None,
@@ -303,6 +560,15 @@ def list_money_movements(
         stmt = stmt.where(MoneyMovement.supply_id == supply_id)
     if initiator_id is not None:
         stmt = stmt.where(MoneyMovement.initiator_id == initiator_id)
+    if account_id is not None:
+        stmt = stmt.where(MoneyMovement.account_id == account_id)
+    if organization_id is not None:
+        # «любой счёт этой организации»
+        stmt = stmt.where(
+            MoneyMovement.account_id.in_(
+                select(BankAccount.id).where(BankAccount.organization_id == organization_id)
+            )
+        )
     if amount_min is not None:
         stmt = stmt.where(MoneyMovement.amount >= amount_min)
     if amount_max is not None:
@@ -311,11 +577,7 @@ def list_money_movements(
         stmt = stmt.where(MoneyMovement.tax >= tax_min)
     if tax_max is not None:
         stmt = stmt.where(MoneyMovement.tax <= tax_max)
-    # Период — по дате платёжного документа (импорт выпиской), иначе по дате
-    # проведения, иначе по созданию.
-    effective_date = func.coalesce(
-        MoneyMovement.doc_date, MoneyMovement.posted_at, MoneyMovement.created_at
-    )
+    effective_date = _effective_date()
     if date_from is not None:
         stmt = stmt.where(effective_date >= date_from)
     if date_to is not None:
@@ -347,6 +609,9 @@ def update_money_movement(
         raise _bad_request("Сумма налога не может быть отрицательной")
 
     source_kind = _resolve_source(db, new_subkind, new_client, new_employee, new_supply)
+
+    if "account_id" in payload:
+        mm.account_id = _resolve_account(db, payload["account_id"])
 
     for field in (
         "amount", "currency", "tax", "assessment", "affects_profit",
