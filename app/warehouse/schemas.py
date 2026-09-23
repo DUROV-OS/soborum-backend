@@ -1,12 +1,23 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.warehouse.models import MaterialCategory, StockMovementReason, SupplierStatus, Warehouse
 
 
-class WarehouseMaterialCreate(BaseModel):
+class MaterialCharacteristics(BaseModel):
+    """Характеристики позиции (0078) — все необязательные."""
+
+    kind: str | None = Field(default=None, max_length=120)
+    size: str | None = Field(default=None, max_length=120)
+    diameter: str | None = Field(default=None, max_length=60)
+    serial_number: str | None = Field(default=None, max_length=120)
+    pack_quantity: float | None = Field(default=None, gt=0)
+    supplier_id: int | None = None
+
+
+class WarehouseMaterialCreate(MaterialCharacteristics):
     warehouse: Warehouse
     category: MaterialCategory = MaterialCategory.NONE
     title: str
@@ -18,7 +29,7 @@ class WarehouseMaterialCreate(BaseModel):
     threshold: float = 0
 
 
-class WarehouseMaterialUpdate(BaseModel):
+class WarehouseMaterialUpdate(MaterialCharacteristics):
     category: MaterialCategory | None = None
     title: str | None = None
     code: str | None = None
@@ -48,6 +59,13 @@ class WarehouseMaterialOut(BaseModel):
     quantity_in_stock: float
     purchase_price: float
     threshold: float
+    kind: str | None = None
+    size: str | None = None
+    diameter: str | None = None
+    serial_number: str | None = None
+    pack_quantity: float | None = None
+    supplier_id: int | None = None
+    supplier_name: str | None = None
     total_requested: float
     needs_supply: bool
     request_breakdown: list[RequestBreakdownItem] = []

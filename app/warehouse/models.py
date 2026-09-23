@@ -86,6 +86,20 @@ class WarehouseMaterial(Base):
     # kept for the automatic shortage-task feature (see service.sync_shortage_task);
     # not part of the user-facing field set, edited only via update_threshold
     threshold: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
+
+    # Характеристики позиции (0078) - всё необязательное: у старых материалов
+    # и у импортированных из прайсов этих данных нет.
+    kind: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    diameter: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    pack_quantity: Mapped[float | None] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=True)
+    supplier_id: Mapped[int | None] = mapped_column(
+        ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True
+    )
+
+    supplier: Mapped["Supplier | None"] = relationship(lazy="joined")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
