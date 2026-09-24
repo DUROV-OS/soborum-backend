@@ -57,6 +57,9 @@ def subkind_from_text(value: str | None) -> MoneySubkind | None:
 # Порядок важен: более специфичные / составные заголовки разбираются раньше,
 # чтобы «Назначение платежа» не досталось короткому синониму «сумма платежа».
 HEURISTIC_SYNONYMS: dict[str, tuple[str, ...]] = {
+    # ИНН разбирается раньше «контрагента»: заголовок «ИНН контрагента»
+    # содержит оба слова, и короткий синоним не должен его перехватить.
+    "counterparty_inn": ("инн контрагента", "инн плательщика", "инн получателя", "инн"),
     "payment_purpose": ("назначение", "назначение платежа", "комментарий", "описание", "примечание", "purpose"),
     "doc_date": ("дата", "date", "дата операции", "дата документа", "дата платежа", "дата проводки"),
     "counterparty": ("контрагент", "плательщик", "получатель", "организация", "payer", "counterparty", "клиент"),
@@ -82,6 +85,9 @@ CRITICAL_LABELS = {
 @dataclass
 class PaymentColumnMapping:
     amount: str | None = None
+    # ИНН контрагента (0081-e) — не критичен: выписки бывают и без него,
+    # тогда сопоставление идёт по наименованию.
+    counterparty_inn: str | None = None
     amount_debit: str | None = None
     amount_credit: str | None = None
     direction_col: str | None = None
@@ -124,6 +130,7 @@ class PaymentColumnMapping:
             "direction_col": self.direction_col,
             "doc_date": self.doc_date,
             "counterparty": self.counterparty,
+            "counterparty_inn": self.counterparty_inn,
             "tax": self.tax,
             "external_number": self.external_number,
             "subkind": self.subkind,
@@ -273,6 +280,7 @@ _AI_TOOL = {
             "direction_col": {"type": "string", "description": "Заголовок колонки с типом операции (приход/расход), если он текстом. Иначе пусто."},
             "doc_date": {"type": "string", "description": "Заголовок колонки с датой документа/операции."},
             "counterparty": {"type": "string", "description": "Заголовок колонки с наименованием контрагента (плательщик/получатель)."},
+            "counterparty_inn": {"type": "string", "description": "Заголовок колонки с ИНН контрагента, если есть. Иначе пусто."},
             "tax": {"type": "string", "description": "Заголовок колонки с суммой НДС."},
             "external_number": {"type": "string", "description": "Заголовок колонки с номером платёжного документа."},
             "subkind": {"type": "string", "description": "Заголовок колонки с видом/статьёй платежа, если есть. Иначе пусто."},
@@ -299,8 +307,8 @@ def _ai_mapping(headers: list[str], sample: list[list[str]]) -> PaymentColumnMap
         f"Заголовки файла ({len(headers)}): {headers}\n\n"
         f"Первые строки данных:\n{preview}\n\n"
         "Сопоставь заголовки с полями: amount / amount_debit / amount_credit / "
-        "direction_col / doc_date / counterparty / tax / external_number / "
-        "subkind / payment_purpose."
+        "direction_col / doc_date / counterparty / counterparty_inn / tax / "
+        "external_number / subkind / payment_purpose."
     )
     client = anthropic_client(timeout=45.0, max_retries=2)
     response = client.messages.create(
@@ -322,6 +330,7 @@ def _ai_mapping(headers: list[str], sample: list[list[str]]) -> PaymentColumnMap
         direction_col=_match_header(p.get("direction_col"), headers),
         doc_date=_match_header(p.get("doc_date"), headers),
         counterparty=_match_header(p.get("counterparty"), headers),
+        counterparty_inn=_match_header(p.get("counterparty_inn"), headers),
         tax=_match_header(p.get("tax"), headers),
         external_number=_match_header(p.get("external_number"), headers),
         subkind=_match_header(p.get("subkind"), headers),
@@ -371,6 +380,7 @@ class BuiltRow:
     direction: MoneyDirection
     doc_date: datetime | None
     counterparty: str | None
+    counterparty_inn: str | None
     tax: float
     external_number: str | None
     subkind: MoneySubkind | None
@@ -405,6 +415,7 @@ def build_rows(headers: list[str], data: list[list[str]], mapping: PaymentColumn
                 direction=direction,
                 doc_date=_to_datetime(cell(row, mapping.doc_date)),
                 counterparty=(cell(row, mapping.counterparty) or None),
+                counterparty_inn=(cell(row, mapping.counterparty_inn) or None),
                 tax=_to_number(cell(row, mapping.tax)) or 0.0,
                 external_number=(cell(row, mapping.external_number) or None),
                 subkind=subkind_from_text(cell(row, mapping.subkind)),
@@ -414,7 +425,16 @@ def build_rows(headers: list[str], data: list[list[str]], mapping: PaymentColumn
     return out
 
 
-TEMPLATE_HEADERS = ["Дата", "Контрагент", "Назначение платежа", "Сумма", "НДС", "№ документа", "Вид"]
+TEMPLATE_HEADERS = [
+    "Дата",
+    "Контрагент",
+    "ИНН контрагента",
+    "Назначение платежа",
+    "Сумма",
+    "НДС",
+    "№ документа",
+    "Вид",
+]
 
 
 def generate_template() -> bytes:
@@ -426,8 +446,21 @@ def generate_template() -> bytes:
     ws = wb.active
     ws.title = "Платежи"
     ws.append(TEMPLATE_HEADERS)
-    ws.append(["01.09.2026", "ООО «Ромашка»", "оплата по счёту №12 от 25.08.2026", 150000, 25000, "125", "доход от продажи"])
-    ws.append(["03.09.2026", "ИФНС №7", "НДС за 2 квартал 2026", -274000, 0, "126", "налоги и сборы"])
+    ws.append(
+        [
+            "01.09.2026",
+            "ООО «Ромашка»",
+            "0000000001",
+            "оплата по счёту №12 от 25.08.2026",
+            150000,
+            25000,
+            "125",
+            "доход от продажи",
+        ]
+    )
+    ws.append(
+        ["03.09.2026", "ИФНС №7", "0000000002", "НДС за 2 квартал 2026", -274000, 0, "126", "налоги и сборы"]
+    )
     buffer = io.BytesIO()
     wb.save(buffer)
     return buffer.getvalue()

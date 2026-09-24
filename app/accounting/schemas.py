@@ -379,8 +379,15 @@ class MoneyMovementImportResult(BaseModel):
     column_mapping: dict
     # некритичные поля, для которых в файле не нашлось колонки (subkind / payment_purpose)
     missing_fields: list[str] = []
-    # строк с контрагентом, не сопоставленным клиенту (нужен ручной источник)
+    # строк, где колонка контрагента оказалась пустой — привязывать не к чему
     unmatched_source: int = 0
+    # строк, совпавших с уже загруженной проводкой этого счёта (0081-e)
+    duplicates: int = 0
+    counterparties_created: int = 0
+    counterparties_matched: int = 0
+    # счёт, на который легли проводки
+    account_id: int | None = None
+    account_label: str | None = None
     # проводок с «предварительным» видом (other_income/other_expense) — кандидаты на ИИ-вид
     preliminary_subkind: int = 0
     created_ids: list[int] = []

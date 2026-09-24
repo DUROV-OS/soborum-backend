@@ -75,7 +75,7 @@ def money_movement_enums(_: User = Depends(require_accounting_view)):
 
 @app.get("/money-movements/import/template")
 def download_import_template(_: User = Depends(require_accounting_view)):
-    """.xlsx-шаблон таблицы платежей для импорта."""
+    """.xlsx-шаблон выписки для импорта."""
     return Response(
         content=payment_import.generate_template(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -86,13 +86,17 @@ def download_import_template(_: User = Depends(require_accounting_view)):
 @app.post("/money-movements/import", response_model=MoneyMovementImportResult)
 def import_payments(
     file: UploadFile,
+    account_id: int = Query(..., description="Счёт, на который легли платежи выписки"),
     db: Session = Depends(get_db),
     user: User = Depends(require_accounting_edit),
 ):
-    """Импорт платежей таблицей (.xlsx/.csv). Колонки размечает ИИ (при
-    `ANTHROPIC_API_KEY`), иначе — словарь синонимов. Каждая строка → проводка в
-    `draft`. Без критичных колонок (сумма / направление / дата / контрагент /
-    НДС / номер документа) — отказ 400."""
+    """Импорт выписки из банк-клиента (.xlsx/.csv) на конкретный счёт.
+    Колонки размечает ИИ (при `ANTHROPIC_API_KEY`), иначе — словарь синонимов.
+    Каждая строка → проводка в `draft` на `account_id`, её контрагент
+    сопоставляется с единым справочником (0081-e). Без критичных колонок
+    (сумма / направление / дата / контрагент / НДС / номер документа) —
+    отказ 400; без счёта — 422."""
+    account = accounting_service.get_account_or_404(db, account_id)
     headers, data = payment_import.read_table(file)
     mapping = payment_import.resolve_mapping(headers, data)
 
@@ -104,7 +108,9 @@ def import_payments(
             detail=f"Не удалось определить колонку {which}. Заголовки файла: {headers}",
         )
 
-    outcome = accounting_service.import_payments(db, headers, data, mapping, user.id)
+    outcome = accounting_service.import_payments(
+        db, headers, data, mapping, user.id, account_id=account.id
+    )
     missing_optional = mapping.missing_optional()
     return MoneyMovementImportResult(
         imported=outcome.imported,
@@ -114,6 +120,13 @@ def import_payments(
         column_mapping=mapping.as_dict(),
         missing_fields=missing_optional,
         unmatched_source=outcome.unmatched_source,
+        duplicates=outcome.duplicates,
+        counterparties_created=outcome.counterparties_created,
+        counterparties_matched=outcome.counterparties_matched,
+        account_id=account.id,
+        account_label=f"{account.organization.short_name} — {account.name}"
+        if account.organization
+        else account.name,
         preliminary_subkind=outcome.preliminary_subkind,
         created_ids=outcome.created_ids,
         backfill_suggested=bool(outcome.imported)
