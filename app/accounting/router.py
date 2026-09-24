@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.accounting import payment_import, service as accounting_service
 from app.accounting.models import (
+    CounterpartyKind,
     MoneyDirection,
     MoneyMovementStatus,
     MoneySourceKind,
@@ -18,6 +19,9 @@ from app.accounting.schemas import (
     BankAccountCreate,
     BankAccountOut,
     BankAccountUpdate,
+    CounterpartyCreate,
+    CounterpartyOut,
+    CounterpartyUpdate,
     EmployeeKpiPeriod,
     EmployeeSalaryOverview,
     ImportBackfillRequest,
@@ -249,6 +253,92 @@ def money_summary(
     )
 
 
+
+# --- Единый справочник контрагентов (0081-c) ---
+
+
+@app.get("/counterparties", response_model=list[CounterpartyOut])
+def list_counterparties(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    query: str | None = None,
+    kind: CounterpartyKind | None = None,
+    include_inactive: bool = False,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Справочник с поиском по наименованию и ИНН. У каждой строки — суммы
+    прихода/расхода по её проведённым платежам."""
+    found = accounting_service.list_counterparties(
+        db,
+        query=query,
+        kind=kind,
+        is_active=None if include_inactive else True,
+        limit=limit,
+        offset=offset,
+    )
+    return [accounting_service.counterparty_out(db, c) for c in found]
+
+
+@app.post("/counterparties", response_model=CounterpartyOut, status_code=201)
+def create_counterparty(
+    payload: CounterpartyCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    counterparty = accounting_service.create_counterparty(db, payload)
+    return accounting_service.counterparty_out(db, counterparty)
+
+
+@app.get("/counterparties/{counterparty_id}", response_model=CounterpartyOut)
+def get_counterparty(
+    counterparty_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+):
+    counterparty = accounting_service.get_counterparty_or_404(db, counterparty_id)
+    return accounting_service.counterparty_out(db, counterparty)
+
+
+@app.patch("/counterparties/{counterparty_id}", response_model=CounterpartyOut)
+def update_counterparty(
+    counterparty_id: int,
+    payload: CounterpartyUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_edit),
+):
+    """Контрагент не удаляется — уходит в `is_active = false`: на нём висит
+    история платежей, которую нельзя осиротить."""
+    counterparty = accounting_service.get_counterparty_or_404(db, counterparty_id)
+    counterparty = accounting_service.update_counterparty(db, counterparty, payload)
+    return accounting_service.counterparty_out(db, counterparty)
+
+
+@app.get("/counterparties/{counterparty_id}/payments", response_model=list[MoneyMovementOut])
+def counterparty_payments(
+    counterparty_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_accounting_view),
+    account_id: int | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """История платежей контрагента по всем счетам, новые сверху."""
+    accounting_service.get_counterparty_or_404(db, counterparty_id)
+    payments = accounting_service.list_counterparty_payments(
+        db,
+        counterparty_id,
+        account_id=account_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    return [MoneyMovementOut.from_movement(mm) for mm in payments]
+
+
 @app.get("/money-movements", response_model=list[MoneyMovementOut])
 def list_money_movements(
     db: Session = Depends(get_db),
@@ -260,6 +350,7 @@ def list_money_movements(
     client_id: int | None = None,
     employee_id: int | None = None,
     supply_id: int | None = None,
+    counterparty_id: int | None = None,
     initiator_id: int | None = None,
     account_id: int | None = None,
     organization_id: int | None = None,
@@ -281,6 +372,7 @@ def list_money_movements(
         client_id=client_id,
         employee_id=employee_id,
         supply_id=supply_id,
+        counterparty_id=counterparty_id,
         initiator_id=initiator_id,
         account_id=account_id,
         organization_id=organization_id,

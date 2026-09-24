@@ -18,6 +18,8 @@ from app.core.config import settings
 from app.accounting.models import (
     INCOME_SUBKINDS,
     BankAccount,
+    Counterparty,
+    CounterpartyKind,
     MoneyAssessment,
     MoneyDirection,
     MoneyMovement,
@@ -32,6 +34,7 @@ from app.accounting.models import (
 def _direction_for(subkind: MoneySubkind) -> MoneyDirection:
     return MoneyDirection.INCOME if subkind in INCOME_SUBKINDS else MoneyDirection.EXPENSE
 from app.clients.models import Client
+from app.warehouse.models import Supplier
 from app.users.models import User, UserRole
 
 _NOW = datetime.now(timezone.utc)
@@ -107,6 +110,53 @@ def ensure_organizations_seed(db: Session) -> int:
                 )
             )
     db.commit()
+    return created
+
+
+
+def ensure_counterparties_seed(db: Session) -> int:
+    """Заводит контрагента на каждого клиента и поставщика, которых в
+    справочнике ещё нет (0081-c). Не демо-данные: справочник — отражение уже
+    существующих реестров, он нужен во всех окружениях.
+
+    Идемпотентно: контрагент ищется по ссылке (`client_id` / `supplier_id`),
+    повторный запуск дубликатов не создаёт. Возвращает число созданных."""
+    created = 0
+
+    linked_clients = {
+        cid for (cid,) in db.query(Counterparty.client_id).filter(Counterparty.client_id.isnot(None))
+    }
+    for client in db.query(Client).order_by(Client.id).all():
+        if client.id in linked_clients:
+            continue
+        db.add(
+            Counterparty(
+                name=client.full_name,
+                kind=CounterpartyKind.CLIENT,
+                client_id=client.id,
+                is_active=True,
+            )
+        )
+        created += 1
+
+    linked_suppliers = {
+        sid for (sid,) in db.query(Counterparty.supplier_id).filter(Counterparty.supplier_id.isnot(None))
+    }
+    for supplier in db.query(Supplier).order_by(Supplier.id).all():
+        if supplier.id in linked_suppliers:
+            continue
+        db.add(
+            Counterparty(
+                name=supplier.name,
+                kind=CounterpartyKind.SUPPLIER,
+                supplier_id=supplier.id,
+                is_active=True,
+            )
+        )
+        created += 1
+
+    if created:
+        db.commit()
     return created
 
 

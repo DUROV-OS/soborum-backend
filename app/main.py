@@ -4,7 +4,11 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from app.accounting.router import app as accounting_app
-from app.accounting.seed import ensure_accounting_seed, ensure_organizations_seed
+from app.accounting.seed import (
+    ensure_accounting_seed,
+    ensure_counterparties_seed,
+    ensure_organizations_seed,
+)
 from app.agents.loop import start_shift_loop
 from app.ai.demo_seed import ensure_agent_activity_seed, ensure_growth_proposals_seed
 from app.agents.router import app as agents_app
@@ -70,6 +74,10 @@ def on_startup() -> None:
         # money movements once, no-op if it already has rows. Runs after the
         # organizations seed so the demo movements land on a real account.
         ensure_accounting_seed(db)
+        # Не демо-сид: справочник контрагентов (0081-c) — отражение уже
+        # существующих клиентов и поставщиков, нужен во всех окружениях.
+        # Идемпотентно, ищет по ссылке на исходную запись.
+        ensure_counterparties_seed(db)
         # Same contract again: demo workforce (mock employees + tasks they
         # work through, plus a couple of salary movements) for local
         # demos/acceptance — never in prod, no-op once real workers exist.
