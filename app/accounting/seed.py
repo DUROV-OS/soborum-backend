@@ -17,12 +17,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.accounting.models import (
     INCOME_SUBKINDS,
+    BankAccount,
     MoneyAssessment,
     MoneyDirection,
     MoneyMovement,
     MoneyMovementStatus,
     MoneySourceKind,
     MoneySubkind,
+    Organization,
     SupplierOrder,
 )
 
@@ -63,6 +65,51 @@ _SPECS: list[tuple] = [
 ]
 
 
+
+# Юрлица компании и их счета. Не демо-данные: без счёта проводку создать
+# нельзя (`service._resolve_account`), поэтому набор нужен в любом окружении,
+# включая прод — как `ensure_house_models_seed`, а не как демо-сиды ниже.
+_ORGANIZATIONS: list[tuple[str, str]] = [
+    ("ООО «ИД Групп»", "ИД Групп"),
+    ("ООО «Технология»", "Технология"),
+]
+
+
+def ensure_organizations_seed(db: Session) -> int:
+    """Заводит организации из `_ORGANIZATIONS` и по «Основному счёту» каждой.
+
+    Идемпотентно: организация ищется по `name`, счёт — по паре
+    (организация, название). Возвращает число созданных организаций.
+    Миграция `c3b8f1a06d42` делает то же самое для уже развёрнутых баз —
+    здесь это повтор для свежей базы, поднятой через `create_all` без
+    миграций (локальная разработка и тесты)."""
+    created = 0
+    for name, short_name in _ORGANIZATIONS:
+        org = db.query(Organization).filter(Organization.name == name).first()
+        if org is None:
+            org = Organization(name=name, short_name=short_name, is_active=True)
+            db.add(org)
+            db.flush()
+            created += 1
+        account = (
+            db.query(BankAccount)
+            .filter(BankAccount.organization_id == org.id, BankAccount.name == "Основной счёт")
+            .first()
+        )
+        if account is None:
+            db.add(
+                BankAccount(
+                    organization_id=org.id,
+                    name="Основной счёт",
+                    currency="RUB",
+                    is_default=True,
+                    is_active=True,
+                )
+            )
+    db.commit()
+    return created
+
+
 def ensure_accounting_seed(db: Session) -> int:
     """Возвращает число созданных проводок (0 без явного ENABLE_DEMO_SEED=1,
     если реестр уже был не пуст, или если не хватило сущностей для привязок)."""
@@ -81,6 +128,15 @@ def ensure_accounting_seed(db: Session) -> int:
         or admin
     )
     supply = db.query(SupplierOrder).order_by(SupplierOrder.id).first()
+    # Демо-проводки кладём на счёт по умолчанию первой организации (0081-a).
+    account = (
+        db.query(BankAccount)
+        .filter(BankAccount.is_default.is_(True), BankAccount.is_active.is_(True))
+        .order_by(BankAccount.id)
+        .first()
+    )
+    if account is None:
+        return 0
 
     source_ok = {
         MoneySourceKind.NONE: True,
@@ -103,6 +159,7 @@ def ensure_accounting_seed(db: Session) -> int:
             assessment=MoneyAssessment.ACTUAL,
             affects_profit=True,
             initiator_id=admin.id,
+            account_id=account.id,
             status=mstatus,
             posted_at=moment if mstatus is MoneyMovementStatus.POSTED else None,
             cancel_reason=cancel_reason,

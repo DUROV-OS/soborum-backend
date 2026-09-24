@@ -175,10 +175,18 @@ def test_direct_service_call_without_initiator_skips_movement(db):
 # --- задача на согласование: создание/закрытие ---
 
 
+
+def _default_account_id(api_client) -> int:
+    """Счёт по умолчанию (0081-a): проводка без счёта больше не создаётся."""
+    accounts = api_client.get("/api/accounting/accounts").json()
+    return next(a["id"] for a in accounts if a["is_default"])
+
+
 def test_approval_task_closes_on_status_change_away_from_draft(db, api, acc_user):
     api_client = api(acc_user)
     resp = api_client.post(
-        "/api/accounting/money-movements", json={"subkind": "other_income", "amount": 1000}
+        "/api/accounting/money-movements",
+        json={"subkind": "other_income", "amount": 1000, "account_id": _default_account_id(api_client)},
     )
     mm_id = resp.json()["id"]
 
@@ -193,7 +201,8 @@ def test_approval_task_closes_on_status_change_away_from_draft(db, api, acc_user
 def test_approval_task_closes_on_cancel_from_draft(db, api, acc_user):
     api_client = api(acc_user)
     mm_id = api_client.post(
-        "/api/accounting/money-movements", json={"subkind": "other_expense", "amount": 500}
+        "/api/accounting/money-movements",
+        json={"subkind": "other_expense", "amount": 500, "account_id": _default_account_id(api_client)},
     ).json()["id"]
 
     api_client.post(

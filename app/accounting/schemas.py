@@ -26,9 +26,101 @@ def _validate_link(value: str | None) -> str | None:
     return cleaned
 
 
+
+# --- Организации и банковские счета (0081-a) ---
+
+
+class BankAccountCreate(BaseModel):
+    organization_id: int
+    name: str
+    bank_name: str | None = None
+    account_number: str | None = None
+    currency: str = "RUB"
+    is_default: bool = False
+
+
+class BankAccountUpdate(BaseModel):
+    name: str | None = None
+    bank_name: str | None = None
+    account_number: str | None = None
+    is_default: bool | None = None
+    is_active: bool | None = None
+
+
+class BankAccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    organization_id: int
+    name: str
+    bank_name: str | None
+    account_number: str | None
+    currency: str
+    is_default: bool
+    is_active: bool
+
+
+class OrganizationCreate(BaseModel):
+    name: str
+    short_name: str
+    inn: str | None = None
+
+
+class OrganizationUpdate(BaseModel):
+    name: str | None = None
+    short_name: str | None = None
+    inn: str | None = None
+    is_active: bool | None = None
+
+
+class OrganizationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    short_name: str
+    inn: str | None
+    is_active: bool
+    accounts: list[BankAccountOut] = []
+
+
+class MoneyTotals(BaseModel):
+    """Приход, расход и сальдо за период. `balance` = income − expense."""
+
+    income: float = 0
+    expense: float = 0
+    balance: float = 0
+    count: int = 0
+
+
+class AccountSummary(MoneyTotals):
+    account_id: int
+    name: str
+
+
+class OrganizationSummary(MoneyTotals):
+    organization_id: int
+    name: str
+    short_name: str
+    accounts: list[AccountSummary] = []
+
+
+class MoneySummaryOut(BaseModel):
+    """`GET /money-summary` (0081-a): итог по обеим организациям, по каждой
+    организации и по каждому её счёту."""
+
+    total: MoneyTotals
+    organizations: list[OrganizationSummary] = []
+
+
 class MoneyMovementCreate(BaseModel):
     subkind: MoneySubkind
     amount: float
+    # Счёт, по которому прошёл платёж (0081-a). Обязателен для проводки,
+    # заводимой человеком; None оставлен для авто-проводок внутри бэка
+    # (record_sale_income / pay_supplier_order) — им счёт подставляет
+    # service._resolve_account (счёт по умолчанию).
+    account_id: int | None = None
     currency: str = "RUB"
     tax: float = 0
     assessment: MoneyAssessment = MoneyAssessment.ACTUAL
@@ -53,6 +145,7 @@ class MoneyMovementCreate(BaseModel):
 
 class MoneyMovementUpdate(BaseModel):
     subkind: MoneySubkind | None = None
+    account_id: int | None = None
     amount: float | None = None
     currency: str | None = None
     tax: float | None = None
@@ -98,6 +191,10 @@ class MoneyMovementOut(BaseModel):
     affects_profit: bool
     initiator_id: int
     initiator_name: str | None = None
+    account_id: int | None
+    account_name: str | None = None
+    organization_id: int | None = None
+    organization_name: str | None = None
     status: MoneyMovementStatus
     posted_at: datetime | None
     doc_date: datetime | None
@@ -119,6 +216,12 @@ class MoneyMovementOut(BaseModel):
     def from_movement(cls, mm: MoneyMovement) -> "MoneyMovementOut":
         out = cls.model_validate(mm)
         out.initiator_name = mm.initiator.full_name if mm.initiator else None
+        if mm.account is not None:
+            out.account_name = mm.account.name
+            out.organization_id = mm.account.organization_id
+            out.organization_name = (
+                mm.account.organization.short_name if mm.account.organization else None
+            )
         if mm.source_kind is MoneySourceKind.CLIENT and mm.client is not None:
             out.source_label = mm.client.full_name
         elif mm.source_kind is MoneySourceKind.EMPLOYEE and mm.employee is not None:

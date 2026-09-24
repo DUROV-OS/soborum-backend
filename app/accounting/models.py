@@ -163,6 +163,54 @@ class SupplierOrder(Base):
     supplier: Mapped["Supplier"] = relationship()  # noqa: F821
 
 
+class Organization(Base):
+    """Юрлицо компании. Деньги компания ведёт через два ООО — «ИД Групп» и
+    «Технология» (0081); счёт всегда принадлежит одной организации, проводка —
+    одному счёту, поэтому организация — верхний уровень разделения денег в
+    разделе.
+
+    Не демо-данные: без организаций и счетов реестр не работает вовсе, поэтому
+    стартовый набор заводится во всех окружениях (см. `accounting/seed.py` →
+    `ensure_organizations_seed`), а не под `ENABLE_DEMO_SEED`."""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # подпись вкладки в интерфейсе — «ИД Групп», а не «ООО «ИД Групп»»
+    short_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    inn: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    accounts: Mapped[list["BankAccount"]] = relationship(
+        back_populates="organization", order_by="BankAccount.id"
+    )
+
+
+class BankAccount(Base):
+    """Банковский счёт организации. Один счёт организации помечен
+    `is_default` — на него попадают проводки, созданные без явного выбора
+    счёта (авто-проводки 0011-f) и на нём открывается вкладка организации."""
+
+    __tablename__ = "bank_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    bank_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # строкой, а не числом: расчётный счёт — 20 цифр с ведущими нулями
+    account_number: Mapped[str | None] = mapped_column(String(34), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB", server_default="RUB")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    organization: Mapped["Organization"] = relationship(back_populates="accounts")
+
+
 class MoneyMovement(Base):
     __tablename__ = "money_movements"
 
@@ -219,6 +267,12 @@ class MoneyMovement(Base):
     # Произвольная ссылка на проводку (0072-d) — одна, не список.
     link: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Счёт, по которому прошёл платёж (0081). В БД nullable — иначе не
+    # мигрировать проводки, заведённые до появления счетов; миграция проставляет
+    # им счёт по умолчанию первой организации. На входе API обязателен:
+    # `POST /money-movements` без счёта — 422 (service._resolve_account).
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("bank_accounts.id"), nullable=True)
+
     # Полиморфная привязка: заполнено не более одного из client/employee/supply,
     # source_kind согласован с тем, что заполнено (валидируется в service).
     source_kind: Mapped[MoneySourceKind] = mapped_column(
@@ -243,6 +297,7 @@ class MoneyMovement(Base):
     employee: Mapped["User"] = relationship(foreign_keys=[employee_id])  # noqa: F821
     documents: Mapped[list["FileAsset"]] = relationship(secondary=money_movement_documents)  # noqa: F821
     supply: Mapped["SupplierOrder"] = relationship(foreign_keys=[supply_id])
+    account: Mapped["BankAccount"] = relationship(foreign_keys=[account_id])
 
 
 class EmployeeKpi(Base):
