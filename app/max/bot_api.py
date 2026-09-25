@@ -84,6 +84,11 @@ def get_updates(marker: int | None = None, timeout: int = 30, limit: int = 100) 
     )
 
 
+def get_chat(chat_id: int) -> dict:
+    """``GET /chats/{id}`` — один чат (название группы, тип)."""
+    return _request("GET", f"/chats/{chat_id}")
+
+
 # -- сообщения ---------------------------------------------------------------
 
 def get_messages(chat_id: int, count: int = 50) -> list[dict]:
