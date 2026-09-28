@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.clients.models import Client
 from app.clients.service import _phone_tail
 from app.partners.models import Partner, PartnerCategory, PartnerNote
 from app.partners.schemas import PartnerCreate, PartnerUpdate
@@ -32,7 +33,26 @@ def update_partner(db: Session, partner: Partner, payload: PartnerUpdate) -> Par
     return partner
 
 
+def referred_clients(db: Session, partner: Partner) -> list[Client]:
+    return (
+        db.query(Client)
+        .filter(Client.referrer_partner_id == partner.id)
+        .order_by(Client.id.desc())
+        .all()
+    )
+
+
 def delete_partner(db: Session, partner: Partner) -> None:
+    """Партнёра, который указан рекомендателем, не удаляем: иначе у клиентов
+    молча пропадёт «чей он» — ровно то, ради чего поле заводили (0083-c).
+    В БД стоит RESTRICT, но отвечаем 409 заранее и по-человечески."""
+    count = db.query(Client).filter(Client.referrer_partner_id == partner.id).count()
+    if count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Партнёр указан как рекомендатель у клиентов: {count}. "
+            "Сначала смените рекомендателя в их карточках.",
+        )
     db.delete(partner)
     db.flush()
 
