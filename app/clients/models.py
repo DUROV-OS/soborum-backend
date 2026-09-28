@@ -180,6 +180,15 @@ class Client(Base):
     via_agency: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     agency_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     agency_contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Кто рекомендовал клиента — партнёр из базы партнёров (0083-c): риэлтор,
+    # агентство и т.д. В отличие от agency_name выше это ссылка, а не текст,
+    # так что у партнёра видно всех приведённых им клиентов. Старые текстовые
+    # agency_* не переносятся (у них нет города, обязательного для партнёра)
+    # и остаются как были. RESTRICT: партнёра-рекомендателя не удалить, пока
+    # на него ссылаются клиенты (service.delete_partner отвечает 409 заранее).
+    referrer_partner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("partners.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
 
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at
@@ -261,6 +270,7 @@ class Client(Base):
     # Read-only reference into the house_models catalog (0043) — this section
     # doesn't own or manage that data, just points at it.
     house_model: Mapped["HouseModelCard | None"] = relationship(viewonly=True)  # noqa: F821
+    referrer: Mapped["Partner | None"] = relationship()  # noqa: F821
 
 
 class ClientNote(Base):
