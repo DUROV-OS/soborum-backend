@@ -1,10 +1,12 @@
-from fastapi import Depends, FastAPI, Request, status
+import hmac
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
 from app.conversations import max_channel  # noqa: F401  (регистрирует канал MAX)
-from app.conversations import service
+from app.conversations import service, telegram_channel
 from app.conversations.schemas import (
     ConversationMessageOut,
     ConversationOut,
@@ -13,6 +15,7 @@ from app.conversations.schemas import (
     MessageCreate,
 )
 from app.conversations.service import ChannelSendFailed, ChannelUnavailable, OwnerKind
+from app.core.config import settings
 from app.core.deps import require_edit, require_view
 from app.db.session import get_db
 from app.users.models import User
@@ -51,6 +54,24 @@ def _channel_send_failed(_: Request, exc: ChannelSendFailed):
         status_code=status.HTTP_502_BAD_GATEWAY,
         content={"detail": f"Сообщение не доставлено: {exc.message}", "code": "channel_send_failed"},
     )
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Приём событий Telegram-бота (0083-e). Без JWT — вместо него секрет,
+    заданный при setWebhook (scripts/telegram_set_webhook.py); не задан или не
+    совпал → 403 и ничего не пишется."""
+    expected = settings.telegram_webhook_secret
+    if not expected or not hmac.compare_digest(x_telegram_bot_api_secret_token or "", expected):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Неверный секрет webhook")
+    body = await request.json()
+    if isinstance(body, dict):
+        telegram_channel.handle_updates(db, [body])
+    return {"ok": True}
 
 
 @app.get("/{owner}/{owner_id}", response_model=ConversationOut)
