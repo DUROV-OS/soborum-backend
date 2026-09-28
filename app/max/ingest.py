@@ -145,6 +145,11 @@ def handle_update(db: Session, update: dict) -> None:
             chat.title = update["title"]
     else:
         return
+    # Переписка из карточек клиентов/партнёров (0083-d): привязка чата по
+    # ссылке-приглашению и лента. Импорт здесь — conversations сам зовёт ingest.
+    from app.conversations import max_channel
+
+    max_channel.on_update(db, update)
     db.commit()
 
 
