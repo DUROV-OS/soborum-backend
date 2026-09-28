@@ -12,6 +12,7 @@ from app.partners.schemas import (
     PartnerNoteOut,
     PartnerOut,
     PartnerUpdate,
+    ReferredClientOut,
 )
 from app.users.models import User
 
@@ -58,6 +59,13 @@ def create_partner(payload: PartnerCreate, db: Session = Depends(get_db), user: 
 @app.get("/{partner_id}", response_model=PartnerOut)
 def get_partner(partner_id: int, db: Session = Depends(get_db), _: User = Depends(require_partners_view)):
     return partner_service.get_partner_or_404(db, partner_id)
+
+
+@app.get("/{partner_id}/clients", response_model=list[ReferredClientOut])
+def list_referred_clients(partner_id: int, db: Session = Depends(get_db), _: User = Depends(require_partners_view)):
+    """Клиенты, у которых этот партнёр указан в «Кто рекомендовал» (0083-c)."""
+    partner = partner_service.get_partner_or_404(db, partner_id)
+    return partner_service.referred_clients(db, partner)
 
 
 @app.patch("/{partner_id}", response_model=PartnerOut)

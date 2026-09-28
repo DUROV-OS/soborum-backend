@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from app.clients.models import ClientStage
 from app.partners.models import PartnerCategory
 
 
@@ -86,6 +87,17 @@ class PartnerBriefOut(BaseModel):
     category: PartnerCategory
     city: str
     organization: str | None
+
+
+class ReferredClientOut(BaseModel):
+    """Клиент, которого привёл партнёр (0083-c) — для блока в карточке партнёра."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+    stage: ClientStage
+    created_at: datetime
 
 
 class PartnerOut(BaseModel):
