@@ -22,6 +22,9 @@ os.environ["MOYSKLAD_TOKEN"] = ""
 os.environ["MAX_BOT_TOKEN"] = ""
 os.environ["MAX_BOT_POLLING"] = "false"
 os.environ["MAX_WEBHOOK_SECRET"] = ""
+os.environ["TELEGRAM_BOT_TOKEN"] = ""
+os.environ["TELEGRAM_WEBHOOK_SECRET"] = ""
+os.environ["TELEGRAM_BOT_POLLING"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient

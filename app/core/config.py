@@ -181,5 +181,17 @@ class Settings(BaseSettings):
     # токене не должны одновременно забирать поток событий.
     max_bot_polling: bool = False
 
+    # --- Telegram-бот для переписки из карточек (0083-e) ---
+    # Бот @SoborbumBot (BotFather). Тот же токен использует ветка `telegram`
+    # (мост рабочей группы, не в main): Telegram отдаёт события одному
+    # потребителю, так что при её вливании приём надо свести в одну точку.
+    telegram_bot_token: str = ""
+    # Секрет webhook: Telegram присылает его в X-Telegram-Bot-Api-Secret-Token.
+    # Не задан — POST /api/conversations/telegram/webhook отклоняет всё.
+    telegram_webhook_secret: str = ""
+    # Long polling getUpdates — только локально; с выставленным webhook Telegram
+    # getUpdates не отдаёт (409), на проде — webhook.
+    telegram_bot_polling: bool = False
+
 
 settings = Settings()
