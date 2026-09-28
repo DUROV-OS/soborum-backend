@@ -5,14 +5,18 @@
 авторизованный пользователь; данные MAX общие для организации.
 """
 
-from fastapi import Depends, FastAPI, Form, Response, UploadFile
+import hmac
+
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.clients.models import Client, ClientChatLink
+from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.max import service as max_service
+from app.max.ingest import handle_updates
 from app.users.models import User
 
 
@@ -143,3 +147,23 @@ def get_media(
     Вложение недоступно/удалено → 422 с текстом причины (фронт показывает
     заглушку), таймаут/сбой MAX → 502."""
     return max_service.get_media_url(chat_id, message_id, media_id)
+
+
+@app.post("/webhook")
+async def bot_webhook(
+    request: Request,
+    x_max_bot_api_secret: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Приём событий MAX-бота (0082): сюда MAX шлёт Update по подписке
+    ``POST /subscriptions`` (см. scripts/max_bot_subscribe.py). Без JWT —
+    вместо него секрет подписки в заголовке ``X-Max-Bot-Api-Secret``; секрет
+    не задан или не совпал → 403 и ничего не пишется. Отвечаем сразу: MAX
+    ждёт 200 не дольше 30 с, иначе повторяет доставку."""
+    expected = settings.max_webhook_secret
+    if not expected or not hmac.compare_digest(x_max_bot_api_secret or "", expected):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Неверный секрет webhook")
+    body = await request.json()
+    updates = body.get("updates") if isinstance(body, dict) and "updates" in body else [body]
+    handle_updates(db, [u for u in updates if isinstance(u, dict)])
+    return {"ok": True}
