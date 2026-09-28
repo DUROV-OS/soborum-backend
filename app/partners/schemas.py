@@ -76,6 +76,18 @@ class PartnerNoteOut(BaseModel):
     created_at: datetime
 
 
+class PartnerBriefOut(BaseModel):
+    """Партнёр в чужой выдаче — например, «кто рекомендовал» у клиента (0083-c)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    category: PartnerCategory
+    city: str
+    organization: str | None
+
+
 class PartnerOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
