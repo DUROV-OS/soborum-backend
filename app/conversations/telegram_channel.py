@@ -64,7 +64,17 @@ class TelegramAdapter:
         return f"https://t.me/{username}?start={token}" if username else None
 
     def send(self, external_chat_id: str, text: str) -> channels.SentMessage:
-        raise channels.ChannelSendError("Отправка в Telegram ещё не подключена")
+        try:
+            message = telegram_api.send_message(external_chat_id, text)
+        except telegram_api.TelegramNotConfigured as exc:
+            raise channels.ChannelSendError(str(exc)) from exc
+        except telegram_api.TelegramApiError as exc:
+            # 403 «bot was blocked by the user» — человек заблокировал бота.
+            raise channels.ChannelSendError(exc.message, stopped=exc.status == 403) from exc
+        return channels.SentMessage(
+            external_message_id=str(message["message_id"]) if message.get("message_id") else None,
+            sent_at=datetime.fromtimestamp(message["date"], tz=timezone.utc) if message.get("date") else None,
+        )
 
 
 channels.register(TelegramAdapter())
