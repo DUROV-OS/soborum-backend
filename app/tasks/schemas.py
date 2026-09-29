@@ -61,6 +61,11 @@ class TaskReportOut(BaseModel):
     # Не None, если автор правил комментарий уже после отправки.
     updated_at: datetime | None
     files: list[FileAssetOut]
+    # Сколько прежних версий текста сохранено (0084-g) и была ли среди правок
+    # хоть одна после приёмки задачи. Сами версии —
+    # GET /api/tasks/{task_id}/reports/{report_id}/revisions.
+    revisions_count: int
+    edited_after_acceptance: bool
 
     @staticmethod
     def from_model(report) -> "TaskReportOut":
@@ -72,6 +77,29 @@ class TaskReportOut(BaseModel):
             created_at=report.created_at,
             updated_at=report.updated_at,
             files=[FileAssetOut.model_validate(f) for f in report.files],
+            revisions_count=len(report.revisions),
+            edited_after_acceptance=any(r.after_acceptance for r in report.revisions),
+        )
+
+
+class TaskReportRevisionOut(BaseModel):
+    """Прежняя версия текста записи журнала отчётов: каким был комментарий
+    до правки, кто и когда его поправил (0084-g)."""
+
+    id: int
+    comment: str
+    edited_by: UserOut | None
+    edited_at: datetime
+    after_acceptance: bool
+
+    @staticmethod
+    def from_model(revision) -> "TaskReportRevisionOut":
+        return TaskReportRevisionOut(
+            id=revision.id,
+            comment=revision.comment,
+            edited_by=UserOut.from_model(revision.edited_by) if revision.edited_by else None,
+            edited_at=revision.edited_at,
+            after_acceptance=revision.after_acceptance,
         )
 
 

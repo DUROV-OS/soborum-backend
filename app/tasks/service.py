@@ -9,7 +9,7 @@ from app.production import readiness
 from app.tasks import policy as review_policy
 from app.tasks import sync as task_sync
 from app.tasks import timelog
-from app.tasks.models import Task, TaskLinkType, TaskReport, TaskReportKind, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskReport, TaskReportKind, TaskReportRevision, TaskStatus
 from app.users.models import User
 
 ALLOWED_MANUAL_TRANSITIONS = {
@@ -448,7 +448,8 @@ def edit_report_comment(db: Session, task: Task, report_id: int, actor: User, co
     и закрытая задача не должна этому мешать.
 
     Менять можно только свой комментарий и только текст: вид записи, автора,
-    дату отправки и вложения правка не трогает.
+    дату отправки и вложения правка не трогает. Прежний текст перед
+    перезаписью сохраняется ревизией (0084-g) с признаком «после приёмки».
     """
     report = db.get(TaskReport, report_id)
     if report is None or report.task_id != task.id:
@@ -472,10 +473,39 @@ def edit_report_comment(db: Session, task: Task, report_id: int, actor: User, co
         )
 
     if text != report.comment:
+        now = datetime.now(timezone.utc)
+        report.revisions.append(
+            TaskReportRevision(
+                comment=report.comment,
+                edited_by_id=actor.id,
+                edited_at=now,
+                after_acceptance=_is_accepted_after(task, report),
+            )
+        )
         report.comment = text
-        report.updated_at = datetime.now(timezone.utc)
+        report.updated_at = now
         db.flush()
     return report
+
+
+def get_report_or_404(db: Session, task: Task, report_id: int) -> TaskReport:
+    """Запись журнала именно этой задачи — для чтения её ревизий."""
+    report = db.get(TaskReport, report_id)
+    if report is None or report.task_id != task.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отчёт не найден")
+    return report
+
+
+def _is_accepted_after(task: Task, report: TaskReport) -> bool:
+    """Приняли ли задачу уже после этой записи: задача закрыта или в журнале
+    есть решение «принято», оставленное позже неё. Правка в этот момент —
+    правка того, что проверяющий уже принял."""
+    if task.status == TaskStatus.DONE:
+        return True
+    return any(
+        r.kind == TaskReportKind.REVIEW_ACCEPTED and r.id > report.id
+        for r in task.reports
+    )
 
 
 def force_close(db: Session, task: Task) -> None:
