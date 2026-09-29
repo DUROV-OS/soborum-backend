@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.clients.models import ClientChatState, ClientStage, OrderType, PaymentPlan
+from app.clients.models import ClientChatState, ClientStage, ContractSource, OrderType, PaymentPlan
 from app.common.files import FileAssetOut
 from app.tasks.models import TaskReportKind, TaskStatus
 from app.house_models.schemas import HouseModelBriefOut
@@ -193,6 +193,16 @@ class ClientTaskOut(BaseModel):
         )
 
 
+class ContractVerifierOut(BaseModel):
+    """Кто отметил договор проверенным — имя нужно карточке, id — для
+    правила «не свой же файл» на фронте."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+
+
 class ClientOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -222,6 +232,18 @@ class ClientOut(BaseModel):
     installation_address: str | None
     contract_file: FileAssetOut | None
     contract_appendix_file: FileAssetOut | None
+    # Источник и проверка договора/приложения (0084-i). `*_verification_required`
+    # False — договор приложен до ввода проверки: гейт только предупреждает.
+    contract_source: ContractSource | None = None
+    contract_verification_required: bool = False
+    contract_verified_by: ContractVerifierOut | None = None
+    contract_verified_at: datetime | None = None
+    contract_verification_note: str | None = None
+    contract_appendix_source: ContractSource | None = None
+    contract_appendix_verification_required: bool = False
+    contract_appendix_verified_by: ContractVerifierOut | None = None
+    contract_appendix_verified_at: datetime | None = None
+    contract_appendix_verification_note: str | None = None
     house_project_file: FileAssetOut | None
     ar_file: FileAssetOut | None
     kr_file: FileAssetOut | None

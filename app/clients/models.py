@@ -79,6 +79,19 @@ class PaymentPlan(str, enum.Enum):
     POST_PAYMENT = "post_payment"
 
 
+class ContractSource(str, enum.Enum):
+    """Откуда взялся файл договора (или приложения) у клиента (0084-i).
+
+    - UPLOADED — человек загрузил файл (скан, PDF от юриста и т.п.);
+    - GENERATED — Марина сама написала текст и приложила его
+      (`ai/tools.py::attach_generated_document`). Такой файл — черновик, а не
+      подписанный договор: гейт стадии его не пропускает никогда.
+    """
+
+    UPLOADED = "uploaded"
+    GENERATED = "generated"
+
+
 PAYMENT_PLAN_LABELS: dict[str, PaymentPlan] = {
     "полная предоплата": PaymentPlan.FULL_PREPAYMENT,
     "аванс + оплата после получения": PaymentPlan.ADVANCE_THEN_BALANCE,
@@ -212,6 +225,31 @@ class Client(Base):
     # (0061) — see client_service.set_contract_files. Не бывает одного без
     # другого: оба обязательны для ухода со стадии APPROVAL.
     contract_appendix_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
+    # --- Источник и проверка договора/приложения (0084-i) ---
+    # Загрузка файла не равна проверке: у каждого из двух документов свой
+    # источник и своя отметка «проверен кем, когда, что сверено». Замена файла
+    # (загрузкой или генерацией Мариной) отметку сбрасывает.
+    # `*_verification_required` ставит только код загрузки/генерации 0084-i —
+    # у договоров, приложенных до выкладки, он False (server_default), и гейт
+    # стадии для них ограничивается предупреждением, не блокирует переход.
+    contract_source: Mapped[ContractSource | None] = mapped_column(
+        Enum(ContractSource, name="contract_source"), nullable=True
+    )
+    contract_verification_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    contract_verified_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    contract_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    contract_verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contract_appendix_source: Mapped[ContractSource | None] = mapped_column(
+        Enum(ContractSource, name="contract_source"), nullable=True
+    )
+    contract_appendix_verification_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    contract_appendix_verified_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    contract_appendix_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    contract_appendix_verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     # house_project — опционален с 0061 (не у каждого клиента есть в системе);
     # не входит в _DOCUMENTS_REQUIRED. АР/КР — обязательны с 0061.
     house_project_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
@@ -255,6 +293,10 @@ class Client(Base):
     )
     contract_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_file_id])  # noqa: F821
     contract_appendix_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_appendix_file_id])  # noqa: F821
+    contract_verified_by: Mapped["User | None"] = relationship(foreign_keys=[contract_verified_by_id])  # noqa: F821
+    contract_appendix_verified_by: Mapped["User | None"] = relationship(  # noqa: F821
+        foreign_keys=[contract_appendix_verified_by_id]
+    )
     house_project_file: Mapped["FileAsset"] = relationship(foreign_keys=[house_project_file_id])  # noqa: F821
     ar_file: Mapped["FileAsset"] = relationship(foreign_keys=[ar_file_id])  # noqa: F821
     kr_file: Mapped["FileAsset"] = relationship(foreign_keys=[kr_file_id])  # noqa: F821
