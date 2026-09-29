@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -82,6 +83,14 @@ class ClientPaymentEditUnlockUpdate(BaseModel):
 
 class ClientBalancePaymentUpdate(BaseModel):
     balance_paid: bool
+
+
+class ClientContractVerify(BaseModel):
+    """Отметка «проверен» у договора или приложения (0084-i). `note` —
+    что сверено: стороны, сумма, график оплаты, модель дома."""
+
+    document: Literal["contract", "contract_appendix"] = "contract"
+    note: str
 
 
 class ClientNoteCreate(BaseModel):

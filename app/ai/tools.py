@@ -10,6 +10,7 @@ turn blowing up.
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from functools import partial
 from typing import Callable
 
 from fastapi import HTTPException, status
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.models import ChatDomain
 from app.clients import service as client_service
-from app.clients.models import Client, ClientStage, OrderType, parse_payment_plan
+from app.clients.models import Client, ClientStage, ContractSource, OrderType, parse_payment_plan
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientDocumentsUpdate,
@@ -129,6 +130,12 @@ def _serialize_client(c: Client) -> dict:
         "advance_amount": c.advance_amount,
         "installation_address": c.installation_address,
         "contract_file_id": c.contract_file_id,
+        # Загрузка ≠ проверка (0084-i): Марина должна видеть, откуда файл и
+        # проверен ли он, а не считать приложенный договор подписанным.
+        "contract_source": c.contract_source.value if c.contract_source else None,
+        "contract_verified": c.contract_verified_at is not None,
+        "contract_appendix_source": c.contract_appendix_source.value if c.contract_appendix_source else None,
+        "contract_appendix_verified": c.contract_appendix_verified_at is not None,
         "house_project_file_id": c.house_project_file_id,
         **_attached_specs(c),
         "documents_locked": c.documents_locked_at is not None,
@@ -192,8 +199,13 @@ def _add_client_note(db: Session, user: User, client_id: int, text: str) -> dict
 
 _GENERATED_DOCUMENT_HANDLERS = {
     "house_project": (FilePurpose.HOUSE_PROJECT, client_service.set_house_project_file),
-    "contract": (FilePurpose.CONTRACT, client_service.set_contract_file),
-    "contract_appendix": (FilePurpose.CONTRACT_APPENDIX, client_service.set_contract_appendix_file),
+    # Сгенерированный договор помечается источником GENERATED (0084-i): это
+    # черновик, гейт стадии его не пропускает.
+    "contract": (FilePurpose.CONTRACT, partial(client_service.set_contract_file, source=ContractSource.GENERATED)),
+    "contract_appendix": (
+        FilePurpose.CONTRACT_APPENDIX,
+        partial(client_service.set_contract_appendix_file, source=ContractSource.GENERATED),
+    ),
 }
 
 

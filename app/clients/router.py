@@ -9,6 +9,7 @@ from app.clients.schemas import (
     ClientChatLinkCreate,
     ClientChatLinkOut,
     ClientChatLinkUpdate,
+    ClientContractVerify,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
@@ -213,6 +214,22 @@ def upload_contract_files(
     contract_asset = save_upload_file(db, contract, FilePurpose.CONTRACT, user)
     appendix_asset = save_upload_file(db, appendix, FilePurpose.CONTRACT_APPENDIX, user)
     client = client_service.set_contract_files(db, client, contract_asset.id, appendix_asset.id)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.post("/{client_id}/contract/verify", response_model=ClientOut)
+def verify_contract(
+    client_id: int,
+    payload: ClientContractVerify,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_clients_edit),
+):
+    """Отметить договор или приложение проверенным (0084-i): загрузка файла
+    проверкой не считается. Права — те же, что на загрузку."""
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.verify_contract_document(db, client, payload, user)
     db.commit()
     db.refresh(client)
     return client
