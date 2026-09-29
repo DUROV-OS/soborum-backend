@@ -13,12 +13,14 @@ class BlockCreate(BaseModel):
     name: str
     description: str | None = None
     sequence: int | None = None
+    requires_materials: bool = True
 
 
 class BlockUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     sequence: int | None = None
+    requires_materials: bool | None = None
 
 
 class BlockDependencyCreate(BaseModel):
@@ -76,6 +78,7 @@ class BlockOut(BaseModel):
     name: str
     description: str | None
     sequence: int
+    requires_materials: bool = True
     depends_on_ids: list[int] = []
     materials: list[BlockMaterialOut] = []
 
@@ -194,6 +197,7 @@ class TemplateBlockOut(BaseModel):
     name: str
     description: str | None
     sequence: int
+    requires_materials: bool = True
     depends_on_ids: list[int] = []
     kr_page_refs: list[KrPageRefOut] = []
     tasks: list[TemplateBlockTaskOut] = []
@@ -216,6 +220,7 @@ class ProductionStageTemplateOut(BaseModel):
 class TemplateBlockPatch(BaseModel):
     name: str | None = None
     description: str | None = None
+    requires_materials: bool | None = None
 
 
 class TemplateBlockTaskPatch(BaseModel):
