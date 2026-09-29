@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.common.module_access import Module
 from app.production import readiness
+from app.tasks import policy as review_policy
 from app.tasks import sync as task_sync
 from app.tasks import timelog
 from app.tasks.models import Task, TaskLinkType, TaskReport, TaskReportKind, TaskStatus
@@ -235,8 +236,10 @@ def _finalize_status(
     if previous != new_status:
         timelog.record_stage(db, task, previous, new_status, actor=actor, automatic=automatic)
 
-    if task.status == TaskStatus.IN_REVIEW and not task.reviewers:
+    if task.status == TaskStatus.IN_REVIEW and not task.reviewers and not review_policy.requires_review(task):
         # Auto-close when there is nobody to review: not attributable to a person.
+        # Задачи, требующие приёмки (0084-f, app/tasks/policy.py), так не
+        # закрываются — остаются «на проверке», пока их не примут.
         return _finalize_status(db, task, TaskStatus.DONE, automatic=True)
 
     if task.status == TaskStatus.DONE:
@@ -329,7 +332,9 @@ def submit_report(
     пустой комментарий) не сохраняется ни то, ни другое.
 
     Задача без проверяющих после этого сразу становится DONE (обычное
-    поведение _finalize_status), отчёт при этом остаётся у задачи.
+    поведение _finalize_status), отчёт при этом остаётся у задачи — кроме
+    задач, требующих приёмки по app/tasks/policy.py (0084-f): те остаются
+    «на проверке».
     """
     text = (comment or "").strip()
     if not text:
