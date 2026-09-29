@@ -768,7 +768,7 @@ def _list_tasks(db: Session, user: User, assignee_id: int | None = None, status:
 
 @register(
     "get_user_workload",
-    "Загрузка сотрудников: сколько у каждого сейчас незавершённых задач. Используй это, чтобы "
+    "Загрузка сотрудников: сколько у каждого сейчас задач на исполнении (где он исполнитель). Используй это, чтобы "
     "предложить, кому поручить новую задачу, вместо угадывания.",
     {"module": {"type": "string", "enum": [m.value for m in Module]}},
     required_module=Module.TASKS, read_only=True, domains=[ChatDomain.TASKS],

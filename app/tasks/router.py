@@ -14,6 +14,7 @@ from app.tasks.schemas import (
     TaskReportCommentUpdate,
     TaskReportRevisionOut,
     TaskScope,
+    TaskStatusFilter,
     TaskStatusUpdate,
     TaskUpdate,
 )
@@ -39,7 +40,7 @@ def list_tasks(
     reviewer_id: int | None = None,
     block_id: int | None = None,
     link_type: TaskLinkType | None = None,
-    task_status: TaskStatus | None = Query(None, alias="status"),
+    task_status: TaskStatusFilter | None = Query(None, alias="status"),
     overdue: bool | None = None,
 ):
     if scope == TaskScope.ALL and not current.has_access(Module.TASKS_ALL):
@@ -54,14 +55,13 @@ def list_tasks(
         query = query.filter(Task.block_id == block_id)
     if link_type is not None:
         query = query.filter(Task.link_type == link_type)
-    if task_status is not None:
-        query = query.filter(Task.status == task_status)
-    tasks = query.order_by(Task.id.desc()).all()
-
-    if scope == TaskScope.MINE:
-        tasks = [t for t in tasks if task_service.is_mine_or_claimable(t, current)]
-    elif scope == TaskScope.CLAIMABLE:
-        tasks = [t for t in tasks if task_service.is_claimable_for(t, current)]
+    if task_status == TaskStatusFilter.OPEN:
+        # Тот же набор, что считает Пульс (0084-h): всё, кроме done, в этой области.
+        tasks = task_service.open_tasks_query(db, current, scope, query)
+    else:
+        if task_status is not None:
+            query = query.filter(Task.status == TaskStatus(task_status.value))
+        tasks = task_service.apply_scope(query.order_by(Task.id.desc()).all(), current, scope)
 
     if overdue:
         now = datetime.now(timezone.utc)

@@ -18,6 +18,15 @@ class TaskScope(str, enum.Enum):
     ALL = "all"
 
 
+# `status` query param of GET /api/tasks/: any TaskStatus plus "open" (everything
+# except done) - the same set the Pulse counter counts, see task 0084-h.
+TaskStatusFilter = enum.Enum(
+    "TaskStatusFilter",
+    {**{s.name: s.value for s in TaskStatus}, "OPEN": "open"},
+    type=str,
+)
+
+
 class TaskCreate(BaseModel):
     title: str
     description: str | None = None

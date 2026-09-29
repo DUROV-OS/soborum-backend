@@ -132,9 +132,15 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
                 tone=_readiness_tone(snapshot[section].get("worst_state")),
             ))
             continue
+        href = None
+        if (section, metric) == ("tasks", "open_tasks"):
+            scope = snapshot["tasks"]["open_tasks_scope"]
+            title = f"{title} ({'все' if scope == 'all' else 'мои'})"
+            href = f"/tasks?scope={scope}&status=open"
         widgets.append(DashboardWidget(
             section=section, title=title, value=str(value),
             tone=("warning" if value else "success") if attention else "neutral",
+            href=href,
         ))
     actions = []
     for section, metric, title, description, href, tone in ATTENTION:

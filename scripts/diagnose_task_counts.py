@@ -2,8 +2,8 @@
 (задача 0084-h). Только чтение — ничего не пишет в базу.
 
 Для одного пользователя печатает:
-  * ID из выборки Пульса (`_snapshot_tasks`: все задачи компании со
-    статусом != done, без учёта прав);
+  * ID из выборки Пульса до 0084-h (все задачи компании со статусом != done,
+    без учёта прав) и после (`open_tasks_query` в области доски пользователя);
   * ID, которые отдаёт `GET /api/tasks` с `scope=mine` и `scope=all`
     (вызывается сам обработчик роутера, а не копия его фильтров);
   * разницу между ними и причину по каждому ID.
@@ -90,7 +90,10 @@ def diagnose(db, user: User) -> list[str]:
     mine = _board_ids(db, user, TaskScope.MINE)
     mine_open = [i for i in mine if db.get(Task, i).status != TaskStatus.DONE]
 
-    out += _ids_line("Пульс (_snapshot_tasks, статус != done, вся компания)", list(pulse))
+    out += _ids_line("Пульс до 0084-h (статус != done, вся компания)", list(pulse))
+    scope = task_service.default_board_scope(user)
+    pulse_now = [t.id for t in task_service.open_tasks_query(db, user, scope)]
+    out += _ids_line(f"Пульс сейчас (open_tasks_query, scope={scope.value})", pulse_now)
     out += _ids_line("Доска scope=mine (все колонки, включая done)", mine)
     out += _ids_line("Доска scope=mine без колонки done", mine_open)
     all_ids: list[int] | None = None
@@ -103,12 +106,12 @@ def diagnose(db, user: User) -> list[str]:
         out.append("Доска scope=all: недоступна (нет tasks_all)")
     out.append("")
 
-    out.append("На Пульсе, но нет на доске scope=mine:")
+    out.append("На Пульсе до 0084-h, но нет на доске scope=mine:")
     mine_set = set(mine)
     missing = [i for i in sorted(pulse) if i not in mine_set]
     out += [f"  {_describe(pulse[i], user)} — {_reason_not_on_mine(pulse[i], user)}" for i in missing] or ["  —"]
 
-    out.append("На доске scope=mine, но не на Пульсе:")
+    out.append("На доске scope=mine, но не на Пульсе до 0084-h:")
     extra = sorted(i for i in mine if i not in pulse)
     out += [
         f"  {_describe(db.get(Task, i), user)} — done: колонка «done» есть на доске, Пульс её не считает"
@@ -116,7 +119,7 @@ def diagnose(db, user: User) -> list[str]:
     ] or ["  —"]
 
     if all_ids is not None:
-        out.append("Разница Пульс ↔ доска scope=all:")
+        out.append("Разница Пульс до 0084-h ↔ доска scope=all:")
         all_set = set(all_ids)
         diff = [i for i in sorted(pulse) if i not in all_set] + sorted(i for i in all_set if i not in pulse)
         for task_id in diff:

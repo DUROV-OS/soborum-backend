@@ -10,6 +10,7 @@ from app.tasks import policy as review_policy
 from app.tasks import sync as task_sync
 from app.tasks import timelog
 from app.tasks.models import Task, TaskLinkType, TaskReport, TaskReportKind, TaskReportRevision, TaskStatus
+from app.tasks.schemas import TaskScope
 from app.users.models import User
 
 ALLOWED_MANUAL_TRANSITIONS = {
@@ -56,6 +57,32 @@ def is_mine_or_claimable(task: Task, user: User) -> bool:
     if user in task.assignees or user in task.reviewers:
         return True
     return is_claimable_for(task, user)
+
+
+def default_board_scope(user: User) -> TaskScope:
+    """Область, в которой пользователь видит «все свои» задачи на доске: «Все
+    задачи», если есть доступ `tasks_all`, иначе «Мои задачи» (0084-h)."""
+    return TaskScope.ALL if user.has_access(Module.TASKS_ALL) else TaskScope.MINE
+
+
+def apply_scope(tasks: list[Task], user: User, scope: TaskScope) -> list[Task]:
+    """Фильтр `scope` доски (0021): ALL — без фильтра, MINE — свои и свободные,
+    CLAIMABLE — только свободные. Права на ALL проверяет вызывающий."""
+    if scope == TaskScope.MINE:
+        return [t for t in tasks if is_mine_or_claimable(t, user)]
+    if scope == TaskScope.CLAIMABLE:
+        return [t for t in tasks if is_claimable_for(t, user)]
+    return tasks
+
+
+def open_tasks_query(db: Session, user: User, scope: TaskScope, query=None) -> list[Task]:
+    """Открытые (не done) задачи в области `scope` — один набор и для числа на
+    Пульсе, и для `GET /api/tasks?status=open` (0084-h). `query` — уже
+    отфильтрованный запрос доски (исполнитель, блок и т.д.), по умолчанию все
+    задачи."""
+    base = query if query is not None else db.query(Task)
+    tasks = base.filter(Task.status != TaskStatus.DONE).order_by(Task.id.desc()).all()
+    return apply_scope(tasks, user, scope)
 
 
 def claim_task(db: Session, task: Task, user: User) -> Task:
