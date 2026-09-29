@@ -83,6 +83,11 @@ class AgentApproval(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    # Снимок того, что согласуется (agent, stance, citations, legal_verdict), и
+    # sha256 от него. Решение принимается только с тем хэшем, который видел
+    # человек (0084-e). NULL — согласование до 0084-e, снимка нет.
+    subject_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    subject_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decided_by_id: Mapped[int | None] = mapped_column(

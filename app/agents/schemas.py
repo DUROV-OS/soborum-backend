@@ -103,10 +103,14 @@ class ShiftItemOut(BaseModel):
 class ApprovalOut(BaseModel):
     id: int
     shift_id: int
+    item_id: int | None = None
     kind: str
     title: str
     detail: str
     status: str
+    # «approved» значит только «согласовано»: исполнителя согласований в P0 нет.
+    subject_snapshot: dict | None = None
+    subject_hash: str | None = None
     created_at: datetime
 
 
@@ -141,3 +145,5 @@ class ShiftOut(BaseModel):
 
 class ApprovalDecisionRequest(BaseModel):
     status: Literal["approved", "rejected"]
+    # Хэш снимка, который видел человек. Не передан или не совпал — 409.
+    subject_hash: str | None = Field(default=None, max_length=64)

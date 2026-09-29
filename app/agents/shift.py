@@ -156,25 +156,32 @@ def _review(reviewer: AgentId, item: ShiftItemDraft, by_id: dict[AgentId, ShiftI
     )
 
 
+LEGAL_QUEUE_LINE = "В очередь: без вашего «да» не выпускаем."
+
+
 def _legal_reviewer_line(legal: LegalDecision) -> str:
     lines = list(dict.fromkeys(finding.human_line for finding in legal.findings))
     tail = " " + " ".join(lines) if lines else ""
-    return "В очередь: без вашего «да» не выпускаем." + tail
+    return LEGAL_QUEUE_LINE + tail
 
 
 def _approvals(items: list[ShiftItemDraft]) -> list[ApprovalDraft]:
     approvals: list[ApprovalDraft] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, AgentId]] = set()
     for item in items:
         if item.legal_verdict != LegalVerdict.ALLOW:
             kind = "legal" if item.legal_verdict == LegalVerdict.BLOCK else "pricing"
+            detail = (
+                f"{RU_LABELS[item.agent].capitalize()} принёс вопрос, который нельзя выпускать самим: "
+                f"«{item.daily_question}»"
+            )
             _add_approval(
                 approvals,
                 seen,
                 ApprovalDraft(
                     kind=kind,
-                    title="Нужно ваше решение",
-                    detail=f"{RU_LABELS[item.agent].capitalize()} принёс вопрос, который нельзя выпускать самим.",
+                    title=_approval_title(item.agent, item.daily_question),
+                    detail=detail,
                     agent=item.agent,
                 ),
             )
@@ -186,7 +193,7 @@ def _approvals(items: list[ShiftItemDraft]) -> list[ApprovalDraft]:
                 seen,
                 ApprovalDraft(
                     kind=review.kind,
-                    title=_approval_title(review.kind),
+                    title=_approval_title(item.agent, review.text),
                     detail=review.text,
                     agent=item.agent,
                 ),
@@ -196,10 +203,13 @@ def _approvals(items: list[ShiftItemDraft]) -> list[ApprovalDraft]:
 
 def _add_approval(
     approvals: list[ApprovalDraft],
-    seen: set[tuple[str, str]],
+    seen: set[tuple[str, AgentId]],
     draft: ApprovalDraft,
 ) -> None:
-    key = (draft.kind, draft.title)
+    # Одна роль = один пункт смены, поэтому (kind, agent) — это (kind, item_id):
+    # разные вопросы одного типа от разных ролей больше не схлопываются в один
+    # по одинаковому заголовку.
+    key = (draft.kind, draft.agent)
     if key in seen:
         return
     seen.add(key)
@@ -258,12 +268,19 @@ def _plural(n: int, one: str, few: str, many: str) -> str:
     return many
 
 
-def _approval_title(kind: str) -> str:
-    if kind == "pricing":
-        return "Цена и скидка — только вы"
-    if kind == "legal":
-        return "Юрист просит вас посмотреть"
-    return "Нужно ваше решение"
+APPROVAL_TITLE_BRIEF = 80
+
+
+def _approval_title(agent: AgentId, detail: str) -> str:
+    """Заголовок согласования — чей пункт и о чём он, а не общее «Нужно ваше решение»."""
+    brief = " ".join(detail.split())
+    # Общая строка очереди юриста одинакова у всех — суть в найденных стоп-факторах.
+    if brief.startswith(LEGAL_QUEUE_LINE) and brief != LEGAL_QUEUE_LINE:
+        brief = brief[len(LEGAL_QUEUE_LINE):].strip()
+    if len(brief) > APPROVAL_TITLE_BRIEF:
+        cut = brief[:APPROVAL_TITLE_BRIEF].rsplit(" ", 1)[0] or brief[:APPROVAL_TITLE_BRIEF]
+        brief = cut.rstrip(" ,.;:—-") + "…"
+    return f"{RU_LABELS[agent].capitalize()}: {brief}"
 
 
 def _no_data_stance(agent_id: AgentId) -> str:

@@ -73,4 +73,4 @@ def decide_approval(
     db: Session = Depends(get_db),
     user: User = Depends(require_admin),
 ):
-    return agents_service.decide_approval(db, user, approval_id, body.status)
+    return agents_service.decide_approval(db, user, approval_id, body.status, body.subject_hash)

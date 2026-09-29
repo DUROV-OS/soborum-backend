@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -25,7 +28,13 @@ from app.agents.schemas import (
     TotalsOut,
     TraceOut,
 )
-from app.agents.shift import REVIEW_CHECKED_ESCALATE, REVIEW_CHECKED_OK, REVIEW_NOT_CHECKED, run_shift
+from app.agents.shift import (
+    REVIEW_CHECKED_ESCALATE,
+    REVIEW_CHECKED_OK,
+    REVIEW_NOT_CHECKED,
+    ShiftItemDraft,
+    run_shift,
+)
 from app.core.config import settings
 from app.users.models import User
 
@@ -136,6 +145,7 @@ def create_shift(db: Session, user: User | None = None) -> ShiftOut:
     db.flush()
 
     item_rows: dict[str, AgentShiftItem] = {}
+    item_drafts: dict[str, ShiftItemDraft] = {}
     for item in draft.items:
         row = AgentShiftItem(
             shift_id=shift.id,
@@ -160,10 +170,13 @@ def create_shift(db: Session, user: User | None = None) -> ShiftOut:
         db.add(row)
         db.flush()
         item_rows[item.agent.value] = row
+        item_drafts[item.agent.value] = item
         _store_run(db, user, item.daily_question, item.stance, item.legal_verdict, [item.agent.value])
 
     for approval in draft.approvals:
         item_row = item_rows.get(approval.agent.value)
+        item_draft = item_drafts.get(approval.agent.value)
+        snapshot = subject_snapshot(item_draft) if item_draft is not None else None
         db.add(
             AgentApproval(
                 shift_id=shift.id,
@@ -172,6 +185,8 @@ def create_shift(db: Session, user: User | None = None) -> ShiftOut:
                 title=approval.title,
                 detail=approval.detail,
                 status="pending",
+                subject_snapshot=snapshot,
+                subject_hash=subject_hash(snapshot) if snapshot is not None else None,
                 created_at=datetime.now(timezone.utc),
             )
         )
@@ -200,12 +215,41 @@ def _load_shift(db: Session, shift_id: int) -> AgentShift:
     return row
 
 
-def decide_approval(db: Session, user: User, approval_id: int, decision: str) -> ApprovalOut:
+def subject_snapshot(item: ShiftItemDraft) -> dict:
+    """То, что человек согласует: позиция роли в том виде, в каком он её видел."""
+    return {
+        "agent": item.agent.value,
+        "stance": item.stance,
+        "citations": list(item.citations),
+        "legal_verdict": str(item.legal_verdict),
+    }
+
+
+def subject_hash(snapshot: dict) -> str:
+    canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def decide_approval(
+    db: Session, user: User, approval_id: int, decision: str, seen_hash: str | None = None
+) -> ApprovalOut:
+    """Записать решение человека. Это только «согласовано/отклонено»: исполнителя
+    согласований в P0 нет (P1, #37 п.9), ничего не выполняется."""
     approval = db.get(AgentApproval, approval_id)
     if approval is None:
         raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Карточки очереди нет")
     if approval.status != "pending":
         raise HTTPException(status_code=http_status.HTTP_409_CONFLICT, detail="Решение уже принято")
+    if not approval.subject_hash:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="У пункта нет снимка того, что согласуется, — дождитесь новой смены",
+        )
+    if not seen_hash or not hmac.compare_digest(seen_hash, approval.subject_hash):
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail="Пункт изменился, обновите страницу",
+        )
     approval.status = decision
     approval.decided_at = datetime.now(timezone.utc)
     approval.decided_by_id = user.id
@@ -291,10 +335,13 @@ def _approval_out(row: AgentApproval) -> ApprovalOut:
     return ApprovalOut(
         id=row.id,
         shift_id=row.shift_id,
+        item_id=row.item_id,
         kind=row.kind,
         title=row.title,
         detail=row.detail,
         status=row.status,
+        subject_snapshot=row.subject_snapshot,
+        subject_hash=row.subject_hash,
         created_at=row.created_at,
     )
 
