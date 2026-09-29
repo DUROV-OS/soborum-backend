@@ -215,7 +215,12 @@ class DeadlineInsightOut(BaseModel):
     title: str
     description: str
     impact: str
-    source: str  # "ai" | "fallback" | "none"
+    # "ai" | "fallback" | "none" (сигналов нет — по графику) |
+    # "insufficient_data" (прогноз не построен: не хватает данных, 0084-c)
+    source: str
+    # Когда посчитан ответ: у закешированного ИИ-ответа — время генерации.
+    # None — запись кэша, сохранённая до 0084-c.
+    generated_at: datetime | None = None
 
 
 class ProductionHomeOut(BaseModel):
