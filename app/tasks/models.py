@@ -30,6 +30,11 @@ class TaskReportKind(str, enum.Enum):
     REVIEW_RETURNED = "review_returned"
     # Срок задачи перенесён с указанием причины (задачи по клиенту, 0079-d).
     DEADLINE_SHIFT = "deadline_shift"
+    # Проверяющий назначен автоматически по политике приёмки (0084-f,
+    # app/tasks/policy.py): задачу, требующую приёмки, сдали без проверяющего,
+    # и им стал ответственный. Автор — тот, чья сдача это вызвала; запись
+    # служебная, её текст не правится.
+    REVIEWER_ASSIGNED = "reviewer_assigned"
 
 
 class TaskLinkType(str, enum.Enum):

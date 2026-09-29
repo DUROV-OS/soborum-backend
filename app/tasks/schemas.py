@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.common.files import FileAssetOut
+from app.tasks import policy as task_policy
 from app.tasks.models import TaskLinkType, TaskReportKind, TaskStatus
 from app.users.schemas import UserOut
 
@@ -93,6 +94,12 @@ class TaskOut(BaseModel):
     images: list[FileAssetOut]
     reports: list[TaskReportOut]
     depends_on_ids: list[int]
+    # Политика приёмки (0084-f, app/tasks/policy.py): review_required — сдача
+    # без проверяющего задачу не закрывает, исполнитель не принимает свою сдачу.
+    review_policy: task_policy.ReviewPolicy
+    # "no_reviewer" — задача на проверке, но принять её некому (проверяющих нет
+    # или это только исполнители задачи с review_required). None — всё в порядке.
+    review_blocked_reason: str | None
 
     @staticmethod
     def from_model(task) -> "TaskOut":
@@ -113,4 +120,10 @@ class TaskOut(BaseModel):
             images=[FileAssetOut.model_validate(f) for f in task.images],
             reports=[TaskReportOut.from_model(r) for r in task.reports],
             depends_on_ids=[t.id for t in task.depends_on],
+            review_policy=task_policy.review_policy(task),
+            review_blocked_reason=(
+                "no_reviewer"
+                if task.status == TaskStatus.IN_REVIEW and not task_policy.eligible_reviewers(task)
+                else None
+            ),
         )
