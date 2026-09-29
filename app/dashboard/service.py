@@ -7,7 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.accounting.models import MoneyMovement, MoneyMovementStatus
-from app.clients.models import Client, ClientStage, PaymentPlan
+from app.clients.models import BalanceState, Client, ClientStage, PaymentPlan, balance_state, balance_today
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import Installation, InstallationStage
@@ -45,6 +45,22 @@ def _snapshot_clients(db: Session) -> dict:
     for stage, count in db.query(Client.stage, func.count(Client.id)).group_by(Client.stage).all():
         stage_counts[stage.value] = count
 
+    # Остаток «после получения» принимают на «Доме в производстве» и на
+    # «Приёмке» — после неё цикл закрыть уже нельзя без оплаты. Непогашенный
+    # остаток делится по сроку (0084-j): в срок — не нарушение, просрочка —
+    # только после срока, без срока — отдельный сигнал.
+    awaiting_balance = (
+        db.query(Client)
+        .filter(
+            Client.stage.in_([ClientStage.POSTPAYMENT, ClientStage.ACCEPTANCE]),
+            Client.payment_plan != PaymentPlan.FULL_PREPAYMENT,
+            Client.balance_paid.isnot(True),
+        )
+        .all()
+    )
+    today = balance_today()
+    balance_states = [balance_state(c, today) for c in awaiting_balance]
+
     return {
         "total_clients": sum(stage_counts.values()),
         "stage_counts": stage_counts,
@@ -55,15 +71,9 @@ def _snapshot_clients(db: Session) -> dict:
             Client.payment_plan != PaymentPlan.POST_PAYMENT,
         )
         .count(),
-        "awaiting_balance_payment": db.query(Client)
-        .filter(
-            # Остаток «после получения» принимают на «Доме в производстве» и
-            # на «Приёмке» — после неё цикл закрыть уже нельзя без оплаты.
-            Client.stage.in_([ClientStage.POSTPAYMENT, ClientStage.ACCEPTANCE]),
-            Client.payment_plan != PaymentPlan.FULL_PREPAYMENT,
-            Client.balance_paid.isnot(True),
-        )
-        .count(),
+        "balance_pending": balance_states.count(BalanceState.PENDING),
+        "balance_overdue": balance_states.count(BalanceState.OVERDUE),
+        "balance_no_due_date": balance_states.count(BalanceState.NO_DUE_DATE),
         "new_leads_last_7_days": db.query(Client)
         .filter(Client.stage == ClientStage.LEAD, Client.created_at >= week_ago)
         .count(),
