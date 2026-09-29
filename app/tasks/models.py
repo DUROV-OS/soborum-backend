@@ -174,7 +174,9 @@ class TaskReport(Base):
 
     Сам текст комментария автор может поправить в любой момент, в том числе
     после приёмки задачи (`updated_at` помечает такую правку); вид записи,
-    автор и вложения при этом не меняются.
+    автор и вложения при этом не меняются. Прежний текст при каждой правке
+    сохраняется в TaskReportRevision (0084-g) — принятое доказательство не
+    пропадает.
     """
 
     __tablename__ = "task_reports"
@@ -204,6 +206,42 @@ class TaskReport(Base):
 
     author: Mapped["User"] = relationship()  # noqa: F821
     files: Mapped[list["FileAsset"]] = relationship(secondary=task_report_files)  # noqa: F821
+    revisions: Mapped[list["TaskReportRevision"]] = relationship(
+        order_by="TaskReportRevision.id",
+        cascade="all, delete-orphan",
+    )
+
+
+class TaskReportRevision(Base):
+    """Прежний текст записи журнала отчётов, сохранённый перед правкой
+    (0084-g). Одна строка на каждую правку: `comment` — текст, каким он был
+    ДО неё; текущий текст — в самой TaskReport.comment.
+
+    Только добавление: через API строки не правятся и не удаляются (уходят
+    лишь вместе с отчётом по CASCADE). `after_acceptance` — правка сделана,
+    когда задача уже была принята: проверяющий принимал другой текст.
+    Вложения не версионируются — правка их и не трогает.
+    """
+
+    __tablename__ = "task_report_revisions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("task_reports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    edited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+    )
+    after_acceptance: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    edited_by: Mapped["User | None"] = relationship()  # noqa: F821
 
 
 class TaskStageEvent(Base):
