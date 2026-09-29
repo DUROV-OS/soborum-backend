@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.models import ChatDomain
 from app.clients import service as client_service
-from app.clients.models import Client, ClientStage, ContractSource, OrderType, parse_payment_plan
+from app.clients.models import Client, ClientStage, ContractSource, OrderType, balance_state, parse_payment_plan
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientDocumentsUpdate,
@@ -142,6 +142,10 @@ def _serialize_client(c: Client) -> dict:
         "is_paid": c.is_paid,
         "payment_locked": c.payment_locked_at is not None,
         "balance_paid": c.balance_paid,
+        # Срок и состояние остатка (0084-j): «в срок» — не нарушение, просрочка
+        # — только после срока, без срока — отдельный сигнал.
+        "balance_due_date": c.balance_due_date.isoformat() if c.balance_due_date else None,
+        "balance_state": balance_state(c).value,
         "notes": [{"id": n.id, "text": n.text, "created_at": _iso(n.created_at)} for n in c.notes],
     }
 

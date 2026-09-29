@@ -1,10 +1,12 @@
 import enum
-from datetime import datetime
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     BigInteger,
     and_,
     Boolean,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -273,6 +275,11 @@ class Client(Base):
     # перевести в COMPLETED (см. app.installation.service.complete_installation).
     balance_paid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     balance_paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Срок оплаты остатка по договору (0084-j). Вводится вручную в карточке
+    # клиента для планов с остатком; правила автоматического расчёта (от
+    # монтажа и т.п.) пока нет. Без срока просрочку не определить — это
+    # отдельный сигнал «срок не указан», а не нарушение (см. balance_state).
+    balance_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     cycle: Mapped["Cycle"] = relationship(back_populates="client")  # noqa: F821
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
@@ -303,6 +310,51 @@ class Client(Base):
     # Read-only reference into the house_models catalog (0043) — this section
     # doesn't own or manage that data, just points at it.
     house_model: Mapped["HouseModelCard | None"] = relationship(viewonly=True)  # noqa: F821
+
+
+# Срок остатка — дата без времени; «сегодня» для неё — по Москве, где работает
+# компания, а не по часовому поясу сервера.
+BALANCE_TZ = ZoneInfo("Europe/Moscow")
+
+
+class BalanceState(str, enum.Enum):
+    """Состояние остатка «после получения» (0084-j). Вычисляется, не хранится.
+
+    - NOT_APPLICABLE — полная предоплата: остатка нет;
+    - PAID — остаток принят;
+    - NO_DUE_DATE — остаток не принят, срок не указан: просрочку не
+      определить, это отдельный сигнал, а не нарушение;
+    - PENDING — срок указан и ещё не прошёл (включая сегодняшний день);
+    - OVERDUE — срок прошёл, остаток не принят.
+    """
+
+    NOT_APPLICABLE = "not_applicable"
+    NO_DUE_DATE = "no_due_date"
+    PENDING = "pending"
+    OVERDUE = "overdue"
+    PAID = "paid"
+
+
+def balance_today() -> date:
+    return datetime.now(BALANCE_TZ).date()
+
+
+def balance_due_deadline(due: date) -> datetime:
+    """Дедлайн задачи приёма остатка — конец дня срока по Москве: в день
+    срока остаток ещё не просрочен."""
+    return datetime.combine(due, time(23, 59, 59), tzinfo=BALANCE_TZ)
+
+
+def balance_state(client: "Client", today: date | None = None) -> BalanceState:
+    if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
+        return BalanceState.NOT_APPLICABLE
+    if client.balance_paid:
+        return BalanceState.PAID
+    if client.balance_due_date is None:
+        return BalanceState.NO_DUE_DATE
+    if client.balance_due_date < (today or balance_today()):
+        return BalanceState.OVERDUE
+    return BalanceState.PENDING
 
 
 class ClientNote(Base):

@@ -14,9 +14,11 @@ from app.clients.models import (
     ContractSource,
     OrderType,
     PaymentPlan,
+    balance_due_deadline,
     stage_label,
 )
 from app.clients.schemas import (
+    ClientBalanceDueDateUpdate,
     ClientBalancePaymentUpdate,
     ClientChatLinkCreate,
     ClientChatLinkUpdate,
@@ -312,6 +314,48 @@ def record_balance_payment(
         task_service.close_open_link_task(db, TaskLinkType.CLIENT_BALANCE_PAYMENT, client.id)
         if not was_paid:
             _record_sale_income(db, client, _sale_income_amount_on_balance_paid(client), initiator_id)
+    return client
+
+
+def _format_due(value) -> str:
+    return value.strftime("%d.%m.%Y") if value else "без срока"
+
+
+def update_balance_due_date(
+    db: Session, client: Client, payload: ClientBalanceDueDateUpdate, actor: User
+) -> Client:
+    """Срок оплаты остатка по договору (0084-j) — вводится вручную для
+    планов с остатком. Не зависит от фиксации документных данных: срок часто
+    договаривают уже после подписания договора.
+
+    Открытая задача «принять оплату после получения» получает этот срок
+    дедлайном; перенос пишется в журнал задачи так же, как перенос срока у
+    задач по клиенту."""
+    if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="У клиента полная предоплата — остатка «после получения» нет",
+        )
+    if client.balance_paid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Остаток уже принят")
+    was = client.balance_due_date
+    client.balance_due_date = payload.balance_due_date
+    db.flush()
+    if was != payload.balance_due_date:
+        task = _open_balance_payment_task(db, client.id)
+        if task is not None:
+            task.deadline = balance_due_deadline(payload.balance_due_date) if payload.balance_due_date else None
+            db.flush()
+            task_service.add_report(
+                db,
+                task,
+                actor,
+                kind=TaskReportKind.DEADLINE_SHIFT,
+                comment=(
+                    f"Срок оплаты остатка изменён с {_format_due(was)} "
+                    f"на {_format_due(payload.balance_due_date)}"
+                ),
+            )
     return client
 
 
@@ -841,15 +885,32 @@ def _apply_stage_plan(db: Session, client: Client, production, template_cache: d
         instantiate_stage_plan(db, production, template)
 
 
+def _open_balance_payment_task(db: Session, client_id: int) -> Task | None:
+    return (
+        db.query(Task)
+        .filter(
+            Task.link_type == TaskLinkType.CLIENT_BALANCE_PAYMENT,
+            Task.link_id == client_id,
+            Task.status != TaskStatus.DONE,
+        )
+        .order_by(Task.id.desc())
+        .first()
+    )
+
+
 def _create_balance_payment_task(db: Session, client: Client) -> None:
     assignees = user_service.users_with_access(db, Module.CLIENTS)
-    task_service.create_link_task(
+    task = task_service.create_link_task(
         db,
         title=f"Клиент «{client.full_name}»: принять оплату после получения (остаток)",
         link_type=TaskLinkType.CLIENT_BALANCE_PAYMENT,
         link_id=client.id,
         assignees=assignees,
     )
+    # Срок остатка (0084-j), если его уже указали до старта производства.
+    if client.balance_due_date is not None:
+        task.deadline = balance_due_deadline(client.balance_due_date)
+        db.flush()
 
 
 @task_sync.register(TaskLinkType.CLIENT_BALANCE_PAYMENT)

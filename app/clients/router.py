@@ -5,6 +5,7 @@ from app.clients import reconcile as client_reconcile
 from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
 from app.clients.schemas import (
+    ClientBalanceDueDateUpdate,
     ClientBalancePaymentUpdate,
     ClientChatLinkCreate,
     ClientChatLinkOut,
@@ -154,6 +155,22 @@ def record_balance_payment(
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.record_balance_payment(db, client, payload, current_user.id)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.patch("/{client_id}/balance-due-date", response_model=ClientOut)
+def update_balance_due_date(
+    client_id: int,
+    payload: ClientBalanceDueDateUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_clients_edit),
+):
+    """Срок оплаты остатка по договору (0084-j) — те же права, что на формат
+    расчёта; дедлайн задачи приёма остатка следует за ним."""
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.update_balance_due_date(db, client, payload, current_user)
     db.commit()
     db.refresh(client)
     return client
