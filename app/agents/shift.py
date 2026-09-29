@@ -20,6 +20,13 @@ from app.core.config import settings
 
 log = logging.getLogger("app.agents.shift")
 
+# Откуда взялась позиция роли. «live» — выдержка из живого среза базы DurovOS;
+# «llm_without_facts» — Claude ответил, но живого хита у роли не было, это не
+# факт из системы; «none» — ни того, ни другого, позиция — честное «нет данных».
+STANCE_LIVE = "live"
+STANCE_LLM_WITHOUT_FACTS = "llm_without_facts"
+STANCE_NONE = "none"
+
 
 # Статус кросс-проверки. Реальная проверка сейчас есть только у юриста
 # (детерминированный фильтр стоп-факторов); остальные роли своего чек-листа
@@ -46,6 +53,7 @@ class ShiftItemDraft:
     citations: list[str]
     legal_verdict: str
     has_live_data: bool = False
+    stance_source: str = STANCE_NONE
     reviews: list[ShiftReview] = field(default_factory=list)
 
 
@@ -77,21 +85,23 @@ def run_shift(db: Session | None = None, vault_root: str | None = None) -> Shift
         live = [hit for hit in relevant if _live_hit(agent_id, hit)]
         citations = [hit.title for hit in (live or relevant)[:3] if hit.title]
         stance: str | None = None
+        # has_live_data = в позиции использован живой хит, а не «Claude ответил».
         has_live_data = False
+        stance_source = STANCE_NONE
         if live:
             stance = " ".join(hit.excerpt for hit in live[:2] if hit.excerpt).strip() or None
             if stance:
                 has_live_data = True
+                stance_source = STANCE_LIVE
         if not stance:
             claude_stance = _claude_stance(agent_id, question, context)
             if claude_stance:
                 claude_used = True
-                has_live_data = True
                 stance = claude_stance
+                stance_source = STANCE_LLM_WITHOUT_FACTS
         if not stance:
             # No live source, no Claude — do not fabricate. Mark honestly.
             stance = _no_data_stance(agent_id)
-            has_live_data = False
         items.append(
             ShiftItemDraft(
                 agent=agent_id,
@@ -100,6 +110,7 @@ def run_shift(db: Session | None = None, vault_root: str | None = None) -> Shift
                 citations=citations or [],
                 legal_verdict=legal.verdict.value,
                 has_live_data=has_live_data,
+                stance_source=stance_source,
             )
         )
 
@@ -211,6 +222,7 @@ def _summary(
 ) -> str:
     unchecked_items = sum(1 for item in items if not any(_is_checked(review) for review in item.reviews))
     not_checked = sum(1 for item in items for review in item.reviews if review.status == REVIEW_NOT_CHECKED)
+    without_data = sum(1 for item in items if not item.has_live_data)
     if approvals:
         head = f"Вам решить {len(approvals)} {_plural(len(approvals), 'вопрос', 'вопроса', 'вопросов')}."
     elif unchecked_items:
@@ -221,9 +233,17 @@ def _summary(
         )
     else:
         head = "Сейчас от вас ничего не нужно."
-    if not not_checked:
+    notes = []
+    if without_data:
+        notes.append(
+            f"{without_data} {_plural(without_data, 'пункт', 'пункта', 'пунктов')} без данных из системы"
+        )
+    if not_checked:
+        notes.append(f"проверок «Не проверено»: {not_checked}")
+    if not notes:
         return head
-    return f"{head} Проверок «Не проверено»: {not_checked}."
+    tail = "; ".join(notes)
+    return f"{head} {tail[0].upper()}{tail[1:]}."
 
 
 def _is_checked(review: ShiftReview) -> bool:

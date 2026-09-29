@@ -61,8 +61,11 @@ class AgentShiftItem(Base):
     stance: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     legal_verdict: Mapped[str] = mapped_column(String(32), nullable=False)
-    # False = no live source and no Claude; stance is an honest "нет данных", not analysis.
+    # True только если в позиции использован живой хит базы DurovOS. Ответ Claude
+    # без живых хитов — это не «живые данные» (0084-e).
     has_live_data: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # live / llm_without_facts / none; NULL — строка смены до 0084-e, источник неизвестен.
+    stance_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reviews: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
 
     shift: Mapped[AgentShift] = relationship(back_populates="items")

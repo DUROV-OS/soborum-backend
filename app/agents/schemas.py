@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 LegalVerdictName = Literal["allow", "allow_with_conditions", "block", "escalate_human"]
 ReviewStatusName = Literal["checked_ok", "checked_escalate", "not_checked"]
+StanceSourceName = Literal["live", "llm_without_facts", "none"]
 
 
 class CreateRunRequest(BaseModel):
@@ -94,6 +95,8 @@ class ShiftItemOut(BaseModel):
     citations: list[str]
     legal_verdict: LegalVerdictName
     has_live_data: bool = False
+    # None — строка смены до 0084-e: откуда позиция, не записано.
+    stance_source: StanceSourceName | None = None
     reviews: list[ShiftReviewOut]
 
 

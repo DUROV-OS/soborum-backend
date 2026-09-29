@@ -145,6 +145,7 @@ def create_shift(db: Session, user: User | None = None) -> ShiftOut:
             citations=item.citations,
             legal_verdict=item.legal_verdict,
             has_live_data=item.has_live_data,
+            stance_source=item.stance_source,
             reviews=[
                 {
                     "reviewer": review.reviewer.value,
@@ -277,6 +278,7 @@ def _item_out(row: AgentShiftItem) -> ShiftItemOut:
         citations=list(row.citations or []),
         legal_verdict=row.legal_verdict,  # type: ignore[arg-type]
         has_live_data=bool(row.has_live_data),
+        stance_source=row.stance_source,  # type: ignore[arg-type]
         reviews=reviews,
     )
 
