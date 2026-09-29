@@ -5,12 +5,18 @@
 
 from pathlib import Path
 
+import pytest
+
 from app.clients.models import Client
 from app.common.module_access import Module
 from app.cycle.models import Cycle
 from app.production.models import KrExtraction
 
 SAMPLE_KR = Path(__file__).resolve().parents[2] / "sources" / "АР КР и Договор" / "КР_1 блок6.pdf"
+
+# Реальный образец лежит вне репозитория (реальные документы в git не кладём),
+# поэтому в CI (0084-a) этих тестов нет — они идут только в локальной рабочей области.
+needs_sample_kr = pytest.mark.skipif(not SAMPLE_KR.is_file(), reason="нет реального образца КР в sources/")
 
 
 def _make_client_with_kr(db, admin, path: Path = SAMPLE_KR):
@@ -35,6 +41,7 @@ def _make_client_with_kr(db, admin, path: Path = SAMPLE_KR):
     return client
 
 
+@needs_sample_kr
 def test_extraction_on_real_sample_gives_nonempty_pages(api, make_user, db):
     assert SAMPLE_KR.is_file(), "реальный образец КР должен лежать в sources/"
     admin = make_user(admin=True)
@@ -52,6 +59,7 @@ def test_extraction_on_real_sample_gives_nonempty_pages(api, make_user, db):
     assert any(p["text"].strip() for p in body["pages"])
 
 
+@needs_sample_kr
 def test_get_extraction_returns_already_computed_result(api, make_user, db):
     admin = make_user(admin=True)
     client = _make_client_with_kr(db, admin)
@@ -67,6 +75,7 @@ def test_get_extraction_returns_already_computed_result(api, make_user, db):
     assert resp.json()["client_id"] == client.id
 
 
+@needs_sample_kr
 def test_rerun_replaces_previous_extraction_without_duplicating(api, make_user, db):
     admin = make_user(admin=True)
     client = _make_client_with_kr(db, admin)

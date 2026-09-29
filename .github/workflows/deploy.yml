@@ -6,7 +6,12 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Деплой только после зелёных тестов и миграций (0084-a).
+  checks:
+    uses: ./.github/workflows/checks.yml
+
   deploy:
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
