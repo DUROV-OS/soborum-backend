@@ -242,7 +242,7 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> 
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
 
-    module_material = request.module_material
+    module_material = request.block_material
     warehouse_material = request.warehouse_material
 
     module_material.quantity_requested -= request.quantity
@@ -269,7 +269,7 @@ def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> M
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
 
-    module_material = request.module_material
+    module_material = request.block_material
     warehouse_material = request.warehouse_material
 
     module_material.quantity_requested -= request.quantity
