@@ -21,12 +21,21 @@ from app.core.config import settings
 log = logging.getLogger("app.agents.shift")
 
 
+# Статус кросс-проверки. Реальная проверка сейчас есть только у юриста
+# (детерминированный фильтр стоп-факторов); остальные роли своего чек-листа
+# пока не имеют (P1, #37 п.2) и честно пишут «Не проверено».
+REVIEW_CHECKED_OK = "checked_ok"
+REVIEW_CHECKED_ESCALATE = "checked_escalate"
+REVIEW_NOT_CHECKED = "not_checked"
+
+
 @dataclass
 class ShiftReview:
     reviewer: AgentId
     text: str
     escalate: bool
     kind: str = "ops"
+    status: str = REVIEW_NOT_CHECKED
 
 
 @dataclass
@@ -119,20 +128,20 @@ def _review(reviewer: AgentId, item: ShiftItemDraft, by_id: dict[AgentId, ShiftI
             reviewer=reviewer,
             kind="legal",
             escalate=escalate,
+            status=REVIEW_CHECKED_ESCALATE if escalate else REVIEW_CHECKED_OK,
             text=(
                 _legal_reviewer_line(legal)
                 if escalate
                 else "Юрист черновик посмотрел: детерминированный фильтр стоп-факторов не нашёл."
             ),
         )
+    # Проверки у роли нет — не выдаём отсутствие проверки за её результат.
     return ShiftReview(
         reviewer=reviewer,
         kind="ops",
         escalate=False,
-        text=(
-            f"{RU_LABELS[reviewer].capitalize()} видел черновик "
-            f"{RU_LABELS[item.agent]}а и своего стоп-фактора не нашёл."
-        ),
+        status=REVIEW_NOT_CHECKED,
+        text=f"Не проверено: у {RU_LABELS[reviewer]}а нет проверки по этому вопросу.",
     )
 
 
@@ -200,17 +209,33 @@ def _summary(
     verdict: str,
     claude_used: bool,
 ) -> str:
+    unchecked_items = sum(1 for item in items if not any(_is_checked(review) for review in item.reviews))
+    not_checked = sum(1 for item in items for review in item.reviews if review.status == REVIEW_NOT_CHECKED)
     if approvals:
-        return f"Вам решить {len(approvals)} {_plural_questions(len(approvals))}."
-    return "Сейчас от вас ничего не нужно."
+        head = f"Вам решить {len(approvals)} {_plural(len(approvals), 'вопрос', 'вопроса', 'вопросов')}."
+    elif unchecked_items:
+        # Без реальной проверки «ничего не нужно» — только с оговоркой.
+        head = (
+            f"Сейчас от вас ничего не нужно, но {unchecked_items} "
+            f"{_plural(unchecked_items, 'пункт не проверен', 'пункта не проверены', 'пунктов не проверены')}."
+        )
+    else:
+        head = "Сейчас от вас ничего не нужно."
+    if not not_checked:
+        return head
+    return f"{head} Проверок «Не проверено»: {not_checked}."
 
 
-def _plural_questions(n: int) -> str:
+def _is_checked(review: ShiftReview) -> bool:
+    return review.status in (REVIEW_CHECKED_OK, REVIEW_CHECKED_ESCALATE)
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
     if n % 10 == 1 and n % 100 != 11:
-        return "вопрос"
+        return one
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return "вопроса"
-    return "вопросов"
+        return few
+    return many
 
 
 def _approval_title(kind: str) -> str:

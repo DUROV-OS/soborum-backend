@@ -25,12 +25,13 @@ from app.agents.schemas import (
     TotalsOut,
     TraceOut,
 )
-from app.agents.shift import run_shift
+from app.agents.shift import REVIEW_CHECKED_ESCALATE, REVIEW_CHECKED_OK, REVIEW_NOT_CHECKED, run_shift
 from app.core.config import settings
 from app.users.models import User
 
 MSK = ZoneInfo("Europe/Moscow")
 TRACE_LIMIT = 40
+REVIEW_STATUSES = (REVIEW_CHECKED_OK, REVIEW_CHECKED_ESCALATE, REVIEW_NOT_CHECKED)
 WEEK_DAYS = 7
 
 
@@ -150,6 +151,7 @@ def create_shift(db: Session, user: User | None = None) -> ShiftOut:
                     "text": review.text,
                     "escalate": review.escalate,
                     "kind": review.kind,
+                    "status": review.status,
                 }
                 for review in item.reviews
             ],
@@ -263,6 +265,7 @@ def _item_out(row: AgentShiftItem) -> ShiftItemOut:
                 text=str(review.get("text", "")),
                 escalate=bool(review.get("escalate")),
                 kind=str(review.get("kind", "ops")),
+                status=_review_status(review.get("status")),
             )
         )
     return ShiftItemOut(
@@ -276,6 +279,10 @@ def _item_out(row: AgentShiftItem) -> ShiftItemOut:
         has_live_data=bool(row.has_live_data),
         reviews=reviews,
     )
+
+
+def _review_status(raw: object) -> str | None:
+    return raw if raw in REVIEW_STATUSES else None  # type: ignore[return-value]
 
 
 def _approval_out(row: AgentApproval) -> ApprovalOut:

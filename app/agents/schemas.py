@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 LegalVerdictName = Literal["allow", "allow_with_conditions", "block", "escalate_human"]
+ReviewStatusName = Literal["checked_ok", "checked_escalate", "not_checked"]
 
 
 class CreateRunRequest(BaseModel):
@@ -80,6 +81,8 @@ class ShiftReviewOut(BaseModel):
     text: str
     escalate: bool
     kind: str
+    # None — запись смены до 0084-e: статуса не было, фронт показывает «Не проверено».
+    status: ReviewStatusName | None = None
 
 
 class ShiftItemOut(BaseModel):
