@@ -68,5 +68,5 @@ jobs:
 
           scp -i ~/.ssh/deploy_key_staging /tmp/soborbum-mcp-staging.env "$SSH_USER@$SSH_HOST:/tmp/soborbum-mcp-staging.env"
           ssh -i ~/.ssh/deploy_key_staging "$SSH_USER@$SSH_HOST" \
-            'cd /srv/soborbum-backend-staging && git config --global --add safe.directory /srv/soborbum-backend-staging && git fetch --prune origin && git reset --hard origin/staging && python3 scripts/merge_env.py /tmp/soborbum-mcp-staging.env && rm -f /tmp/soborbum-mcp-staging.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build)'
+            'cd /srv/soborbum-backend-staging && git config --global --add safe.directory /srv/soborbum-backend-staging && git fetch --prune origin && git reset --hard origin/staging && python3 scripts/merge_env.py /tmp/soborbum-mcp-staging.env && rm -f /tmp/soborbum-mcp-staging.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build) && sh scripts/wait_ready.sh 90'
           rm -f /tmp/soborbum-mcp-staging.env
