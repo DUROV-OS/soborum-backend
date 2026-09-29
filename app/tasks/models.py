@@ -64,6 +64,11 @@ class TaskLinkType(str, enum.Enum):
     # Задача, подготовленная из предложения Марины по развитию бизнеса (раздел
     # «Марина» → «Развитие», задача 0036-a). link_id — id GrowthProposal.
     GROWTH_PROPOSAL = "growth_proposal"
+    # Сопоставить со складом материал шаблона, которого нет в каталоге
+    # (app/production/stage_plan.py, 0084-b). Пока такая задача открыта,
+    # спецификация блока заведомо неполная — оценка готовности даёт «Нужна
+    # сверка». link_id — id блока производства.
+    BLOCK_MATERIAL_MATCH = "block_material_match"
 
 
 task_assignees = Table(
