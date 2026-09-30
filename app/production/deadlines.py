@@ -27,6 +27,8 @@ from app.production.models import (
     Production,
     ProductionBlock,
 )
+from app.production import readiness
+from app.production.readiness import MaterialsState
 from app.production.schemas import DeadlineInsightOut
 from app.tasks.models import Task, TaskStatus
 
@@ -34,7 +36,7 @@ CACHE_TTL = timedelta(hours=6)
 
 # Приоритет типов сигналов при выборе fallback-узкого места (первый найденный
 # тип побеждает; внутри типа — самый старый по `since`).
-SIGNAL_PRIORITY = ("overdue_task", "pending_material_request", "material_shortfall")
+SIGNAL_PRIORITY = ("overdue_task", "pending_material_request", "material_reconciliation", "material_shortfall")
 
 
 def _aware(value: datetime) -> datetime:
@@ -55,7 +57,9 @@ class DeadlineSignal:
         return max(0, (datetime.now(timezone.utc) - self.since).days)
 
 
-def collect_deadline_signals(db: Session, production: Production) -> list[DeadlineSignal]:
+def collect_deadline_signals(
+    db: Session, production: Production, assessment: readiness.ProductionReadiness | None = None
+) -> list[DeadlineSignal]:
     blocks = (
         db.query(ProductionBlock).filter(ProductionBlock.production_id == production.id).all()
     )
@@ -101,27 +105,30 @@ def collect_deadline_signals(db: Session, production: Production) -> list[Deadli
             )
         )
 
+    # Материалы — из оценки готовности (app/production/readiness.py), а не
+    # своим условием: те же причины, что на «Пульсе» и в карточке.
     requested_material_ids = {r.block_material_id for r in pending_requests}
-    shortfalls = (
-        db.query(BlockMaterial)
-        .filter(
-            BlockMaterial.block_id.in_(block_ids),
-            BlockMaterial.quantity_required > 0,
-            BlockMaterial.quantity_requested == 0,
-        )
-        .all()
-    )
-    for material in shortfalls:
-        if material.id in requested_material_ids:
-            continue
-        signals.append(
-            DeadlineSignal(
-                kind="material_shortfall",
-                block_name=block_name_by_id.get(material.block_id, "?"),
-                detail=f"{material.warehouse_material.title} — не хватает {material.quantity_required} {material.unit}",
-                since=None,
+    assessment = assessment or readiness.assess_production(db, production)
+    for reason in assessment.reasons:
+        if reason.code == "material_match_open":
+            signals.append(
+                DeadlineSignal(
+                    kind="material_reconciliation",
+                    block_name=block_name_by_id.get(reason.block_id, "?"),
+                    detail=reason.text,
+                    since=None,
+                )
             )
-        )
+        elif reason.code == "not_requested" and reason.material_id not in requested_material_ids:
+            material = db.get(BlockMaterial, reason.material_id)
+            signals.append(
+                DeadlineSignal(
+                    kind="material_shortfall",
+                    block_name=block_name_by_id.get(material.block_id, "?"),
+                    detail=f"{material.warehouse_material.title} — не заказано {material.quantity_required:g} {material.unit}",
+                    since=None,
+                )
+            )
 
     return signals
 
@@ -142,6 +149,13 @@ def _fallback_insight(signals: list[DeadlineSignal]) -> DeadlineInsightOut:
             title=f"Просрочена задача блока «{chosen.block_name}»",
             description=f"«{chosen.detail}» просрочена на {days} дн.",
             impact="Пока задача не закрыта, следующий этап этого блока не может начаться вовремя.",
+            source="fallback",
+        )
+    if kind == "material_reconciliation":
+        return DeadlineInsightOut(
+            title=f"Нужна сверка материалов блока «{chosen.block_name}»",
+            description=chosen.detail,
+            impact="Пока материал не сопоставлен со складом, спецификация блока неполная и заявку на него подать нельзя.",
             source="fallback",
         )
     if kind == "pending_material_request":
@@ -166,9 +180,11 @@ SYSTEM_PROMPT = (
     "Ты — аналитик системы управления производством модульных домов «Soborbum». "
     "Тебе передан список сигналов (потенциальных узких мест) по ОДНОМУ дому в "
     "производстве: просроченные задачи блоков, заявки на материалы, ожидающие "
-    "решения склада, и материалы, которые ещё не запрошены при недостаче.\n\n"
+    "решения склада, материалы, которые ещё не сопоставлены со складом, и "
+    "материалы, которые ещё не запрошены при недостаче.\n\n"
     "Выбери РОВНО ОДИН, самый значимый для срока сигнал (приоритет: просроченная "
-    "задача > зависшая заявка на материал > ещё не запрошенный материал; при "
+    "задача > зависшая заявка на материал > несопоставленный материал > ещё не "
+    "запрошенный материал; при "
     "прочих равных — тот, что длится дольше). Заполни:\n"
     "- title — короткий (3-6 слов) заголовок узкого места.\n"
     "- description — что именно происходит, СТРОГО по переданным данным, не "
@@ -233,7 +249,22 @@ def _ai_pick_bottleneck(signals: list[DeadlineSignal]) -> dict | None:
 
 
 def _build(db: Session, production: Production) -> DeadlineInsightOut:
-    signals = collect_deadline_signals(db, production)
+    assessment = readiness.assess_production(db, production)
+    if assessment.materials_state == MaterialsState.INSUFFICIENT_DATA:
+        # Без количеств материалов «по графику» было бы выдумкой: узких мест
+        # не видно, потому что их не из чего посчитать.
+        reasons = assessment.problem_reasons
+        details = "; ".join(r.text for r in reasons[:3])
+        if len(reasons) > 3:
+            details += f" (и ещё причин: {len(reasons) - 3})"
+        return DeadlineInsightOut(
+            title="Прогноз не построен",
+            description=f"Недостаточно данных: {details}." if details else "Недостаточно данных.",
+            impact="Пока в блоках не указаны материалы и их количества, влияние на срок дома оценить нельзя.",
+            source="insufficient_data",
+        )
+
+    signals = collect_deadline_signals(db, production, assessment)
     if not signals:
         return DeadlineInsightOut(
             title="По графику",
@@ -255,8 +286,9 @@ def generate_deadline_insight(db: Session, production: Production, force: bool =
         return DeadlineInsightOut(**cached)
 
     result = _build(db, production)
+    result.generated_at = datetime.now(timezone.utc)
     # Не кешируем "не найдено"/fallback — как только появятся сигналы или ключ,
     # следующий запрос должен пересчитать, а не ждать 6 часов.
     if result.source == "ai":
-        ai_cache.set(db, cache_key, result.model_dump(mode="json"), datetime.now(timezone.utc))
+        ai_cache.set(db, cache_key, result.model_dump(mode="json"), result.generated_at)
     return result

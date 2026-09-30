@@ -18,7 +18,10 @@
 выдано по заявкам со склада», а не «на складе хватает». Сопоставление с
 остатком — P1 (п.5 gpt_prototype#37).
 
-Модуль только читает: ничего не пишет в БД и не вызывает LLM.
+Оценка только читает: ничего не пишет в БД и не вызывает LLM. Единственная
+запись — `invalidate_production_caches` (0084-c): удалить из
+`ai_cache_entries` ответы, построенные на прежних фактах, когда факты
+производства изменились.
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
+from app.ai.models import AiCacheEntry
+from app.cycle.models import Cycle, CycleStatus
 from app.production.models import BlockMaterial, Production, ProductionBlock
 from app.tasks.models import Task, TaskLinkType, TaskStageEvent, TaskStatus
 
@@ -389,3 +394,40 @@ def assess_productions(db: Session, productions: list[Production]) -> list[Produ
 def assess_block(db: Session, block: ProductionBlock) -> BlockReadiness:
     production = _assess_many(db, [block.production_id])[block.production_id]
     return next(b for b in production.blocks if b.block_id == block.id)
+
+
+# --------------------------------------------------------- потребители --
+
+
+def productions_in_work(db: Session) -> list[Production]:
+    """Производства, чей цикл сейчас на стадии производства, — их оценку
+    показывают Пульс, «Работа» и ИИ-аналитика. Завершённые и ушедшие на
+    монтаж дома в очередь внимания по материалам не попадают."""
+    return (
+        db.query(Production)
+        .join(Cycle, Cycle.id == Production.cycle_id)
+        .filter(Cycle.status == CycleStatus.PRODUCTION)
+        .order_by(Production.cycle_id, Production.house_index)
+        .all()
+    )
+
+
+def production_label(production: Production) -> str:
+    """Подпись производства без данных клиента — право production не
+    раскрывает имя заказчика, как и список производств на фронте."""
+    label = f"Заказ №{production.cycle_id}"
+    if production.name and production.name != "Дом":
+        label += f" · {production.name}"
+    return label
+
+
+def invalidate_production_caches(db: Session, production_id: int | None = None) -> None:
+    """Сбросить закешированные ответы, которые опираются на факты
+    производства: ИИ-аналитику раздела, сигнал раздела «Работы» и (если
+    передан `production_id`) виджет «Сроки» этого дома. Вызывается при
+    изменении материалов блока, решении по заявке, смене
+    `requires_materials`, закрытии задачи блока. Коммитит вызывающий."""
+    keys = ["section_analytics:production", "dashboard_section_signal:production"]
+    if production_id is not None:
+        keys.append(f"production_home_deadlines:{production_id}")
+    db.query(AiCacheEntry).filter(AiCacheEntry.key.in_(keys)).delete(synchronize_session=False)

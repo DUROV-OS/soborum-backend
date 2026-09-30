@@ -12,7 +12,9 @@ from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import Installation, InstallationStage
 from app.marketing.models import ContentItem, ContentStage
-from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
+from app.production import readiness
+from app.production.models import MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
+from app.production.readiness import MaterialsState
 from app.tasks.models import Task, TaskStatus
 from app.users.models import User, UserRole
 from app.warehouse import service as warehouse_service
@@ -172,17 +174,64 @@ def _snapshot_marketing(db: Session) -> dict:
 
 
 def _snapshot_production(db: Session) -> dict:
-    shortfall_block_ids = {
-        row[0]
-        for row in db.query(BlockMaterial.block_id)
-        .filter((BlockMaterial.quantity_required > 0) | (BlockMaterial.quantity_requested > 0))
-        .distinct()
-        .all()
-    }
+    """Материалы производств в работе — по оценке готовности
+    (app/production/readiness.py), а не своим условием: блок без материалов
+    или с количеством 0 здесь «недостаточно данных», а не «нехватки нет»."""
+    productions = readiness.productions_in_work(db)
+    assessments = readiness.assess_productions(db, productions)
+    label_by_id = {p.id: readiness.production_label(p) for p in productions}
+
+    counts = dict.fromkeys([state.value for state in MaterialsState], 0)
+    for assessment in assessments:
+        counts[assessment.materials_state.value] += 1
+    worst = readiness.worst_state(a.materials_state for a in assessments)
+
+    attention = sorted(
+        (a for a in assessments if a.materials_state in readiness.PROBLEM_STATES),
+        key=lambda a: list(MaterialsState).index(a.materials_state),
+    )
+    attention_productions = [
+        {
+            "production_id": a.production_id,
+            "production": label_by_id[a.production_id],
+            "materials_state": a.materials_state.value,
+            "materials_label": a.materials_label,
+            "reasons_count": len(a.problem_reasons),
+            "reasons": [r.text for r in a.problem_reasons[:3]],
+        }
+        for a in attention
+    ]
+    # По одной причине от каждого проблемного производства по кругу — чтобы
+    # один дом с десятком блоков не занял весь список.
+    top_reasons: list[dict] = []
+    queues = [(a, list(a.problem_reasons)) for a in attention]
+    while len(top_reasons) < 5 and any(queue for _, queue in queues):
+        for assessment, queue in queues:
+            if queue and len(top_reasons) < 5:
+                reason = queue.pop(0)
+                top_reasons.append({
+                    "production_id": assessment.production_id,
+                    "production": label_by_id[assessment.production_id],
+                    "code": reason.code,
+                    "text": reason.text,
+                })
+
     return {
         "total_productions": db.query(Production).count(),
         "total_blocks": db.query(ProductionBlock).count(),
-        "blocks_with_material_shortfall": len(shortfall_block_ids),
+        "productions_in_work": len(assessments),
+        "productions_insufficient_data": counts[MaterialsState.INSUFFICIENT_DATA.value],
+        "productions_needs_reconciliation": counts[MaterialsState.NEEDS_RECONCILIATION.value],
+        "productions_shortfall": counts[MaterialsState.SHORTFALL.value],
+        "productions_provided": counts[MaterialsState.PROVIDED.value],
+        "productions_not_required": counts[MaterialsState.NOT_REQUIRED.value],
+        "productions_needing_attention": len(attention),
+        # None — производств в работе нет, оценивать нечего.
+        "worst_state": worst.value if worst is not None else None,
+        "worst_state_label": readiness.STATE_LABELS[worst] if worst is not None else None,
+        "top_reasons": top_reasons,
+        "attention_productions": attention_productions,
+        "readiness_version": readiness.READINESS_VERSION,
         "pending_material_requests": db.query(MaterialRequest)
         .filter(MaterialRequest.status == MaterialRequestStatus.PENDING)
         .count(),

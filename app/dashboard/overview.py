@@ -18,7 +18,7 @@ METRICS = [
     ("clients", "Ожидают подтверждения оплаты", "awaiting_payment_confirmation", True),
     ("clients", "Ожидают оплаты после получения", "awaiting_balance_payment", True),
     ("production", "Производственных заказов", "total_productions", False),
-    ("production", "Блоки ждут материалы", "blocks_with_material_shortfall", True),
+    ("production", "Производств с проблемами по материалам", "productions_needing_attention", True),
     ("installation", "Монтажей на 7 дней", "scheduled_next_7_days", False),
     ("installation", "Монтажей с просрочкой", "overdue_not_completed", True),
     ("cycle", "Всего заказов", "total_cycles", False),
@@ -39,6 +39,8 @@ ATTENTION = [
     ("tasks", "overdue_tasks", "Проверить просроченные задачи", "Уточните причину задержки и следующий срок.", "/tasks", "danger"),
     ("cycle", "stuck_over_14_days", "Вернуться к зависшим циклам", "Цикл не продвигается дальше текущей стадии больше 14 дней.", "/cycles", "warning"),
     ("installation", "overdue_not_completed", "Проверить сроки монтажа", "Плановая дата прошла, этап проработки ещё не наступил.", "/montage", "danger"),
+    # Раскрывается в пункт на каждое производство (см. _production_readiness_actions).
+    ("production", "productions_needing_attention", "Проверить материалы производства", "", "/production", "warning"),
     ("production", "pending_material_requests", "Проверить заявки на материалы", "Заявки ожидают решения склада.", "/production", "warning"),
     ("warehouse", "materials_needing_supply", "Проверить пополнение склада", "Остатки и текущая потребность требуют внимания.", "/warehouse", "warning"),
     ("clients", "awaiting_payment_confirmation", "Проверить поступление оплаты", "Клиенты на этапе оплаты без подтверждённого поступления.", "/clients", "warning"),
@@ -61,13 +63,59 @@ ALL_CLEAR_TEXT: dict[str, str] = {
     "tasks": "Просроченных задач нет.",
     "cycle": "Зависших циклов нет.",
     "installation": "Просроченных монтажей нет.",
-    "production": "Заявок на материалы, ожидающих решения, нет.",
+    # Показывается только при благополучной оценке готовности — см.
+    # _production_clear_text: «заявок нет» само по себе не значит, что
+    # материалов хватает.
+    "production": "Всё, что указано в блоках, выдано по заявкам; заявок, ожидающих решения, нет.",
     "warehouse": "Позиций, требующих пополнения, нет.",
     "clients": "Проблемных оплат и зависших обращений нет.",
     "marketing": "Просроченных публикаций нет.",
     "users": "Все активные сотрудники получили доступ.",
     "accounting": "Черновиков без согласования нет.",
 }
+
+
+# Тон по оценке готовности (app/production/readiness.py), а не по «число > 0».
+_READINESS_TONE = {
+    "insufficient_data": "warning",
+    "needs_reconciliation": "warning",
+    "shortfall": "danger",
+}
+_READINESS_METRIC = "productions_needing_attention"
+
+
+def _readiness_tone(state: str | None) -> str:
+    if state is None:
+        return "neutral"  # производств в работе нет — хвалить нечего
+    return _READINESS_TONE.get(state, "success")
+
+
+def _production_readiness_actions(production: dict) -> list[DashboardAction]:
+    """По пункту очереди на каждое производство, где материалы в проблемном
+    состоянии, — со ссылкой на его карточку."""
+    actions = []
+    for item in production.get("attention_productions", []):
+        reasons = item["reasons"]
+        description = reasons[0] if reasons else item["materials_label"]
+        extra = item["reasons_count"] - 1
+        if extra > 0:
+            description += f" (и ещё причин: {extra})"
+        actions.append(DashboardAction(
+            id=f"production:readiness:{item['production_id']}", section="production",
+            title=f"{item['production']}: {item['materials_label'].lower()}",
+            description=description, href=f"/production/{item['production_id']}",
+            count=item["reasons_count"], tone=_readiness_tone(item["materials_state"]),
+        ))
+    return actions
+
+
+def _production_clear_text(production: dict) -> str | None:
+    worst = production.get("worst_state")
+    if worst is None:
+        return "Производств в работе нет."
+    if worst in ("provided", "not_required"):
+        return ALL_CLEAR_TEXT["production"]
+    return None
 
 
 def generate_today(db: Session, user: User) -> TodayDashboardOut:
@@ -77,16 +125,28 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
         if section not in snapshot:
             continue
         value = int(snapshot[section][metric])
+        if section == "production" and metric == _READINESS_METRIC:
+            widgets.append(DashboardWidget(
+                section=section, title=title, value=str(value),
+                hint=snapshot[section].get("worst_state_label"),
+                tone=_readiness_tone(snapshot[section].get("worst_state")),
+            ))
+            continue
         widgets.append(DashboardWidget(
             section=section, title=title, value=str(value),
             tone=("warning" if value else "success") if attention else "neutral",
         ))
-    actions = [
-        DashboardAction(id=f"{section}:{metric}", section=section, title=title,
-                        description=description, href=href, count=int(snapshot[section][metric]), tone=tone)
-        for section, metric, title, description, href, tone in ATTENTION
-        if section in snapshot and snapshot[section][metric] > 0
-    ]
+    actions = []
+    for section, metric, title, description, href, tone in ATTENTION:
+        if section not in snapshot:
+            continue
+        if section == "production" and metric == _READINESS_METRIC:
+            actions.extend(_production_readiness_actions(snapshot[section]))
+        elif snapshot[section][metric] > 0:
+            actions.append(DashboardAction(
+                id=f"{section}:{metric}", section=section, title=title,
+                description=description, href=href, count=int(snapshot[section][metric]), tone=tone,
+            ))
     if user.has_access(Module.AI):
         pending = (db.query(PendingAction).join(Chat, Chat.id == PendingAction.chat_id)
                    .filter(Chat.owner_id == user.id, PendingAction.status == PendingActionStatus.PENDING)
@@ -150,14 +210,28 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
             continue
         count = int(snapshot.get(metric, 0))
         if count > 0:
-            action = DashboardAction(
-                id=f"{sec}:{metric}", section=sec, title=title,
-                description=description, href=href, count=count, tone=tone,
-            )
+            if sec == "production" and metric == _READINESS_METRIC:
+                # Один пункт на раздел: худшее состояние и первая причина;
+                # единственное проблемное производство — сразу в его карточку.
+                items = _production_readiness_actions(snapshot)
+                first = items[0]
+                action = first if len(items) == 1 else DashboardAction(
+                    id=f"{sec}:{metric}", section=sec,
+                    title=f"Материалы производства: {snapshot['worst_state_label'].lower()}",
+                    description=f"{first.title} — {first.description}", href=href, count=count,
+                    tone=_readiness_tone(snapshot.get("worst_state")),
+                )
+            else:
+                action = DashboardAction(
+                    id=f"{sec}:{metric}", section=sec, title=title,
+                    description=description, href=href, count=count, tone=tone,
+                )
             break
 
     checked = section in ATTENTION_SECTIONS
-    clear_text = ALL_CLEAR_TEXT.get(section) if checked and action is None else None
+    clear_text = None
+    if checked and action is None:
+        clear_text = _production_clear_text(snapshot) if section == "production" else ALL_CLEAR_TEXT.get(section)
     out = SectionSignalOut(section=section, action=action, checked=checked, clear_text=clear_text, generated_at=now)
     ai_cache.set(db, cache_key, out.model_dump(mode="json"), now)
     return out

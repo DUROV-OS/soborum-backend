@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.common.module_access import Module
+from app.production import readiness
 from app.tasks import sync as task_sync
 from app.tasks import timelog
 from app.tasks.models import Task, TaskLinkType, TaskReport, TaskReportKind, TaskStatus
@@ -198,6 +199,10 @@ def update_task(
 
 
 def _cascade_readiness(db: Session, completed_task: Task) -> None:
+    if completed_task.block is not None:
+        # Закрытие задачи блока меняет допуск следующих блоков и, для задачи
+        # сверки материала, состояние материалов (0084-c).
+        readiness.invalidate_production_caches(db, completed_task.block.production_id)
     dependents = [t for t in completed_task.blocks if t.status == TaskStatus.NOT_READY]
     became_ready = []
     for dependent in dependents:

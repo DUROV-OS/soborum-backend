@@ -22,8 +22,8 @@ def _make_production(db):
     return production
 
 
-def _make_block(db, production, name="Каркас"):
-    block = ProductionBlock(production_id=production.id, name=name)
+def _make_block(db, production, name="Каркас", requires_materials=True):
+    block = ProductionBlock(production_id=production.id, name=name, requires_materials=requires_materials)
     db.add(block)
     db.flush()
     return block
@@ -41,16 +41,38 @@ def _make_warehouse_material(db, title="Брус"):
 
 def test_no_signals_means_on_schedule(db):
     production = _make_production(db)
+    _make_block(db, production, name="Документация", requires_materials=False)
     db.commit()
     result = deadlines.generate_deadline_insight(db, production)
     assert result.source == "none"
     assert result.title == "По графику"
     assert result.impact == ""
+    assert result.generated_at is not None
+
+
+def test_insufficient_data_is_not_on_schedule(db):
+    """0084-c: блок без количеств — «прогноз не построен», а не «по графику»."""
+    production = _make_production(db)
+    block = _make_block(db, production, name="Стены")
+    db.add(BlockMaterial(
+        block_id=block.id, warehouse_material_id=_make_warehouse_material(db).id,
+        inventory_number="", unit="шт", quantity_required=0,
+    ))
+    db.commit()
+
+    result = deadlines.generate_deadline_insight(db, production)
+    assert result.title == "Прогноз не построен"
+    assert result.source == "insufficient_data"
+    assert "Блок «Стены»: у 1 материала не указано количество" in result.description
+
+    empty = _make_production(db)
+    db.commit()
+    assert deadlines.generate_deadline_insight(db, empty).title == "Прогноз не построен"
 
 
 def test_overdue_task_fallback_names_the_block_and_task(db, make_user):
     production = _make_production(db)
-    block = _make_block(db, production, name="Кровля")
+    block = _make_block(db, production, name="Кровля", requires_materials=False)
     assignee = make_user(Module.PRODUCTION)
     task = Task(
         title="Смонтировать стропила", block_id=block.id, status=TaskStatus.READY,
@@ -96,7 +118,7 @@ def test_pending_material_request_outranks_unrequested_shortfall(db, make_user):
 
 def test_ai_result_is_cached_until_ttl(db, monkeypatch):
     production = _make_production(db)
-    block = _make_block(db, production)
+    block = _make_block(db, production, requires_materials=False)
     task = Task(
         title="Задача", block_id=block.id, status=TaskStatus.READY,
         deadline=datetime.now(timezone.utc) - timedelta(days=1),
@@ -122,7 +144,7 @@ def test_ai_result_is_cached_until_ttl(db, monkeypatch):
 
 def test_force_recomputes_bypassing_cache(db, monkeypatch):
     production = _make_production(db)
-    block = _make_block(db, production)
+    block = _make_block(db, production, requires_materials=False)
     task = Task(
         title="Задача", block_id=block.id, status=TaskStatus.READY,
         deadline=datetime.now(timezone.utc) - timedelta(days=1),
@@ -146,6 +168,7 @@ def test_force_recomputes_bypassing_cache(db, monkeypatch):
 
 def test_home_endpoint_returns_deadlines_without_anthropic_key(api, make_user, db):
     production = _make_production(db)
+    _make_block(db, production, requires_materials=False)
     db.commit()
     worker = api(make_user(Module.PRODUCTION))
     resp = worker.get(f"/api/production/{production.id}/home")

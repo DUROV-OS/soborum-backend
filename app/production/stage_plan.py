@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from app.common.module_access import Module as AccessModule
+from app.production import readiness
 from app.production.models import BlockMaterial, Production, ProductionBlock
 from app.production.stage_templates import ProductionStageTemplate, TemplateBlock
 from app.tasks import service as task_service
@@ -127,3 +128,4 @@ def instantiate_stage_plan(db, production: Production, template: ProductionStage
             )
 
     db.flush()
+    readiness.invalidate_production_caches(db, production.id)

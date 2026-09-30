@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.accounting.models import SupplierOrder
 from app.common.module_access import Module as AccessModule
+from app.production import readiness
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, ProductionBlock
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
@@ -253,6 +254,7 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> 
     request.decided_by_id = decided_by.id
     request.decided_at = datetime.now(timezone.utc)
     db.flush()
+    readiness.invalidate_production_caches(db, module_material.block.production_id)
 
     log_movement(db, warehouse_material, -float(request.quantity), StockMovementReason.ISSUED, decided_by, request.id)
 
@@ -279,6 +281,7 @@ def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> M
     request.decided_by_id = decided_by.id
     request.decided_at = datetime.now(timezone.utc)
     db.flush()
+    readiness.invalidate_production_caches(db, module_material.block.production_id)
 
     log_movement(db, warehouse_material, 0, StockMovementReason.REQUEST_REJECTED_RETURN, decided_by, request.id)
 
