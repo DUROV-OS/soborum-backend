@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 LegalVerdictName = Literal["allow", "allow_with_conditions", "block", "escalate_human"]
+ReviewStatusName = Literal["checked_ok", "checked_escalate", "not_checked"]
+StanceSourceName = Literal["live", "llm_without_facts", "none"]
 
 
 class CreateRunRequest(BaseModel):
@@ -80,6 +82,8 @@ class ShiftReviewOut(BaseModel):
     text: str
     escalate: bool
     kind: str
+    # None — запись смены до 0084-e: статуса не было, фронт показывает «Не проверено».
+    status: ReviewStatusName | None = None
 
 
 class ShiftItemOut(BaseModel):
@@ -91,16 +95,22 @@ class ShiftItemOut(BaseModel):
     citations: list[str]
     legal_verdict: LegalVerdictName
     has_live_data: bool = False
+    # None — строка смены до 0084-e: откуда позиция, не записано.
+    stance_source: StanceSourceName | None = None
     reviews: list[ShiftReviewOut]
 
 
 class ApprovalOut(BaseModel):
     id: int
     shift_id: int
+    item_id: int | None = None
     kind: str
     title: str
     detail: str
     status: str
+    # «approved» значит только «согласовано»: исполнителя согласований в P0 нет.
+    subject_snapshot: dict | None = None
+    subject_hash: str | None = None
     created_at: datetime
 
 
@@ -135,3 +145,5 @@ class ShiftOut(BaseModel):
 
 class ApprovalDecisionRequest(BaseModel):
     status: Literal["approved", "rejected"]
+    # Хэш снимка, который видел человек. Не передан или не совпал — 409.
+    subject_hash: str | None = Field(default=None, max_length=64)
