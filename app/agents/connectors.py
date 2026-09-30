@@ -185,7 +185,8 @@ def _clients_line(d: dict) -> tuple[str, str]:
             + ", ".join(f"{label} {s.get(stage.value, 0)}" for stage, label in _STAGE_SHORT.items())
             + "). "
             f"Ждут подтверждения оплаты {d.get('awaiting_payment_confirmation', 0)}, "
-            f"ждут остаток {d.get('awaiting_balance_payment', 0)}. "
+            f"остаток после получения: в срок {d.get('balance_pending', 0)}, "
+            f"просрочен {d.get('balance_overdue', 0)}, срок не указан {d.get('balance_no_due_date', 0)}. "
             f"Лидов зависло дольше 14 дней {d.get('leads_stuck_over_14_days', 0)}."
         ),
     )
