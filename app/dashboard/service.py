@@ -15,6 +15,7 @@ from app.marketing.models import ContentItem, ContentStage
 from app.production import readiness
 from app.production.models import MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.production.readiness import MaterialsState
+from app.tasks import service as task_service
 from app.tasks.models import Task, TaskStatus
 from app.users.models import User, UserRole
 from app.warehouse import service as warehouse_service
@@ -272,13 +273,23 @@ def _snapshot_warehouse(db: Session) -> dict:
     }
 
 
-def _snapshot_tasks(db: Session) -> dict:
+def _snapshot_tasks(db: Session, user: User | None = None) -> dict:
+    """Без `user` — вся компания (агенты, «Доска», ИИ-аналитика раздела). С
+    `user` — Пульс: открытые задачи в той же области, что доска этого
+    пользователя (`scope=all` при `tasks_all`, иначе `mine`), тем же
+    `open_tasks_query`, что `GET /api/tasks?status=open` (0084-h)."""
     now = datetime.now(timezone.utc)
     status_counts = dict.fromkeys([s.value for s in TaskStatus], 0)
-    for task_status, count in db.query(Task.status, func.count(Task.id)).group_by(Task.status).all():
-        status_counts[task_status.value] = count
-
-    open_tasks = db.query(Task).filter(Task.status != TaskStatus.DONE).all()
+    if user is None:
+        scope = None
+        for task_status, count in db.query(Task.status, func.count(Task.id)).group_by(Task.status).all():
+            status_counts[task_status.value] = count
+        open_tasks = db.query(Task).filter(Task.status != TaskStatus.DONE).all()
+    else:
+        scope = task_service.default_board_scope(user)
+        for task in task_service.apply_scope(db.query(Task).all(), user, scope):
+            status_counts[task.status.value] += 1
+        open_tasks = task_service.open_tasks_query(db, user, scope)
     overdue = sum(1 for t in open_tasks if t.deadline and (t.deadline.replace(tzinfo=timezone.utc) if t.deadline.tzinfo is None else t.deadline) < now)
     due_today = sum(1 for t in open_tasks if t.deadline and t.deadline.date() == now.date())
 
@@ -286,6 +297,7 @@ def _snapshot_tasks(db: Session) -> dict:
         "total_tasks": sum(status_counts.values()),
         "status_counts": status_counts,
         "open_tasks": len(open_tasks),
+        "open_tasks_scope": scope.value if scope else "company",
         "overdue_tasks": overdue,
         "due_today": due_today,
     }
@@ -302,8 +314,10 @@ def _snapshot_users(db: Session) -> dict:
             .filter(Task.assignees.any(User.id == u.id), Task.status != TaskStatus.DONE)
             .count()
         )
-        workload.append({"full_name": u.full_name, "open_tasks": open_count})
-    workload.sort(key=lambda w: w["open_tasks"], reverse=True)
+        # Нагрузка — только задачи, где сотрудник исполнитель: «задач на
+        # исполнении», не то же, что «Открытых задач» Пульса (0084-h).
+        workload.append({"full_name": u.full_name, "tasks_in_work_as_assignee": open_count})
+    workload.sort(key=lambda w: w["tasks_in_work_as_assignee"], reverse=True)
 
     return {
         "active_employees": len(active_users),
@@ -335,6 +349,9 @@ SECTION_BUILDERS: dict[str, tuple[Module, Callable[[Session], dict]]] = {
 
 def build_snapshot(db: Session, user: User) -> dict[str, dict]:
     snapshot = {key: builder(db) for key, (module, builder) in SECTION_BUILDERS.items() if user.has_access(module)}
+    if "tasks" in snapshot:
+        # Число задач на Пульсе — в области доски этого пользователя (0084-h).
+        snapshot["tasks"] = _snapshot_tasks(db, user)
     if user.role == UserRole.ADMIN:
         snapshot["users"] = _snapshot_users(db)
     return snapshot
