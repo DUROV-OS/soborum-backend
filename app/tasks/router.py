@@ -12,6 +12,7 @@ from app.tasks.schemas import (
     TaskCreate,
     TaskOut,
     TaskReportCommentUpdate,
+    TaskReportRevisionOut,
     TaskScope,
     TaskStatusUpdate,
     TaskUpdate,
@@ -177,12 +178,29 @@ def edit_report_comment(
     actor: User = Depends(require_tasks_edit),
 ):
     """Поправить текст своего комментария в журнале отчётов. Доступно в любом
-    статусе задачи, включая уже принятую."""
+    статусе задачи, включая уже принятую; прежний текст сохраняется ревизией
+    (см. GET /{task_id}/reports/{report_id}/revisions)."""
     task = task_service.get_task_or_404(db, task_id)
     task_service.edit_report_comment(db, task, report_id, actor, payload.comment)
     db.commit()
     db.refresh(task)
     return TaskOut.from_model(task)
+
+
+@app.get("/{task_id}/reports/{report_id}/revisions", response_model=list[TaskReportRevisionOut])
+def list_report_revisions(
+    task_id: int,
+    report_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_tasks_view),
+):
+    """Прежние версии текста записи журнала, от старой к новой: что было
+    написано до каждой правки, кто и когда поправил, после приёмки ли.
+    Только чтение — ревизии не правятся и не удаляются. Права — как на
+    просмотр задачи."""
+    task = task_service.get_task_or_404(db, task_id)
+    report = task_service.get_report_or_404(db, task, report_id)
+    return [TaskReportRevisionOut.from_model(r) for r in report.revisions]
 
 
 @app.post("/{task_id}/claim", response_model=TaskOut)
