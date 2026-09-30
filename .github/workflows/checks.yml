@@ -56,4 +56,6 @@ jobs:
         run: alembic upgrade head
 
       - name: pytest
-        run: pytest -q
+        # `python -m`, а не голый `pytest`: только так корень репозитория попадает
+        # в sys.path и `import app` из conftest работает (как локально).
+        run: python -m pytest -q
