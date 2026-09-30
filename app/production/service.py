@@ -120,7 +120,11 @@ def create_block(db: Session, production_id: int, payload: BlockCreate) -> Produ
     if sequence is None:
         sequence = (db.query(ProductionBlock).filter(ProductionBlock.production_id == production_id).count()) + 1
     block = ProductionBlock(
-        production_id=production_id, name=payload.name, description=payload.description, sequence=sequence
+        production_id=production_id,
+        name=payload.name,
+        description=payload.description,
+        sequence=sequence,
+        requires_materials=payload.requires_materials,
     )
     db.add(block)
     db.flush()
@@ -129,6 +133,8 @@ def create_block(db: Session, production_id: int, payload: BlockCreate) -> Produ
 
 def update_block(db: Session, block: ProductionBlock, payload: BlockUpdate) -> ProductionBlock:
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "requires_materials" and value is None:
+            continue  # колонка NOT NULL: «не передано» и null значат одно — не менять
         setattr(block, field, value)
     db.flush()
     return block
