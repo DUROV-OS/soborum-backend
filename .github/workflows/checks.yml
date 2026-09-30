@@ -1,0 +1,59 @@
+name: Checks
+
+# Проверки до выкладки (0084-a). Вызывается из deploy.yml и deploy-staging.yml
+# (деплой идёт только после зелёного checks) и сам по себе на каждый PR.
+on:
+  workflow_call:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      # Та же мажорная версия, что в docker-compose.yml: тесты идут на SQLite,
+      # поэтому миграции на PostgreSQL проверяются только здесь.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: soborbum
+          POSTGRES_PASSWORD: soborbum
+          POSTGRES_DB: soborbum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U soborbum"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Только для CI: пустая одноразовая база в контейнере job-а.
+      APP_ENV: dev
+      JWT_SECRET: ci-only-checks-secret-not-used-anywhere
+      DATABASE_URL: postgresql+psycopg2://soborbum:soborbum@localhost:5432/soborbum
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Одна голова Alembic
+        run: |
+          set -euo pipefail
+          heads="$(alembic heads)"
+          echo "$heads"
+          count="$(printf '%s\n' "$heads" | grep -c '(head)' || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Несколько голов Alembic ($count) — backend не поднимется. Нужна merge-миграция или перенастройка down_revision."
+            exit 1
+          fi
+
+      - name: alembic upgrade head на пустой PostgreSQL
+        run: alembic upgrade head
+
+      - name: pytest
+        run: pytest -q

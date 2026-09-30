@@ -61,6 +61,14 @@ services:
       - ./app:/app/app
       - ./alembic:/app/alembic
       - storage_data:/app/storage
+    # Готовность, а не просто «процесс жив»: БД отвечает и ревизия alembic
+    # совпадает с кодом (/ready, 0084-a). curl в slim-образе нет — берём python.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     ports:
       # Стейдж-проект (отдельная директория/compose-проект на том же VPS)
       # задаёт свой BACKEND_PORT в .env, чтобы не конфликтовать с прод-портом.
