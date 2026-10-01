@@ -97,6 +97,39 @@ def test_kpi_weighs_on_time_late_and_overdue_tasks(db, make_user):
     assert row.kpi == 50
 
 
+def test_kpi_counts_the_month_of_the_deadline_not_the_month_of_the_run(db, make_user):
+    """Задача с дедлайном в прошлом месяце считается в KPI того месяца — и
+    считается одинаково, в какой бы день её ни пересчитывали.
+
+    Это и есть страховка от падения, из-за которого завели 0087: прогон
+    первого числа ничем не отличается от прогона пятнадцатого.
+    """
+    employee = make_user()
+    deadline = _now().replace(day=15) - timedelta(days=31)
+    period_start, period_end = _period_of(deadline)
+
+    task = task_service.create_task(
+        db, title="Сдать в срок в прошлом месяце", deadline=deadline, assignee_ids=[employee.id]
+    )
+    db.commit()
+    _close_task(db, task, employee)
+    _backdate_completion(db, task, deadline - timedelta(hours=1))
+
+    row = accounting_service._compute_kpi_for_period(db, employee.id, period_start, period_end)
+    db.commit()
+
+    assert (row.period_start.year, row.period_start.month) == (deadline.year, deadline.month)
+    assert row.tasks_total == 1
+    assert row.tasks_on_time == 1
+    assert row.kpi == 100
+
+    # период текущего месяца эту задачу не видит — она не «потерялась», а
+    # лежит в своём месяце
+    current = accounting_service._compute_kpi_for_period(db, employee.id, *_period_now())
+    db.commit()
+    assert current.tasks_total == 0
+
+
 def test_kpi_ignores_tasks_without_passed_deadline(db, make_user):
     employee = make_user()
     period_start, period_end = _period_now()
