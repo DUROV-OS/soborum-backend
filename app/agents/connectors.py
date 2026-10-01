@@ -286,8 +286,8 @@ def _legal_line(d: dict) -> tuple[str, str]:
     return (
         "База DurovOS · Право",
         (
-            f"Клиентов на согласовании без договора в базе "
-            f"{d.get('approval_without_contract', 0)}. Прошли согласование, но документы "
+            f"Клиентов на стадии «{_STAGE_SHORT[ClientStage.APPROVAL]}» без договора в базе "
+            f"{d.get('approval_without_contract', 0)}. Прошли эту стадию, но документы "
             f"не зафиксированы у {d.get('past_approval_without_locked_docs', 0)}."
         ),
     )
