@@ -25,6 +25,38 @@ python -m venv .venv
 
 Тесты используют отдельную SQLite в памяти и синтетические данные. Секрет для тестов задаётся только в тестовой среде. Полные изменения, влияние на существующий деплой, ограничения и следующая приёмка: [пакет исправлений 05.09.2026](docs/ASTRA_REVIEW_2026-09-05.md).
 
+## Деплой: проверки до и готовность после
+
+Пуш в `main` (прод) и в `staging` сначала гоняет workflow `checks.yml`: одна голова
+Alembic, `alembic upgrade head` на пустой PostgreSQL 16, `pytest -q`. Деплой
+(`needs: checks`) не стартует, пока `checks` не зелёный. Тот же `checks.yml`
+запускается на каждый PR.
+
+После `docker compose up -d --build` деплой до 90 с ждёт `GET /ready`
+(`scripts/wait_ready.sh`). `/ready` отвечает 200, только когда БД доступна и её
+ревизия `alembic_version` совпадает с головой из `alembic/versions`; иначе 503 с
+`reason`: `db_unreachable` / `migration_mismatch`. Не дождался — деплой красный,
+в логе job-а последние 50 строк `docker compose logs backend`. `/health` остаётся
+liveness-проверкой процесса и БД не трогает. Снаружи готовность видна как
+`https://<домен>/api/ready`.
+
+Автоматического отката нет. Если деплой красный из-за `/ready`, обычный путь —
+revert-PR в `main`. Если прод нужно поднять немедленно, руками на сервере:
+
+```bash
+cd /srv/soborbum-backend            # стейдж: /srv/soborbum-backend-staging
+git log --oneline -5                # найти предыдущий рабочий SHA
+git reset --hard <предыдущий SHA>
+docker compose --env-file .env --env-file .env.mcp up -d --build
+sh scripts/wait_ready.sh 90         # «ready: ok» — поднялось
+```
+
+Если упавший деплой уже применил новую миграцию, старый код увидит
+`migration_mismatch`: перед `up` нужно `docker compose exec backend alembic
+downgrade <ревизия старого кода>` — только когда downgrade этой миграции не
+теряет данные. Следующий пуш в `main` снова выкатит `origin/main`, поэтому
+revert-PR всё равно нужен.
+
 ## Стейдж-окружение
 
 Отдельное окружение для проверки веток перед прод-мержем: `https://stage.soborum.durov.house`.

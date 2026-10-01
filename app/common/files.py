@@ -28,12 +28,21 @@ class FilePurpose(str, enum.Enum):
     ARCHITECTURAL_DECISIONS = "architectural_decisions"
     CONSTRUCTIVE_DECISIONS = "constructive_decisions"
     TASK_IMAGE = "task_image"
+    # Файл, приложенный исполнителем к отчёту о сдаче задачи (0077).
+    TASK_REPORT_FILE = "task_report_file"
     MARKETING_RAW = "marketing_raw"
     MARKETING_FINAL = "marketing_final"
     AI_CHAT_ATTACHMENT = "ai_chat_attachment"
     MEETING_AUDIO = "meeting_audio"
     HOUSE_MODEL_PLANNING = "house_model_planning"
     KR_PAGE_IMAGE = "kr_page_image"
+    MONEY_MOVEMENT_DOCUMENT = "money_movement_document"
+    # Скриншоты и лог сессии, приложенные к заявке «Пожелания/предложения»
+    # (0075). Намеренно НЕ в PURPOSE_MODULE: у раздела нет своего `Module`,
+    # и общий GET /api/files/{id} эти файлы отдавать не должен — скачивание
+    # идёт через /api/feedback/requests/{id}/files/{file_id} с проверкой
+    # «автор заявки или администратор».
+    FEEDBACK_ATTACHMENT = "feedback_attachment"
 
 
 PURPOSE_MODULE = {
@@ -43,12 +52,14 @@ PURPOSE_MODULE = {
     FilePurpose.ARCHITECTURAL_DECISIONS: Module.CLIENTS,
     FilePurpose.CONSTRUCTIVE_DECISIONS: Module.CLIENTS,
     FilePurpose.TASK_IMAGE: Module.TASKS,
+    FilePurpose.TASK_REPORT_FILE: Module.TASKS,
     FilePurpose.MARKETING_RAW: Module.MARKETING,
     FilePurpose.MARKETING_FINAL: Module.MARKETING,
     FilePurpose.AI_CHAT_ATTACHMENT: Module.AI,
     FilePurpose.MEETING_AUDIO: Module.AI,
     FilePurpose.HOUSE_MODEL_PLANNING: Module.HOUSE_MODELS,
     FilePurpose.KR_PAGE_IMAGE: Module.PRODUCTION,
+    FilePurpose.MONEY_MOVEMENT_DOCUMENT: Module.ACCOUNTING,
 }
 
 

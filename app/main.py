@@ -1,10 +1,15 @@
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from app.accounting.router import app as accounting_app
-from app.accounting.seed import ensure_accounting_seed
+from app.accounting.seed import (
+    ensure_accounting_seed,
+    ensure_counterparties_seed,
+    ensure_organizations_seed,
+)
 from app.agents.loop import start_shift_loop
 from app.ai.demo_seed import ensure_agent_activity_seed, ensure_growth_proposals_seed
 from app.agents.router import app as agents_app
@@ -16,6 +21,7 @@ from app.board.router import app as board_app
 from app.board.seed import ensure_seed
 from app.clients.router import app as clients_app
 from app.common.files import router as files_router
+from app.core import readiness
 from app.core.config import settings
 from app.cycle.router import app as cycle_app
 from app.dashboard.router import app as dashboard_app
@@ -27,6 +33,7 @@ from app.house_models.router import app as house_models_app
 from app.installation.router import app as installation_app
 from app.marketing.router import app as marketing_app
 from app.max.router import app as max_app
+from app.feedback.router import app as feedback_app
 from app.production.router import app as production_app
 from app.tasks.demo_seed import ensure_demo_workforce_seed
 from app.tasks.router import app as tasks_app
@@ -61,9 +68,18 @@ def on_startup() -> None:
         # Idempotent: only actually creates anything the first time it runs
         # after a deploy, no-op on every restart after that (see the module).
         ensure_seed(db)
+        # Не демо-сид: юрлица компании и их счета (0081-a). Нужны во всех
+        # окружениях, включая прод — без счёта проводку создать нельзя.
+        # Идемпотентно, upsert по названию.
+        ensure_organizations_seed(db)
         # Same contract: fills the accounting register with a mock set of
-        # money movements once, no-op if it already has rows.
+        # money movements once, no-op if it already has rows. Runs after the
+        # organizations seed so the demo movements land on a real account.
         ensure_accounting_seed(db)
+        # Не демо-сид: справочник контрагентов (0081-c) — отражение уже
+        # существующих клиентов и поставщиков, нужен во всех окружениях.
+        # Идемпотентно, ищет по ссылке на исходную запись.
+        ensure_counterparties_seed(db)
         # Same contract again: demo workforce (mock employees + tasks they
         # work through, plus a couple of salary movements) for local
         # demos/acceptance — never in prod, no-op once real workers exist.
@@ -92,7 +108,19 @@ def on_startup() -> None:
 
 @app.get("/health")
 def health():
+    """Liveness: the process answers. Says nothing about the database."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+@app.get("/api/ready", include_in_schema=False)
+def ready(db: Session = Depends(get_db)):
+    """Readiness: DB answers and its alembic revision matches the code (0084-a).
+    Deploy polls this after `docker compose up`; 503 turns the deploy red."""
+    ok, reason = readiness.check(db)
+    if not ok:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": reason})
+    return {"status": "ready"}
 
 
 @app.get("/callback")
@@ -122,3 +150,4 @@ app.mount("/api/dashboard", dashboard_app)
 app.mount("/api/board", board_app)
 app.mount("/api/agents", agents_app)
 app.mount("/api/accounting", accounting_app)
+app.mount("/api/feedback", feedback_app)

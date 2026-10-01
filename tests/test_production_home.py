@@ -35,8 +35,8 @@ def _make_production_with_client(db, **client_fields):
     return production
 
 
-def _make_block(db, production):
-    block = ProductionBlock(production_id=production.id, name="Блок")
+def _make_block(db, production, requires_materials=True):
+    block = ProductionBlock(production_id=production.id, name="Блок", requires_materials=requires_materials)
     db.add(block)
     db.flush()
     return block
@@ -58,12 +58,24 @@ def _make_warehouse_material(db):
 
 def test_home_has_no_signals_for_clean_production(api, make_user, db):
     production = _make_production_with_client(db)
+    _make_block(db, production, requires_materials=False)
     db.commit()
     worker = api(make_user(Module.PRODUCTION))
     resp = worker.get(f"/api/production/{production.id}/home")
     assert resp.status_code == 200
     body = resp.json()
     assert body["actions"] == []
+
+
+def test_home_without_blocks_reports_insufficient_data(api, make_user, db):
+    """0084-c: производство без блоков — не «всё чисто», а «недостаточно данных»."""
+    production = _make_production_with_client(db)
+    db.commit()
+    worker = api(make_user(Module.PRODUCTION))
+    actions = worker.get(f"/api/production/{production.id}/home").json()["actions"]
+    assert [(a["id"], a["title"], a["href"]) for a in actions] == [
+        ("production:readiness:insufficient_data", "Недостаточно данных", f"/production/{production.id}"),
+    ]
 
 
 def test_home_reports_pending_material_request_of_this_production_only(api, make_user, db):
@@ -97,12 +109,15 @@ def test_home_reports_pending_material_request_of_this_production_only(api, make
     assert "production:pending_material_requests" in action_ids
 
     other_resp = worker.get(f"/api/production/{other_production.id}/home")
-    assert other_resp.json()["actions"] == []
+    # Заявок у второго дома нет, но количество 0 — это не «чисто».
+    other_actions = other_resp.json()["actions"]
+    assert [a["id"] for a in other_actions] == ["production:readiness:insufficient_data"]
+    assert "не указано количество" in other_actions[0]["description"]
 
 
 def test_home_reports_overdue_task_of_this_production(api, make_user, db):
     production = _make_production_with_client(db)
-    block = _make_block(db, production)
+    block = _make_block(db, production, requires_materials=False)
     assignee = make_user(Module.PRODUCTION)
     overdue_task = Task(
         title="Просроченная задача", block_id=block.id, status=TaskStatus.READY,

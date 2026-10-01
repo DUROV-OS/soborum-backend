@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,12 +14,14 @@ class BlockCreate(BaseModel):
     name: str
     description: str | None = None
     sequence: int | None = None
+    requires_materials: bool = True
 
 
 class BlockUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     sequence: int | None = None
+    requires_materials: bool | None = None
 
 
 class BlockDependencyCreate(BaseModel):
@@ -76,6 +79,7 @@ class BlockOut(BaseModel):
     name: str
     description: str | None
     sequence: int
+    requires_materials: bool = True
     depends_on_ids: list[int] = []
     materials: list[BlockMaterialOut] = []
 
@@ -99,6 +103,84 @@ class ProductionListOut(BaseModel):
     cycle_status: CycleStatus
     created_at: datetime
     block_count: int
+
+
+# ------------------------------------------------ оценка готовности (0084-b) --
+# Поля один в один из app/production/readiness.py; фронт ничего не вычисляет
+# сам, только показывает их.
+
+ReadinessMaterialsState = Literal[
+    "insufficient_data", "needs_reconciliation", "shortfall", "provided", "not_required"
+]
+
+
+class ReadinessReasonOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    code: str
+    text: str
+    block_id: int | None = None
+    material_id: int | None = None
+    task_id: int | None = None
+
+
+class ReadinessSourcesOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    block_ids: list[int] = []
+    material_ids: list[int] = []
+    task_ids: list[int] = []
+    material_request_ids: list[int] = []
+
+
+class ReadinessWaitingOnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    block_id: int
+    name: str
+
+
+class BlockReadinessOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    block_id: int
+    production_id: int
+    name: str
+    materials_state: ReadinessMaterialsState
+    materials_label: str
+    admitted: bool
+    waiting_on: list[ReadinessWaitingOnOut] = []
+    reasons: list[ReadinessReasonOut] = []
+    sources: ReadinessSourcesOut
+    computed_at: datetime
+    facts_at: datetime | None
+    version: str
+
+
+class ProductionReadinessOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    production_id: int
+    materials_state: ReadinessMaterialsState
+    materials_label: str
+    reasons: list[ReadinessReasonOut] = []
+    sources: ReadinessSourcesOut
+    computed_at: datetime
+    facts_at: datetime | None
+    version: str
+    blocks: list[BlockReadinessOut] = []
+
+
+class ProductionReadinessListItemOut(BaseModel):
+    production_id: int
+    materials_state: ReadinessMaterialsState
+    materials_label: str
+    # Только причины, требующие действия (от блоков в проблемных состояниях);
+    # пояснения к «обеспечены» / «не требуются» сюда не входят.
+    reasons_count: int
+    computed_at: datetime
+    facts_at: datetime | None
+    version: str
 
 
 # --------------------------------------------------------------- «Главная» --
@@ -133,7 +215,12 @@ class DeadlineInsightOut(BaseModel):
     title: str
     description: str
     impact: str
-    source: str  # "ai" | "fallback" | "none"
+    # "ai" | "fallback" | "none" (сигналов нет — по графику) |
+    # "insufficient_data" (прогноз не построен: не хватает данных, 0084-c)
+    source: str
+    # Когда посчитан ответ: у закешированного ИИ-ответа — время генерации.
+    # None — запись кэша, сохранённая до 0084-c.
+    generated_at: datetime | None = None
 
 
 class ProductionHomeOut(BaseModel):
@@ -194,6 +281,7 @@ class TemplateBlockOut(BaseModel):
     name: str
     description: str | None
     sequence: int
+    requires_materials: bool = True
     depends_on_ids: list[int] = []
     kr_page_refs: list[KrPageRefOut] = []
     tasks: list[TemplateBlockTaskOut] = []
@@ -216,6 +304,7 @@ class ProductionStageTemplateOut(BaseModel):
 class TemplateBlockPatch(BaseModel):
     name: str | None = None
     description: str | None = None
+    requires_materials: bool | None = None
 
 
 class TemplateBlockTaskPatch(BaseModel):

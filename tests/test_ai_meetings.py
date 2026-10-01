@@ -302,6 +302,85 @@ def test_meeting_document_private_to_owner(api, make_user):
     assert stranger.get(f"/api/ai/meetings/{mid}/document").status_code == 404
 
 
+# --- 0010: finish отправляет документ в базу знаний, если канал включён ----
+
+
+def _enable_mcp_write(monkeypatch):
+    from app.ai import mcp_auth
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mcp_server_url", "https://kb.example/mcp")
+    monkeypatch.setattr(settings, "mcp_oauth_client_id", "id")
+    monkeypatch.setattr(settings, "mcp_oauth_client_secret", "secret")
+    monkeypatch.setattr(settings, "mcp_write_enabled", True)
+    monkeypatch.setattr(mcp_auth, "get_access_token", lambda db, force=False: "tok")
+
+
+def test_finish_sends_document_to_knowledge_base_when_enabled(api, make_user, monkeypatch):
+    from app.core.mcp_remote import RemoteMcp
+
+    _enable_mcp_write(monkeypatch)
+    calls = []
+
+    def fake_call_tool(self, name, arguments=None, timeout=30.0):
+        calls.append((name, arguments))
+        return {"ok": True}
+
+    monkeypatch.setattr(RemoteMcp, "call_tool", fake_call_tool)
+
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={"title": "Планёрка"}).json()["id"]
+    client.post(
+        f"/api/ai/meetings/{mid}/transcript",
+        json={"lines": [{"speaker": "Спикер 1", "text": "Реплика", "at_ms": 0}]},
+    )
+    finished = client.post(f"/api/ai/meetings/{mid}/finish")
+    assert finished.status_code == 200
+
+    assert calls, "документ совещания должен был уйти в базу знаний"
+    name, arguments = calls[0]
+    assert name == "create_note"
+    assert arguments["path"] == f"02_Business/03_Meetings/meeting-{mid}.md"
+    assert "Планёрка" in arguments["content"]
+    assert arguments["content"].startswith("---\n")  # frontmatter от build_document, не задублирован
+
+
+def test_finish_does_not_touch_knowledge_base_when_flag_off(api, make_user, monkeypatch):
+    from app.core.config import settings
+    from app.core.mcp_remote import RemoteMcp
+
+    # коннектор настроен, но mcp_write_enabled остался по умолчанию False
+    monkeypatch.setattr(settings, "mcp_server_url", "https://kb.example/mcp")
+    monkeypatch.setattr(settings, "mcp_oauth_client_id", "id")
+    monkeypatch.setattr(settings, "mcp_oauth_client_secret", "secret")
+    calls = []
+    monkeypatch.setattr(
+        RemoteMcp, "call_tool", lambda self, name, arguments=None, timeout=30.0: calls.append(name)
+    )
+
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    assert client.post(f"/api/ai/meetings/{mid}/finish").status_code == 200
+    assert calls == []
+
+
+def test_finish_still_succeeds_when_kb_write_fails(api, make_user, monkeypatch):
+    from app.core.mcp_remote import McpError, RemoteMcp
+
+    _enable_mcp_write(monkeypatch)
+    monkeypatch.setattr(
+        RemoteMcp,
+        "call_tool",
+        lambda self, name, arguments=None, timeout=30.0: (_ for _ in ()).throw(McpError("недоступен")),
+    )
+
+    client = api(make_user(Module.AI))
+    mid = client.post("/api/ai/meetings", json={}).json()["id"]
+    finished = client.post(f"/api/ai/meetings/{mid}/finish")
+    assert finished.status_code == 200
+    assert finished.json()["status"] == "finished"
+
+
 # --- 0004-d: реплика-обращение к Марине ------------------------------------
 
 

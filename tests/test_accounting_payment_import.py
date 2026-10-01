@@ -11,7 +11,7 @@ import io
 import pytest
 from openpyxl import Workbook
 
-from app.accounting.models import MoneyMovement
+from app.accounting.models import Counterparty, CounterpartyKind, MoneyMovement
 from app.clients import service as client_service
 from app.clients.schemas import ClientCreate
 from app.common.module_access import Module
@@ -40,9 +40,17 @@ def _xlsx(rows: list[list]) -> bytes:
     return buf.getvalue()
 
 
-def _import(api_client, content: bytes, name="pay.csv", mime="text/csv"):
+def _default_account_id(api_client) -> int:
+    """Выписка всегда грузится на конкретный счёт (0081-e)."""
+    accounts = api_client.get("/api/accounting/accounts").json()
+    return next(a["id"] for a in accounts if a["is_default"])
+
+
+def _import(api_client, content: bytes, name="pay.csv", mime="text/csv", account_id=None):
     return api_client.post(
-        "/api/accounting/money-movements/import", files={"file": (name, content, mime)}
+        "/api/accounting/money-movements/import",
+        files={"file": (name, content, mime)},
+        params={"account_id": account_id or _default_account_id(api_client)},
     )
 
 
@@ -76,14 +84,24 @@ def test_counterparty_matches_client_and_upgrades_subkind(db, api, acc_user):
     assert mm.client_id is not None and mm.comment is None
 
 
-def test_unmatched_counterparty_goes_to_comment(db, api, acc_user):
+def test_unknown_counterparty_is_added_to_the_directory(db, api, acc_user):
+    """0081-e заменил прежнее поведение: контрагент, которого нет среди
+    клиентов, больше не уходит текстом в комментарий, а заводится в едином
+    справочнике — иначе история платежей по нему не собирается."""
     r = _import(api(acc_user), _csv("01.09.2026,Стороннее ООО,услуги,-3200,0,127,"))
     data = r.json()
-    assert data["unmatched_source"] == 1
+    assert data["counterparties_created"] == 1
+    assert data["unmatched_source"] == 0
+
     mm = db.query(MoneyMovement).one()
+    # операционной привязки нет — это не наш клиент и не поставщик
     assert mm.source_kind.value == "none"
-    assert "Стороннее ООО" in (mm.comment or "")
+    assert mm.comment is None
     assert mm.subkind.value == "other_expense"
+
+    counterparty = db.get(Counterparty, mm.counterparty_id)
+    assert counterparty is not None and counterparty.name == "Стороннее ООО"
+    assert counterparty.kind is CounterpartyKind.OTHER
 
 
 def test_rows_without_amount_are_skipped(db, api, acc_user):

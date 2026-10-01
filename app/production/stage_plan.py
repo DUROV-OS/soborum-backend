@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from app.common.module_access import Module as AccessModule
+from app.production import readiness
 from app.production.models import BlockMaterial, Production, ProductionBlock
 from app.production.stage_templates import ProductionStageTemplate, TemplateBlock
 from app.tasks import service as task_service
@@ -65,6 +66,7 @@ def instantiate_stage_plan(db, production: Production, template: ProductionStage
             name=template_block.name,
             description=template_block.description,
             sequence=template_block.sequence,
+            requires_materials=template_block.requires_materials,
         )
         db.add(block)
         db.flush()
@@ -99,12 +101,15 @@ def instantiate_stage_plan(db, production: Production, template: ProductionStage
                 # BlockMaterial требует warehouse_material_id, выдумывать его
                 # нельзя. Заводим задачу, чтобы информация не терялась молча,
                 # инженер сопоставляет и добавляет материал вручную (как и
-                # сегодня для любого материала блока).
+                # сегодня для любого материала блока). Отдельный link_type —
+                # чтобы оценка готовности видела незакрытую сверку (0084-b).
                 task_service.create_task(
                     db,
                     title=f"Сопоставить со складом материал «{template_material.name}» ({template_material.unit}) и добавить в блок «{block.name}»",
                     assignee_ids=assignee_ids,
                     block_id=block.id,
+                    link_type=TaskLinkType.BLOCK_MATERIAL_MATCH,
+                    link_id=block.id,
                 )
                 continue
             db.add(
@@ -123,3 +128,4 @@ def instantiate_stage_plan(db, production: Production, template: ProductionStage
             )
 
     db.flush()
+    readiness.invalidate_production_caches(db, production.id)

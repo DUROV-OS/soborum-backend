@@ -29,7 +29,8 @@ def _make_client(db, plan=PaymentPlan.FULL_PREPAYMENT, advance_amount=None, fina
         db, ClientCreate(full_name="Иван Тест", phone="+70000000000", email="ivan@example.com")
     )
     client_service.transition_stage(db, client)  # LEAD -> DISCUSSION
-    client_service.transition_stage(db, client)  # DISCUSSION -> APPROVAL
+    client_service.transition_stage(db, client)  # DISCUSSION -> SITE_VISIT
+    client_service.transition_stage(db, client)  # SITE_VISIT -> APPROVAL
     client.contract_file_id = 1
     client.house_project_file_id = 1
     client.contract_appendix_file_id = 1
@@ -96,6 +97,7 @@ def test_advance_plan_needs_advance_amount_before_payment_stage(db):
     )
     client_service.transition_stage(db, client)
     client_service.transition_stage(db, client)
+    client_service.transition_stage(db, client)  # LEAD -> ... -> APPROVAL
     client.contract_file_id = 1
     client.house_project_file_id = 1
     client.contract_appendix_file_id = 1
@@ -175,7 +177,7 @@ def test_balance_payment_rejected_for_prepaid_and_before_postpayment(db):
         client_service.record_balance_payment(
             db, early, ClientBalancePaymentUpdate(balance_paid=True)
         )
-    assert "постоплата" in err.value.detail
+    assert "Дом в производстве" in err.value.detail
 
 
 def test_balance_payment_endpoint(db, api, make_user):

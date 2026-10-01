@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Table, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Table, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -54,6 +54,16 @@ class ProductionBlock(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # False — этапу материалы не нужны (например «документация»), оценка
+    # готовности (app/production/readiness.py) даёт ему «Материалы не
+    # требуются». Ставится только явно человеком (или копируется из шаблона),
+    # по названию блока не угадывается.
+    requires_materials: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # Время последней правки блока — «время факта» для оценки готовности.
+    # NULL у строк, созданных до 0084-b: когда их меняли, неизвестно.
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=func.now(), onupdate=func.now()
+    )
 
     production: Mapped["Production"] = relationship(back_populates="blocks")
     materials: Mapped[list["BlockMaterial"]] = relationship(back_populates="block", cascade="all, delete-orphan")
@@ -84,6 +94,11 @@ class BlockMaterial(Base):
     quantity_required: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
     quantity_requested: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
     quantity_provided: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
+    # Время последнего изменения количеств — «время факта» для оценки
+    # готовности. NULL у строк, созданных до 0084-b.
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=func.now(), onupdate=func.now()
+    )
 
     block: Mapped["ProductionBlock"] = relationship(back_populates="materials")
     warehouse_material: Mapped["WarehouseMaterial"] = relationship()  # noqa: F821

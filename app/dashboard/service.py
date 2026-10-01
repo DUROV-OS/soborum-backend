@@ -7,12 +7,15 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.accounting.models import MoneyMovement, MoneyMovementStatus
-from app.clients.models import Client, ClientStage, PaymentPlan
+from app.clients.models import BalanceState, Client, ClientStage, PaymentPlan, balance_state, balance_today
 from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import Installation, InstallationStage
 from app.marketing.models import ContentItem, ContentStage
-from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
+from app.production import readiness
+from app.production.models import MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
+from app.production.readiness import MaterialsState
+from app.tasks import service as task_service
 from app.tasks.models import Task, TaskStatus
 from app.users.models import User, UserRole
 from app.warehouse import service as warehouse_service
@@ -42,6 +45,22 @@ def _snapshot_clients(db: Session) -> dict:
     for stage, count in db.query(Client.stage, func.count(Client.id)).group_by(Client.stage).all():
         stage_counts[stage.value] = count
 
+    # Остаток «после получения» принимают на «Доме в производстве» и на
+    # «Приёмке» — после неё цикл закрыть уже нельзя без оплаты. Непогашенный
+    # остаток делится по сроку (0084-j): в срок — не нарушение, просрочка —
+    # только после срока, без срока — отдельный сигнал.
+    awaiting_balance = (
+        db.query(Client)
+        .filter(
+            Client.stage.in_([ClientStage.POSTPAYMENT, ClientStage.ACCEPTANCE]),
+            Client.payment_plan != PaymentPlan.FULL_PREPAYMENT,
+            Client.balance_paid.isnot(True),
+        )
+        .all()
+    )
+    today = balance_today()
+    balance_states = [balance_state(c, today) for c in awaiting_balance]
+
     return {
         "total_clients": sum(stage_counts.values()),
         "stage_counts": stage_counts,
@@ -52,13 +71,9 @@ def _snapshot_clients(db: Session) -> dict:
             Client.payment_plan != PaymentPlan.POST_PAYMENT,
         )
         .count(),
-        "awaiting_balance_payment": db.query(Client)
-        .filter(
-            Client.stage == ClientStage.POSTPAYMENT,
-            Client.payment_plan != PaymentPlan.FULL_PREPAYMENT,
-            Client.balance_paid.isnot(True),
-        )
-        .count(),
+        "balance_pending": balance_states.count(BalanceState.PENDING),
+        "balance_overdue": balance_states.count(BalanceState.OVERDUE),
+        "balance_no_due_date": balance_states.count(BalanceState.NO_DUE_DATE),
         "new_leads_last_7_days": db.query(Client)
         .filter(Client.stage == ClientStage.LEAD, Client.created_at >= week_ago)
         .count(),
@@ -170,17 +185,64 @@ def _snapshot_marketing(db: Session) -> dict:
 
 
 def _snapshot_production(db: Session) -> dict:
-    shortfall_block_ids = {
-        row[0]
-        for row in db.query(BlockMaterial.block_id)
-        .filter((BlockMaterial.quantity_required > 0) | (BlockMaterial.quantity_requested > 0))
-        .distinct()
-        .all()
-    }
+    """Материалы производств в работе — по оценке готовности
+    (app/production/readiness.py), а не своим условием: блок без материалов
+    или с количеством 0 здесь «недостаточно данных», а не «нехватки нет»."""
+    productions = readiness.productions_in_work(db)
+    assessments = readiness.assess_productions(db, productions)
+    label_by_id = {p.id: readiness.production_label(p) for p in productions}
+
+    counts = dict.fromkeys([state.value for state in MaterialsState], 0)
+    for assessment in assessments:
+        counts[assessment.materials_state.value] += 1
+    worst = readiness.worst_state(a.materials_state for a in assessments)
+
+    attention = sorted(
+        (a for a in assessments if a.materials_state in readiness.PROBLEM_STATES),
+        key=lambda a: list(MaterialsState).index(a.materials_state),
+    )
+    attention_productions = [
+        {
+            "production_id": a.production_id,
+            "production": label_by_id[a.production_id],
+            "materials_state": a.materials_state.value,
+            "materials_label": a.materials_label,
+            "reasons_count": len(a.problem_reasons),
+            "reasons": [r.text for r in a.problem_reasons[:3]],
+        }
+        for a in attention
+    ]
+    # По одной причине от каждого проблемного производства по кругу — чтобы
+    # один дом с десятком блоков не занял весь список.
+    top_reasons: list[dict] = []
+    queues = [(a, list(a.problem_reasons)) for a in attention]
+    while len(top_reasons) < 5 and any(queue for _, queue in queues):
+        for assessment, queue in queues:
+            if queue and len(top_reasons) < 5:
+                reason = queue.pop(0)
+                top_reasons.append({
+                    "production_id": assessment.production_id,
+                    "production": label_by_id[assessment.production_id],
+                    "code": reason.code,
+                    "text": reason.text,
+                })
+
     return {
         "total_productions": db.query(Production).count(),
         "total_blocks": db.query(ProductionBlock).count(),
-        "blocks_with_material_shortfall": len(shortfall_block_ids),
+        "productions_in_work": len(assessments),
+        "productions_insufficient_data": counts[MaterialsState.INSUFFICIENT_DATA.value],
+        "productions_needs_reconciliation": counts[MaterialsState.NEEDS_RECONCILIATION.value],
+        "productions_shortfall": counts[MaterialsState.SHORTFALL.value],
+        "productions_provided": counts[MaterialsState.PROVIDED.value],
+        "productions_not_required": counts[MaterialsState.NOT_REQUIRED.value],
+        "productions_needing_attention": len(attention),
+        # None — производств в работе нет, оценивать нечего.
+        "worst_state": worst.value if worst is not None else None,
+        "worst_state_label": readiness.STATE_LABELS[worst] if worst is not None else None,
+        "top_reasons": top_reasons,
+        "attention_productions": attention_productions,
+        "readiness_version": readiness.READINESS_VERSION,
         "pending_material_requests": db.query(MaterialRequest)
         .filter(MaterialRequest.status == MaterialRequestStatus.PENDING)
         .count(),
@@ -221,13 +283,23 @@ def _snapshot_warehouse(db: Session) -> dict:
     }
 
 
-def _snapshot_tasks(db: Session) -> dict:
+def _snapshot_tasks(db: Session, user: User | None = None) -> dict:
+    """Без `user` — вся компания (агенты, «Доска», ИИ-аналитика раздела). С
+    `user` — Пульс: открытые задачи в той же области, что доска этого
+    пользователя (`scope=all` при `tasks_all`, иначе `mine`), тем же
+    `open_tasks_query`, что `GET /api/tasks?status=open` (0084-h)."""
     now = datetime.now(timezone.utc)
     status_counts = dict.fromkeys([s.value for s in TaskStatus], 0)
-    for task_status, count in db.query(Task.status, func.count(Task.id)).group_by(Task.status).all():
-        status_counts[task_status.value] = count
-
-    open_tasks = db.query(Task).filter(Task.status != TaskStatus.DONE).all()
+    if user is None:
+        scope = None
+        for task_status, count in db.query(Task.status, func.count(Task.id)).group_by(Task.status).all():
+            status_counts[task_status.value] = count
+        open_tasks = db.query(Task).filter(Task.status != TaskStatus.DONE).all()
+    else:
+        scope = task_service.default_board_scope(user)
+        for task in task_service.apply_scope(db.query(Task).all(), user, scope):
+            status_counts[task.status.value] += 1
+        open_tasks = task_service.open_tasks_query(db, user, scope)
     overdue = sum(1 for t in open_tasks if t.deadline and (t.deadline.replace(tzinfo=timezone.utc) if t.deadline.tzinfo is None else t.deadline) < now)
     due_today = sum(1 for t in open_tasks if t.deadline and t.deadline.date() == now.date())
 
@@ -235,6 +307,7 @@ def _snapshot_tasks(db: Session) -> dict:
         "total_tasks": sum(status_counts.values()),
         "status_counts": status_counts,
         "open_tasks": len(open_tasks),
+        "open_tasks_scope": scope.value if scope else "company",
         "overdue_tasks": overdue,
         "due_today": due_today,
     }
@@ -251,8 +324,10 @@ def _snapshot_users(db: Session) -> dict:
             .filter(Task.assignees.any(User.id == u.id), Task.status != TaskStatus.DONE)
             .count()
         )
-        workload.append({"full_name": u.full_name, "open_tasks": open_count})
-    workload.sort(key=lambda w: w["open_tasks"], reverse=True)
+        # Нагрузка — только задачи, где сотрудник исполнитель: «задач на
+        # исполнении», не то же, что «Открытых задач» Пульса (0084-h).
+        workload.append({"full_name": u.full_name, "tasks_in_work_as_assignee": open_count})
+    workload.sort(key=lambda w: w["tasks_in_work_as_assignee"], reverse=True)
 
     return {
         "active_employees": len(active_users),
@@ -284,6 +359,9 @@ SECTION_BUILDERS: dict[str, tuple[Module, Callable[[Session], dict]]] = {
 
 def build_snapshot(db: Session, user: User) -> dict[str, dict]:
     snapshot = {key: builder(db) for key, (module, builder) in SECTION_BUILDERS.items() if user.has_access(module)}
+    if "tasks" in snapshot:
+        # Число задач на Пульсе — в области доски этого пользователя (0084-h).
+        snapshot["tasks"] = _snapshot_tasks(db, user)
     if user.role == UserRole.ADMIN:
         snapshot["users"] = _snapshot_users(db)
     return snapshot
