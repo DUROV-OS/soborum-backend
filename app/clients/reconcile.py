@@ -1,14 +1,15 @@
 """Сверка задач смены стадии клиента с реальностью.
 
-Инвариант: у каждого клиента, не находящегося на последней стадии, есть ровно
-одна открытая задача «перевести на следующую стадию», и её стадия совпадает с
-текущей стадией клиента.
+Инвариант: у каждого клиента на стадии с ручным переводом есть ровно одна
+открытая задача «перевести на следующую стадию», и её стадия совпадает с
+текущей стадией клиента. У клиента на стадии, которую двигает сама система по
+монтажу («Дом в производстве» и дальше — 0079), открытых задач стадии нет.
 
 Инвариант нарушают клиенты, чья стадия выставлена в обход сервиса
 (`sources/seed_*.sql`, ручные правки БД, старый код без task-sync) — у них
 задачи просто нет. Эта сверка чинит такое: создаёт недостающие задачи,
 закрывает задачи под уже пройденную стадию и лишние дубликаты, закрывает
-задачи у клиентов на последней стадии.
+задачи у клиентов на стадиях без ручного перевода.
 
 Запускается фоновым потоком: сразу после старта приложения и дальше раз в час
 (см. `app/main.py`). Плюс ручной прогон — `POST /api/clients/reconcile-stage-tasks`.
@@ -23,7 +24,7 @@ import time
 from sqlalchemy.orm import Session
 
 from app.clients.models import Client
-from app.clients.service import _next_stage, _open_stage_tasks, ensure_stage_transition_task
+from app.clients.service import _open_stage_tasks, ensure_stage_transition_task, needs_stage_task
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.tasks import service as task_service
@@ -43,8 +44,8 @@ def reconcile_client_stage_tasks(db: Session) -> dict:
     for client in clients:
         open_tasks = _open_stage_tasks(db, client.id)
 
-        if _next_stage(client.stage) is None:
-            # последняя стадия — открытых задач быть не должно
+        if not needs_stage_task(client.stage):
+            # стадию двигает не человек — открытых задач быть не должно
             for task in open_tasks:
                 task_service.force_close(db, task)
                 closed_final += 1

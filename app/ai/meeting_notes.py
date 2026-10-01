@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ from sqlalchemy.orm import Session
 from app.ai.meetings import transcript_lines
 from app.ai.models import Meeting, MeetingNotes
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 NEW_LINES_THRESHOLD = 8
 
@@ -191,6 +194,25 @@ def refresh_notes_quietly(db: Session, meeting: Meeting) -> None:
     try:
         refresh_notes(db, meeting, force=True)
     except Exception:  # noqa: BLE001 — finish не должен падать из-за заметок
+        db.rollback()
+
+
+def send_to_knowledge_base_quietly(db: Session, meeting: Meeting) -> None:
+    """Задача 0010: на finish отправить итоговый документ совещания в базу
+    знаний через канал записи. Молча деградирует (документ остаётся доступен
+    на скачивание через /document), если канал выключен флагом, коннектор не
+    настроен, или MCP-сервер недоступен/отклонил запись — finish не должен
+    падать из-за этого ни при каких обстоятельствах."""
+    if not (settings.mcp_configured and settings.mcp_write_enabled):
+        return
+    try:
+        from app.ai import mcp_write  # локальный импорт: mcp_write зависит от engine, не наоборот
+
+        notes = db.get(MeetingNotes, meeting.id)
+        document = build_document(db, meeting, notes)
+        mcp_write.create_note(db, source=f"meeting:{meeting.id}", body=document, raw=True)
+    except Exception:  # noqa: BLE001 — см. докстрок выше
+        logger.warning("отправка документа совещания %s в базу знаний не удалась", meeting.id, exc_info=True)
         db.rollback()
 
 

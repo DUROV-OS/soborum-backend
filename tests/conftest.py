@@ -26,6 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.accounting.seed import ensure_organizations_seed
 from app.common.module_access import AccessLevel
 from app.db import import_all_models  # noqa: F401
 from app.db.base import Base
@@ -40,6 +41,10 @@ def db():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     with Session(engine, expire_on_commit=False) as session:
+        # Организации и их счета — не демо-данные, а обязательный справочник
+        # (0081-a): без счёта проводку создать нельзя, в проде их заводит
+        # миграция/стартовый сид. Тестовая база должна быть в том же состоянии.
+        ensure_organizations_seed(session)
         yield session
     engine.dispose()
 
@@ -73,3 +78,17 @@ def api(db):
     yield authenticated
     for subapp in apps:
         subapp.dependency_overrides.clear()
+
+
+@pytest.fixture
+def default_account(db):
+    """Счёт по умолчанию первой организации (0081-a) — на него тесты заводят
+    проводки там, где сам счёт не является предметом проверки."""
+    from app.accounting.models import BankAccount
+
+    return (
+        db.query(BankAccount)
+        .filter(BankAccount.is_default.is_(True))
+        .order_by(BankAccount.id)
+        .first()
+    )

@@ -2,6 +2,7 @@ from app.agents import connectors, context
 from app.agents.ids import DAILY_QUESTIONS, AgentId
 from app.agents.legal import scan
 from app.agents.runtime import _rank_hits, run_task
+from app.agents.service import subject_hash
 from app.agents.shift import run_shift
 from app.agents.types import ContextHit, LegalCategory, LegalVerdict
 from app.clients.models import Client, ClientStage
@@ -307,17 +308,23 @@ def test_approval_decision_flow(api, make_user, db):
     client = api(make_user(admin=True))
     client.post("/api/agents/shifts")
     shift = db.query(AgentShift).order_by(AgentShift.id.desc()).first()
+    snapshot = {"agent": "sales", "stance": "позиция", "citations": [], "legal_verdict": "escalate_human"}
     approval = AgentApproval(
         shift_id=shift.id,
         kind="legal",
-        title="Юрист просит вас посмотреть",
+        title="Продажник: реальная эскалация от детерминированного фильтра",
         detail="Реальная эскалация от детерминированного фильтра.",
         status="pending",
+        subject_snapshot=snapshot,
+        subject_hash=subject_hash(snapshot),
     )
     db.add(approval)
     db.commit()
 
-    decided = client.post(f"/api/agents/approvals/{approval.id}/decision", json={"status": "approved"})
+    decided = client.post(
+        f"/api/agents/approvals/{approval.id}/decision",
+        json={"status": "approved", "subject_hash": subject_hash(snapshot)},
+    )
     assert decided.status_code == 200
     assert decided.json()["status"] == "approved"
 

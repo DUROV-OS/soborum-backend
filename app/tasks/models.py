@@ -19,6 +19,24 @@ class TaskStatus(str, enum.Enum):
     DONE = "done"
 
 
+class TaskReportKind(str, enum.Enum):
+    """Кто и в какой момент оставил запись отчёта (см. TaskReport, 0077)."""
+
+    # Исполнитель сдал задачу: in_progress -> in_review.
+    SUBMISSION = "submission"
+    # Проверяющий принял работу: in_review -> done.
+    REVIEW_ACCEPTED = "review_accepted"
+    # Проверяющий вернул в работу: in_review -> in_progress.
+    REVIEW_RETURNED = "review_returned"
+    # Срок задачи перенесён с указанием причины (задачи по клиенту, 0079-d).
+    DEADLINE_SHIFT = "deadline_shift"
+    # Проверяющий назначен автоматически по политике приёмки (0084-f,
+    # app/tasks/policy.py): задачу, требующую приёмки, сдали без проверяющего,
+    # и им стал ответственный. Автор — тот, чья сдача это вызвала; запись
+    # служебная, её текст не правится.
+    REVIEWER_ASSIGNED = "reviewer_assigned"
+
+
 class TaskLinkType(str, enum.Enum):
     """What auto-created this task, if anything. Domain sections that create
     linked tasks (clients, marketing, warehouse) look up their own entity by
@@ -26,6 +44,10 @@ class TaskLinkType(str, enum.Enum):
 
     NONE = "none"
     CLIENT_STAGE = "client_stage"
+    # Задача менеджера по клиенту: связаться, выслать каталог, уточнить по
+    # ипотеке и т.п. (0079-d). link_id — id клиента, link_meta — стадия на
+    # момент постановки и признак «блокирует переход на следующую стадию».
+    CLIENT_FOLLOWUP = "client_followup"
     # Приём остатка «после получения» для клиента с планом оплаты
     # ADVANCE_THEN_BALANCE / POST_PAYMENT (см. app.clients.models.PaymentPlan).
     CLIENT_BALANCE_PAYMENT = "client_balance_payment"
@@ -47,6 +69,11 @@ class TaskLinkType(str, enum.Enum):
     # Задача, подготовленная из предложения Марины по развитию бизнеса (раздел
     # «Марина» → «Развитие», задача 0036-a). link_id — id GrowthProposal.
     GROWTH_PROPOSAL = "growth_proposal"
+    # Сопоставить со складом материал шаблона, которого нет в каталоге
+    # (app/production/stage_plan.py, 0084-b). Пока такая задача открыта,
+    # спецификация блока заведомо неполная — оценка готовности даёт «Нужна
+    # сверка». link_id — id блока производства.
+    BLOCK_MATERIAL_MATCH = "block_material_match"
 
 
 task_assignees = Table(
@@ -67,6 +94,13 @@ task_images = Table(
     "task_images",
     Base.metadata,
     Column("task_id", ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+    Column("file_id", ForeignKey("file_assets.id", ondelete="CASCADE"), primary_key=True),
+)
+
+task_report_files = Table(
+    "task_report_files",
+    Base.metadata,
+    Column("report_id", ForeignKey("task_reports.id", ondelete="CASCADE"), primary_key=True),
     Column("file_id", ForeignKey("file_assets.id", ondelete="CASCADE"), primary_key=True),
 )
 
@@ -112,12 +146,102 @@ class Task(Base):
     responsible: Mapped["User | None"] = relationship(foreign_keys=[responsible_id])  # noqa: F821
     images: Mapped[list["FileAsset"]] = relationship(secondary=task_images)  # noqa: F821
 
+    reports: Mapped[list["TaskReport"]] = relationship(
+        order_by="TaskReport.created_at",
+        cascade="all, delete-orphan",
+    )
+
     depends_on: Mapped[list["Task"]] = relationship(
         secondary=task_dependencies,
         primaryjoin=id == task_dependencies.c.task_id,
         secondaryjoin=id == task_dependencies.c.depends_on_id,
         backref="blocks",
     )
+
+
+class TaskReport(Base):
+    """Запись отчёта по задаче: комментарий и приложенные файлы.
+
+    Пишется в момент перехода, к которому относится (см.
+    app.tasks.service.submit_report и review_task), и больше не меняется —
+    это журнал сдачи и приёмки, а не редактируемое поле задачи. `kind`
+    говорит, чья это запись: сдача исполнителя (комментарий обязателен) или
+    решение проверяющего — принято / возвращено в работу (комментарий и файлы
+    по желанию, запись создаётся только если что-то из них есть).
+
+    Записей у задачи может быть несколько: каждый круг «сдал — вернули —
+    сдал заново» добавляет свои.
+
+    Сам текст комментария автор может поправить в любой момент, в том числе
+    после приёмки задачи (`updated_at` помечает такую правку); вид записи,
+    автор и вложения при этом не меняются. Прежний текст при каждой правке
+    сохраняется в TaskReportRevision (0084-g) — принятое доказательство не
+    пропадает.
+    """
+
+    __tablename__ = "task_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    kind: Mapped[TaskReportKind] = mapped_column(
+        Enum(TaskReportKind, name="task_report_kind"),
+        nullable=False,
+        default=TaskReportKind.SUBMISSION,
+    )
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+    )
+    # Проставляется только когда автор отредактировал комментарий; None — текст
+    # такой же, каким его отправили.
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    author: Mapped["User"] = relationship()  # noqa: F821
+    files: Mapped[list["FileAsset"]] = relationship(secondary=task_report_files)  # noqa: F821
+    revisions: Mapped[list["TaskReportRevision"]] = relationship(
+        order_by="TaskReportRevision.id",
+        cascade="all, delete-orphan",
+    )
+
+
+class TaskReportRevision(Base):
+    """Прежний текст записи журнала отчётов, сохранённый перед правкой
+    (0084-g). Одна строка на каждую правку: `comment` — текст, каким он был
+    ДО неё; текущий текст — в самой TaskReport.comment.
+
+    Только добавление: через API строки не правятся и не удаляются (уходят
+    лишь вместе с отчётом по CASCADE). `after_acceptance` — правка сделана,
+    когда задача уже была принята: проверяющий принимал другой текст.
+    Вложения не версионируются — правка их и не трогает.
+    """
+
+    __tablename__ = "task_report_revisions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("task_reports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    edited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+    )
+    after_acceptance: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    edited_by: Mapped["User | None"] = relationship()  # noqa: F821
 
 
 class TaskStageEvent(Base):

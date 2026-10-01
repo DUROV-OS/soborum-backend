@@ -12,6 +12,9 @@ class DashboardWidget(BaseModel):
     value: str
     hint: str | None = None
     tone: WidgetTone = "neutral"
+    # Куда ведёт клик по плитке, если не просто в раздел: например счётчик
+    # задач открывает доску с тем же набором (0084-h).
+    href: str | None = None
 
 
 class DashboardAction(BaseModel):

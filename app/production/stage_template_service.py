@@ -320,6 +320,8 @@ def _mark_reviewed(db: Session, template: ProductionStageTemplate) -> None:
 def update_block(db: Session, template: ProductionStageTemplate, block: TemplateBlock, payload) -> TemplateBlock:
     _require_editable(template)
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "requires_materials" and value is None:
+            continue  # колонка NOT NULL: null значит «не менять»
         setattr(block, field, value)
     _mark_reviewed(db, template)
     return block

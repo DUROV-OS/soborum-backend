@@ -45,9 +45,17 @@ def _supply(db, user):
     return order
 
 
+def _default_account_id(api_client) -> int:
+    """Счёт по умолчанию (0081-a): с этой задачи проводка без счёта не
+    создаётся, а сам счёт в этих проверках не предмет — берём первый."""
+    accounts = api_client.get("/api/accounting/accounts").json()
+    return next(a["id"] for a in accounts if a["is_default"])
+
+
 def _create(api_client, **overrides):
     body = {"subkind": "sale_income", "amount": 100000, "tax": 20000}
     body.update(overrides)
+    body.setdefault("account_id", _default_account_id(api_client))
     return api_client.post("/api/accounting/money-movements", json=body)
 
 
@@ -181,6 +189,124 @@ def test_list_filters(db, api, acc_user, make_user):
     assert len(salary) == 1 and salary[0]["subkind"] == "salary_payout"
 
 
+def test_movement_documents_and_link_editable_only_for_draft_and_approved(db, api, acc_user):
+    """0072-d: документ и ссылка сохраняются при создании, правятся для
+    draft/approved, отклоняются для posted (тот же принцип, что и у суммы,
+    0011-c)."""
+    client = _client(db)
+    api_client = api(acc_user)
+
+    upload = api_client.post(
+        "/api/accounting/money-movement-documents",
+        files={"file": ("act.pdf", b"fake-pdf-bytes", "application/pdf")},
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["id"]
+
+    created = _create(
+        api_client,
+        subkind="sale_income",
+        client_id=client.id,
+        document_ids=[doc_id],
+        link="https://example.com/act",
+    )
+    assert created.status_code == 201
+    body = created.json()
+    mm_id = body["id"]
+    assert [d["id"] for d in body["documents"]] == [doc_id]
+    assert body["link"] == "https://example.com/act"
+
+    # неверный формат ссылки — отклоняется, а не сохраняется как есть
+    assert _create(
+        api_client, subkind="sale_income", client_id=client.id, link="not-a-url"
+    ).status_code == 422
+
+    # второй документ добавляется на draft
+    upload2 = api_client.post(
+        "/api/accounting/money-movement-documents",
+        files={"file": ("scan.jpg", b"fake-jpg-bytes", "image/jpeg")},
+    )
+    doc2_id = upload2.json()["id"]
+    patched = api_client.patch(
+        f"/api/accounting/money-movements/{mm_id}",
+        json={"document_ids": [doc_id, doc2_id], "link": "https://example.com/act-v2"},
+    )
+    assert patched.status_code == 200
+    assert {d["id"] for d in patched.json()["documents"]} == {doc_id, doc2_id}
+    assert patched.json()["link"] == "https://example.com/act-v2"
+
+    for to in ("approved", "posted"):
+        api_client.post(f"/api/accounting/money-movements/{mm_id}/status", json={"to": to})
+
+    posted_patch = api_client.patch(
+        f"/api/accounting/money-movements/{mm_id}", json={"link": "https://example.com/too-late"}
+    )
+    assert posted_patch.status_code == 409
+    assert api_client.get(f"/api/accounting/money-movements/{mm_id}").json()["link"] == "https://example.com/act-v2"
+
+
+def test_list_filter_by_amount_and_tax(db, api, acc_user):
+    """0072-c: `amount_min`/`amount_max`/`tax_min`/`tax_max` в GET
+    money-movements — диапазон, "больше", "меньше", "равно"; невалидный
+    диапазон (min > max) — ошибка, не пустой список."""
+    client = _client(db)
+    api_client = api(acc_user)
+
+    small_id = _create(api_client, subkind="sale_income", client_id=client.id, amount=10000, tax=1000).json()["id"]
+    large_id = _create(api_client, subkind="sale_income", client_id=client.id, amount=90000, tax=9000).json()["id"]
+
+    above = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 50000}
+    ).json()
+    assert [m["id"] for m in above] == [large_id]
+
+    below = api_client.get(
+        "/api/accounting/money-movements", params={"amount_max": 50000}
+    ).json()
+    assert [m["id"] for m in below] == [small_id]
+
+    ranged = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 5000, "amount_max": 20000}
+    ).json()
+    assert [m["id"] for m in ranged] == [small_id]
+
+    exact = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 90000, "amount_max": 90000}
+    ).json()
+    assert [m["id"] for m in exact] == [large_id]
+
+    tax_ranged = api_client.get(
+        "/api/accounting/money-movements", params={"tax_min": 500, "tax_max": 5000}
+    ).json()
+    assert [m["id"] for m in tax_ranged] == [small_id]
+
+    invalid = api_client.get(
+        "/api/accounting/money-movements", params={"amount_min": 90000, "amount_max": 10000}
+    )
+    assert invalid.status_code == 422
+
+
+def test_list_filter_by_initiator(db, api, acc_user, make_user):
+    """0072-b: `initiator_id` в GET money-movements отдаёт только проводки
+    этого инициатора, не трогая проводки других сотрудников."""
+    other_acc_user = make_user(Module.ACCOUNTING)
+    client = _client(db)
+
+    first_id = _create(api(acc_user), subkind="sale_income", client_id=client.id).json()["id"]
+    _create(api(other_acc_user), subkind="sale_income", client_id=client.id)
+
+    by_initiator = api(acc_user).get(
+        "/api/accounting/money-movements", params={"initiator_id": acc_user.id}
+    ).json()
+    assert [m["id"] for m in by_initiator] == [first_id]
+
+    by_other_initiator = api(acc_user).get(
+        "/api/accounting/money-movements", params={"initiator_id": other_acc_user.id}
+    ).json()
+    assert len(by_other_initiator) == 1
+    assert by_other_initiator[0]["id"] != first_id
+
+
 def test_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/money-movements")
     assert r.status_code == 403
@@ -265,3 +391,48 @@ def test_salary_overview_lists_active_employees_with_open_movement(db, api, acc_
 def test_salary_overview_requires_module_access(db, api, other_user):
     r = api(other_user).get("/api/accounting/salary-overview")
     assert r.status_code == 403
+
+
+def test_salary_overview_reports_last_posted_movement(db, api, acc_user, make_user):
+    """0041: `last_posted_at`/`last_posted_amount` — последняя ПРОВЕДЁННАЯ
+    проводка (не текущая открытая), не путается с `open_movement`."""
+    employee = make_user()
+    never_paid = make_user()
+    api_client = api(acc_user)
+
+    first = _create(api_client, subkind="salary_payout", employee_id=employee.id, amount=40000).json()
+    api_client.post(f"/api/accounting/money-movements/{first['id']}/status", json={"to": "approved"})
+    posted_first = api_client.post(
+        f"/api/accounting/money-movements/{first['id']}/status", json={"to": "posted"}
+    ).json()
+
+    # Новая открытая проводка сверху последней проведённой — last_posted не путается
+    # с open_movement (0041, п. 1: обе даты в карточке — разные вещи).
+    second = _create(api_client, subkind="salary_payout", employee_id=employee.id, amount=55000).json()
+
+    overview = {
+        row["employee_id"]: row
+        for row in api_client.get("/api/accounting/salary-overview").json()
+    }
+
+    row = overview[employee.id]
+    assert row["open_movement"]["id"] == second["id"]
+    assert row["last_posted_amount"] == 40000
+    assert row["last_posted_at"] == posted_first["posted_at"]
+
+    never_row = overview[never_paid.id]
+    assert never_row["last_posted_at"] is None
+    assert never_row["last_posted_amount"] is None
+
+
+def test_salary_overview_kpi_is_null_without_evaluable_tasks(db, api, acc_user, make_user):
+    """0042: без задач с прошедшим дедлайном в текущем месяце `kpi` — `null`,
+    не `0` (отсутствие данных не равно провалу по KPI)."""
+    employee = make_user()
+    api_client = api(acc_user)
+
+    overview = {
+        row["employee_id"]: row
+        for row in api_client.get("/api/accounting/salary-overview").json()
+    }
+    assert overview[employee.id]["kpi"] is None

@@ -1,9 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from app.clients.models import ClientChatState, ClientStage, OrderType, PaymentPlan
+from app.clients.models import BalanceState, ClientChatState, ClientStage, ContractSource, OrderType, PaymentPlan, balance_state
 from app.common.files import FileAssetOut
+from app.tasks.models import TaskReportKind, TaskStatus
 from app.house_models.schemas import HouseModelBriefOut
 
 
@@ -14,7 +16,19 @@ class ClientContact(BaseModel):
     contact: str
 
 
-class ClientCreate(BaseModel):
+class ClientSourceUpdate(BaseModel):
+    """Источник клиента: пришёл сам или его привело агентство-партнёр (0079-c).
+
+    `agency_name` обязательно при `via_agency = True`; при `via_agency = False`
+    поля агентства чистятся, чтобы у клиента, помеченного прямым, не осталось
+    названия от прошлой правки."""
+
+    via_agency: bool = False
+    agency_name: str | None = None
+    agency_contact: str | None = None
+
+
+class ClientCreate(ClientSourceUpdate):
     full_name: str
     phone: str
     email: str
@@ -71,6 +85,20 @@ class ClientBalancePaymentUpdate(BaseModel):
     balance_paid: bool
 
 
+class ClientContractVerify(BaseModel):
+    """Отметка «проверен» у договора или приложения (0084-i). `note` —
+    что сверено: стороны, сумма, график оплаты, модель дома."""
+
+    document: Literal["contract", "contract_appendix"] = "contract"
+    note: str
+
+
+class ClientBalanceDueDateUpdate(BaseModel):
+    """Срок оплаты остатка (0084-j). `None` — снять срок."""
+
+    balance_due_date: date | None
+
+
 class ClientNoteCreate(BaseModel):
     text: str
 
@@ -89,8 +117,109 @@ class ClientNoteOut(BaseModel):
     created_at: datetime
 
 
-class ClientOut(BaseModel):
+class ClientTaskCreate(BaseModel):
+    """Задача менеджера по клиенту (0079-d): «связаться», «выслать каталог»,
+    «уточнить по ипотеке». Срок обязателен — задача без срока теряется.
+    `blocking` по умолчанию True: пока такая задача открыта, клиента нельзя
+    перевести на следующую стадию."""
+
+    title: str
+    description: str | None = None
+    deadline: datetime
+    assignee_ids: list[int] = []
+    blocking: bool = True
+
+
+class ClientTaskDeadlineUpdate(BaseModel):
+    """Перенос срока. Причина обязательна: именно по ней руководство потом
+    видит, почему клиент стоит."""
+
+    deadline: datetime
+    reason: str
+
+
+class ClientTaskClose(BaseModel):
+    """Закрытие задачи с описанием решения и, по желанию, сразу вытекающей
+    задачей — типичный ход работы с клиентом: «дозвонился, просит каталог» →
+    новая задача «выслать каталог»."""
+
+    resolution: str
+    next_task: ClientTaskCreate | None = None
+
+
+class ClientTaskReportOut(BaseModel):
+    """Строка журнала задачи: решение по задаче или перенос срока."""
+
+    id: int
+    kind: TaskReportKind
+    comment: str
+    author_id: int
+    created_at: datetime
+
+
+class ClientTaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    description: str | None
+    deadline: datetime | None
+    status: TaskStatus
+    blocking: bool
+    # Стадия клиента на момент постановки задачи — по ней видно, на каком
+    # шаге пути клиент застрял.
+    stage: ClientStage | None
+    assignee_ids: list[int] = []
+    reports: list[ClientTaskReportOut] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_orm_task(cls, value):
+        """`blocking`, `stage` и `assignee_ids` живут не колонками задачи, а в
+        её `link_meta` и связях — собираем их, когда на вход пришла сама
+        задача, а не готовый словарь."""
+        if isinstance(value, dict) or not hasattr(value, "link_meta"):
+            return value
+        return ClientTaskOut.from_task(value).model_dump()
+
+    @staticmethod
+    def from_task(task) -> "ClientTaskOut":
+        meta = task.link_meta or {}
+        raw_stage = meta.get("stage")
+        return ClientTaskOut(
+            id=task.id,
+            title=task.title,
+            description=task.description,
+            deadline=task.deadline,
+            status=task.status,
+            blocking=bool(meta.get("blocking", True)),
+            stage=ClientStage(raw_stage) if raw_stage in {s.value for s in ClientStage} else None,
+            assignee_ids=[u.id for u in task.assignees],
+            reports=[
+                ClientTaskReportOut(
+                    id=r.id,
+                    kind=r.kind,
+                    comment=r.comment,
+                    author_id=r.author_id,
+                    created_at=r.created_at,
+                )
+                for r in task.reports
+            ],
+        )
+
+
+class ContractVerifierOut(BaseModel):
+    """Кто отметил договор проверенным — имя нужно карточке, id — для
+    правила «не свой же файл» на фронте."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+
+
+class ClientOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: int
     cycle_id: int
@@ -103,6 +232,10 @@ class ClientOut(BaseModel):
     contacts: list[ClientContact] = []
     chat_links: list[ClientChatLinkOut] = []
 
+    via_agency: bool
+    agency_name: str | None
+    agency_contact: str | None
+
     order_type: OrderType | None
     house_model_key: str | None
     house_model: HouseModelBriefOut | None
@@ -114,6 +247,18 @@ class ClientOut(BaseModel):
     installation_address: str | None
     contract_file: FileAssetOut | None
     contract_appendix_file: FileAssetOut | None
+    # Источник и проверка договора/приложения (0084-i). `*_verification_required`
+    # False — договор приложен до ввода проверки: гейт только предупреждает.
+    contract_source: ContractSource | None = None
+    contract_verification_required: bool = False
+    contract_verified_by: ContractVerifierOut | None = None
+    contract_verified_at: datetime | None = None
+    contract_verification_note: str | None = None
+    contract_appendix_source: ContractSource | None = None
+    contract_appendix_verification_required: bool = False
+    contract_appendix_verified_by: ContractVerifierOut | None = None
+    contract_appendix_verified_at: datetime | None = None
+    contract_appendix_verification_note: str | None = None
     house_project_file: FileAssetOut | None
     ar_file: FileAssetOut | None
     kr_file: FileAssetOut | None
@@ -124,5 +269,17 @@ class ClientOut(BaseModel):
     payment_edit_unlocked: bool
     balance_paid: bool | None
     balance_paid_at: datetime | None
+    balance_due_date: date | None = None
 
     notes: list[ClientNoteOut] = []
+    # Задачи менеджера по клиенту (0079-d): и открытые, и закрытые, свежие
+    # сверху. Ближайшую открытую доска выбирает сама — отдельная сводка ради
+    # этого не нужна, задач у клиента единицы.
+    tasks: list[ClientTaskOut] = Field(default=[], validation_alias="followup_tasks")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def balance_state(self) -> BalanceState:
+        """Состояние остатка (0084-j): вычисляется из плана, отметки приёма и
+        срока — то же правило, что у Пульса."""
+        return balance_state(self)

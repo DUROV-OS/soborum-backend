@@ -8,7 +8,7 @@
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -20,28 +20,45 @@ from app.accounting.models import (
     INCOME_SUBKINDS,
     MONEY_SUBKIND_LABELS,
     SUBKIND_REQUIRED_SOURCE,
+    BankAccount,
+    Counterparty,
+    CounterpartyKind,
+    EmployeeKpi,
     MoneyAssessment,
     MoneyDirection,
     MoneyMovement,
     MoneyMovementStatus,
     MoneySourceKind,
     MoneySubkind,
+    Organization,
     SupplierOrder,
     SupplierOrderStatus,
 )
 from app.accounting.schemas import (
+    AccountSummary,
+    CounterpartyCreate,
+    CounterpartyOut,
+    CounterpartyUpdate,
+    BankAccountCreate,
+    BankAccountUpdate,
     EmployeeSalaryOverview,
     MoneyMovementCreate,
     MoneyMovementOut,
     MoneyMovementUpdate,
+    MoneySummaryOut,
+    MoneyTotals,
+    OrganizationCreate,
+    OrganizationSummary,
+    OrganizationUpdate,
     SupplierOrderCreate,
     SupplierOrderUpdate,
 )
 from app.clients.models import Client
+from app.common.files import FileAsset
 from app.common.module_access import Module as AccessModule
 from app.core.config import settings
 from app.tasks import service as task_service
-from app.tasks.models import TaskLinkType
+from app.tasks.models import Task, TaskLinkType, TaskStatus, TaskWorkDuration, task_assignees
 from app.users import service as user_service
 from app.users.models import User
 from app.warehouse import service as warehouse_service
@@ -60,6 +77,14 @@ _EDITABLE_STATUSES = {MoneyMovementStatus.DRAFT, MoneyMovementStatus.APPROVED}
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    """Postgres round-трипит aware datetime как есть, SQLite (тесты) обрезает
+    tzinfo — тот же приём и та же причина, что `app.tasks.timelog._aware`."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _direction_for(subkind: MoneySubkind) -> MoneyDirection:
@@ -185,6 +210,455 @@ def _create_approval_task(db: Session, mm: MoneyMovement) -> None:
     )
 
 
+
+# --------------------------------------------------------------------------- #
+# Организации и банковские счета (0081-a)                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _effective_date():
+    """Дата операции: дата платёжного документа (импорт выпиской), иначе дата
+    проведения, иначе создание. Одно выражение для фильтра реестра и сводки."""
+    return func.coalesce(MoneyMovement.doc_date, MoneyMovement.posted_at, MoneyMovement.created_at)
+
+
+def list_organizations(db: Session, *, include_inactive: bool = False) -> list[Organization]:
+    stmt = select(Organization)
+    if not include_inactive:
+        stmt = stmt.where(Organization.is_active.is_(True))
+    return list(db.execute(stmt.order_by(Organization.id)).scalars().all())
+
+
+def get_organization_or_404(db: Session, org_id: int) -> Organization:
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Организация не найдена")
+    return org
+
+
+def create_organization(db: Session, data: OrganizationCreate) -> Organization:
+    name = (data.name or "").strip()
+    short_name = (data.short_name or "").strip()
+    if not name or not short_name:
+        raise _bad_request("У организации должны быть название и короткое название")
+    org = Organization(name=name, short_name=short_name, inn=(data.inn or None), is_active=True)
+    db.add(org)
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+def update_organization(db: Session, org: Organization, data: OrganizationUpdate) -> Organization:
+    payload = data.model_dump(exclude_unset=True)
+    for field_name in ("name", "short_name"):
+        if field_name in payload:
+            value = (payload[field_name] or "").strip()
+            if not value:
+                raise _bad_request("Название организации не может быть пустым")
+            setattr(org, field_name, value)
+    if "inn" in payload:
+        org.inn = payload["inn"] or None
+    if "is_active" in payload:
+        org.is_active = bool(payload["is_active"])
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+def list_accounts(
+    db: Session, *, organization_id: int | None = None, include_inactive: bool = False
+) -> list[BankAccount]:
+    stmt = select(BankAccount)
+    if organization_id is not None:
+        stmt = stmt.where(BankAccount.organization_id == organization_id)
+    if not include_inactive:
+        stmt = stmt.where(BankAccount.is_active.is_(True))
+    return list(db.execute(stmt.order_by(BankAccount.id)).scalars().all())
+
+
+def get_account_or_404(db: Session, account_id: int) -> BankAccount:
+    account = db.get(BankAccount, account_id)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
+    return account
+
+
+def _clear_other_defaults(db: Session, account: BankAccount) -> None:
+    """У организации ровно один счёт по умолчанию — снимаем флаг с остальных."""
+    others = (
+        db.query(BankAccount)
+        .filter(
+            BankAccount.organization_id == account.organization_id,
+            BankAccount.id != account.id,
+            BankAccount.is_default.is_(True),
+        )
+        .all()
+    )
+    for other in others:
+        other.is_default = False
+
+
+def create_account(db: Session, data: BankAccountCreate) -> BankAccount:
+    org = get_organization_or_404(db, data.organization_id)
+    name = (data.name or "").strip()
+    if not name:
+        raise _bad_request("У счёта должно быть название")
+    # первый счёт организации всегда становится счётом по умолчанию
+    has_default = any(a.is_default for a in list_accounts(db, organization_id=org.id))
+    account = BankAccount(
+        organization_id=org.id,
+        name=name,
+        bank_name=data.bank_name or None,
+        account_number=data.account_number or None,
+        currency=data.currency or "RUB",
+        is_default=bool(data.is_default) or not has_default,
+        is_active=True,
+    )
+    db.add(account)
+    db.flush()
+    if account.is_default:
+        _clear_other_defaults(db, account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+def update_account(db: Session, account: BankAccount, data: BankAccountUpdate) -> BankAccount:
+    payload = data.model_dump(exclude_unset=True)
+    if "name" in payload:
+        name = (payload["name"] or "").strip()
+        if not name:
+            raise _bad_request("У счёта должно быть название")
+        account.name = name
+    for field_name in ("bank_name", "account_number"):
+        if field_name in payload:
+            setattr(account, field_name, payload[field_name] or None)
+    if payload.get("is_default"):
+        account.is_default = True
+        _clear_other_defaults(db, account)
+    elif "is_default" in payload and not payload["is_default"]:
+        account.is_default = False
+    if "is_active" in payload:
+        account.is_active = bool(payload["is_active"])
+        if not account.is_active:
+            account.is_default = False
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+def _resolve_account(db: Session, account_id: int | None) -> int:
+    """Счёт проводки. Явно переданный — проверяем, что существует и активен;
+    без него берём счёт по умолчанию (авто-проводки 0011-f, которые про счета
+    ничего не знают). Счетов нет вовсе — 422, а не молчаливый NULL."""
+    if account_id is not None:
+        account = db.get(BankAccount, account_id)
+        if account is None:
+            raise _bad_request("Счёт не найден")
+        if not account.is_active:
+            raise _bad_request("Счёт закрыт — выберите действующий")
+        return account.id
+
+    default = (
+        db.query(BankAccount)
+        .filter(BankAccount.is_default.is_(True), BankAccount.is_active.is_(True))
+        .order_by(BankAccount.id)
+        .first()
+    )
+    if default is None:
+        raise _bad_request("Не заведено ни одного действующего счёта")
+    return default.id
+
+
+def money_summary(
+    db: Session,
+    *,
+    organization_id: int | None = None,
+    account_id: int | None = None,
+    status_: MoneyMovementStatus | None = MoneyMovementStatus.POSTED,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> MoneySummaryOut:
+    """Приход/расход/сальдо по каждому счёту, организации и итогом (0081-a).
+
+    Один агрегат по (счёт, направление), а не перебор проводок в Python.
+    По умолчанию считаются только проведённые (`posted`) проводки: черновик —
+    ещё не движение денег."""
+    stmt = (
+        select(
+            MoneyMovement.account_id,
+            MoneyMovement.direction,
+            func.coalesce(func.sum(MoneyMovement.amount), 0.0),
+            func.count(MoneyMovement.id),
+        )
+        .group_by(MoneyMovement.account_id, MoneyMovement.direction)
+    )
+    if status_ is not None:
+        stmt = stmt.where(MoneyMovement.status == status_)
+    if account_id is not None:
+        stmt = stmt.where(MoneyMovement.account_id == account_id)
+    if organization_id is not None:
+        stmt = stmt.where(
+            MoneyMovement.account_id.in_(
+                select(BankAccount.id).where(BankAccount.organization_id == organization_id)
+            )
+        )
+    effective_date = _effective_date()
+    if date_from is not None:
+        stmt = stmt.where(effective_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(effective_date <= date_to)
+
+    # {account_id: {"income": .., "expense": .., "count": ..}}
+    by_account: dict[int, dict[str, float]] = {}
+    for acc_id, direction, amount, count in db.execute(stmt).all():
+        if acc_id is None:
+            continue
+        bucket = by_account.setdefault(acc_id, {"income": 0.0, "expense": 0.0, "count": 0})
+        key = "income" if direction is MoneyDirection.INCOME else "expense"
+        bucket[key] += float(amount or 0)
+        bucket["count"] += int(count or 0)
+
+    organizations: list[OrganizationSummary] = []
+    total = MoneyTotals()
+    for org in list_organizations(db):
+        if organization_id is not None and org.id != organization_id:
+            continue
+        org_row = OrganizationSummary(
+            organization_id=org.id, name=org.name, short_name=org.short_name
+        )
+        for account in list_accounts(db, organization_id=org.id):
+            if account_id is not None and account.id != account_id:
+                continue
+            bucket = by_account.get(account.id, {"income": 0.0, "expense": 0.0, "count": 0})
+            org_row.accounts.append(
+                AccountSummary(
+                    account_id=account.id,
+                    name=account.name,
+                    income=bucket["income"],
+                    expense=bucket["expense"],
+                    balance=bucket["income"] - bucket["expense"],
+                    count=int(bucket["count"]),
+                )
+            )
+            org_row.income += bucket["income"]
+            org_row.expense += bucket["expense"]
+            org_row.count += int(bucket["count"])
+        org_row.balance = org_row.income - org_row.expense
+        organizations.append(org_row)
+        total.income += org_row.income
+        total.expense += org_row.expense
+        total.count += org_row.count
+    total.balance = total.income - total.expense
+    return MoneySummaryOut(total=total, organizations=organizations)
+
+
+
+# --------------------------------------------------------------------------- #
+# Единый справочник контрагентов (0081-c)                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _counterparty_links(
+    db: Session, kind: CounterpartyKind, client_id: int | None, supplier_id: int | None
+) -> CounterpartyKind:
+    """Проверяет, что контрагент ссылается не более чем на одну запись, и что
+    тип согласован со ссылкой. Возвращает согласованный тип."""
+    if client_id is not None and supplier_id is not None:
+        raise _bad_request("Контрагент не может быть одновременно клиентом и поставщиком")
+    if client_id is not None:
+        if db.get(Client, client_id) is None:
+            raise _bad_request("Клиент не найден")
+        return CounterpartyKind.CLIENT
+    if supplier_id is not None:
+        if db.get(Supplier, supplier_id) is None:
+            raise _bad_request("Поставщик не найден")
+        return CounterpartyKind.SUPPLIER
+    return kind
+
+
+def _assert_inn_free(db: Session, inn: str | None, *, exclude_id: int | None = None) -> None:
+    if not inn:
+        return
+    query = db.query(Counterparty.id).filter(Counterparty.inn == inn)
+    if exclude_id is not None:
+        query = query.filter(Counterparty.id != exclude_id)
+    if query.first() is not None:
+        raise _conflict(f"Контрагент с ИНН {inn} уже есть в справочнике")
+
+
+def list_counterparties(
+    db: Session,
+    *,
+    query: str | None = None,
+    kind: CounterpartyKind | None = None,
+    is_active: bool | None = True,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[Counterparty]:
+    stmt = select(Counterparty)
+    if kind is not None:
+        stmt = stmt.where(Counterparty.kind == kind)
+    if is_active is not None:
+        stmt = stmt.where(Counterparty.is_active.is_(is_active))
+    if query and query.strip():
+        needle = f"%{query.strip().lower()}%"
+        stmt = stmt.where(
+            func.lower(Counterparty.name).like(needle) | Counterparty.inn.like(needle)
+        )
+    stmt = stmt.order_by(Counterparty.name).limit(limit).offset(offset)
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_counterparty_or_404(db: Session, counterparty_id: int) -> Counterparty:
+    counterparty = db.get(Counterparty, counterparty_id)
+    if counterparty is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Контрагент не найден")
+    return counterparty
+
+
+def create_counterparty(db: Session, data: CounterpartyCreate) -> Counterparty:
+    name = (data.name or "").strip()
+    if not name:
+        raise _bad_request("У контрагента должно быть наименование")
+    inn = (data.inn or "").strip() or None
+    _assert_inn_free(db, inn)
+    kind = _counterparty_links(db, data.kind, data.client_id, data.supplier_id)
+    counterparty = Counterparty(
+        name=name,
+        inn=inn,
+        kind=kind,
+        client_id=data.client_id,
+        supplier_id=data.supplier_id,
+        comment=data.comment,
+        is_active=True,
+    )
+    db.add(counterparty)
+    db.commit()
+    db.refresh(counterparty)
+    return counterparty
+
+
+def update_counterparty(
+    db: Session, counterparty: Counterparty, data: CounterpartyUpdate
+) -> Counterparty:
+    payload = data.model_dump(exclude_unset=True)
+    if "name" in payload:
+        name = (payload["name"] or "").strip()
+        if not name:
+            raise _bad_request("У контрагента должно быть наименование")
+        counterparty.name = name
+    if "inn" in payload:
+        inn = (payload["inn"] or "").strip() or None
+        _assert_inn_free(db, inn, exclude_id=counterparty.id)
+        counterparty.inn = inn
+    if "comment" in payload:
+        counterparty.comment = payload["comment"]
+    if "is_active" in payload:
+        counterparty.is_active = bool(payload["is_active"])
+
+    new_client = payload.get("client_id", counterparty.client_id)
+    new_supplier = payload.get("supplier_id", counterparty.supplier_id)
+    new_kind = payload.get("kind", counterparty.kind)
+    counterparty.kind = _counterparty_links(db, new_kind, new_client, new_supplier)
+    counterparty.client_id = new_client
+    counterparty.supplier_id = new_supplier
+
+    db.commit()
+    db.refresh(counterparty)
+    return counterparty
+
+
+def counterparty_out(db: Session, counterparty: Counterparty) -> CounterpartyOut:
+    """Карточка контрагента: запись плюс агрегаты по его **проведённым**
+    платежам (черновик — ещё не движение денег)."""
+    out = CounterpartyOut.model_validate(counterparty)
+    rows = db.execute(
+        select(
+            MoneyMovement.direction,
+            func.coalesce(func.sum(MoneyMovement.amount), 0.0),
+            func.count(MoneyMovement.id),
+            func.max(_effective_date()),
+        )
+        .where(
+            MoneyMovement.counterparty_id == counterparty.id,
+            MoneyMovement.status == MoneyMovementStatus.POSTED,
+        )
+        .group_by(MoneyMovement.direction)
+    ).all()
+    last: datetime | None = None
+    for direction, amount, count, last_at in rows:
+        if direction is MoneyDirection.INCOME:
+            out.total_income = float(amount or 0)
+        else:
+            out.total_expense = float(amount or 0)
+        out.payments_count += int(count or 0)
+        last_at = _aware(last_at if isinstance(last_at, datetime) else None)
+        if last_at is not None and (last is None or last_at > last):
+            last = last_at
+    out.last_payment_at = last
+    return out
+
+
+def match_or_create_counterparty(
+    db: Session, name: str | None, inn: str | None = None
+) -> Counterparty | None:
+    """Контрагент строки выписки: сначала по ИНН, затем по нормализованному
+    наименованию (без ОПФ, кавычек и регистра — тот же `_norm_name`, что уже
+    сопоставляет клиентов при импорте 0011-k). Не нашёлся — заводим нового с
+    типом `other`: платёж без контрагента теряет историю, а лишняя запись в
+    справочнике правится руками.
+
+    Пустое имя без ИНН — None: выдумывать контрагента не из чего."""
+    inn = (inn or "").strip() or None
+    name = (name or "").strip() or None
+
+    if inn:
+        existing = db.query(Counterparty).filter(Counterparty.inn == inn).first()
+        if existing is not None:
+            return existing
+
+    if not name:
+        return None
+
+    target = _norm_name(name)
+    if target:
+        for candidate in db.query(Counterparty).all():
+            if _norm_name(candidate.name) == target:
+                if inn and not candidate.inn:
+                    candidate.inn = inn
+                return candidate
+
+    counterparty = Counterparty(name=name, inn=inn, kind=CounterpartyKind.OTHER, is_active=True)
+    db.add(counterparty)
+    db.flush()
+    return counterparty
+
+
+def list_counterparty_payments(
+    db: Session,
+    counterparty_id: int,
+    *,
+    account_id: int | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[MoneyMovement]:
+    """История платежей контрагента, новые сверху — по дате операции, а не по
+    дате заведения записи: выписка импортируется задним числом."""
+    effective_date = _effective_date()
+    stmt = select(MoneyMovement).where(MoneyMovement.counterparty_id == counterparty_id)
+    if account_id is not None:
+        stmt = stmt.where(MoneyMovement.account_id == account_id)
+    if date_from is not None:
+        stmt = stmt.where(effective_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(effective_date <= date_to)
+    stmt = stmt.order_by(effective_date.desc(), MoneyMovement.id.desc()).limit(limit).offset(offset)
+    return list(db.execute(stmt).scalars().all())
+
+
 def create_money_movement(
     db: Session, data: MoneyMovementCreate, initiator_id: int
 ) -> MoneyMovement:
@@ -196,6 +670,10 @@ def create_money_movement(
     source_kind = _resolve_source(
         db, data.subkind, data.client_id, data.employee_id, data.supply_id
     )
+    account_id = _resolve_account(db, data.account_id)
+    if data.counterparty_id is not None:
+        if db.get(Counterparty, data.counterparty_id) is None:
+            raise _bad_request("Контрагент не найден")
 
     if data.subkind is MoneySubkind.SALARY_PAYOUT:
         _assert_no_open_salary_payout(db, data.employee_id)
@@ -212,16 +690,21 @@ def create_money_movement(
         assessment=data.assessment,
         affects_profit=data.affects_profit,
         initiator_id=initiator_id,
+        account_id=account_id,
         status=MoneyMovementStatus.DRAFT,
         doc_date=data.doc_date,
         payment_purpose=data.payment_purpose,
         comment=data.comment,
         external_number=data.external_number,
         source_kind=source_kind,
+        counterparty_id=data.counterparty_id,
         client_id=data.client_id,
         employee_id=data.employee_id,
         supply_id=data.supply_id,
+        link=data.link,
     )
+    if data.document_ids:
+        mm.documents = db.query(FileAsset).filter(FileAsset.id.in_(list(data.document_ids))).all()
     db.add(mm)
     db.commit()
     db.refresh(mm)
@@ -258,11 +741,24 @@ def list_money_movements(
     client_id: int | None = None,
     employee_id: int | None = None,
     supply_id: int | None = None,
+    counterparty_id: int | None = None,
+    initiator_id: int | None = None,
+    account_id: int | None = None,
+    organization_id: int | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    tax_min: float | None = None,
+    tax_max: float | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[MoneyMovement]:
+    if amount_min is not None and amount_max is not None and amount_min > amount_max:
+        raise _bad_request("Минимум суммы не может быть больше максимума")
+    if tax_min is not None and tax_max is not None and tax_min > tax_max:
+        raise _bad_request("Минимум суммы налога не может быть больше максимума")
+
     stmt = select(MoneyMovement)
     if direction is not None:
         stmt = stmt.where(MoneyMovement.direction == direction)
@@ -278,11 +774,28 @@ def list_money_movements(
         stmt = stmt.where(MoneyMovement.employee_id == employee_id)
     if supply_id is not None:
         stmt = stmt.where(MoneyMovement.supply_id == supply_id)
-    # Период — по дате платёжного документа (импорт выпиской), иначе по дате
-    # проведения, иначе по созданию.
-    effective_date = func.coalesce(
-        MoneyMovement.doc_date, MoneyMovement.posted_at, MoneyMovement.created_at
-    )
+    if counterparty_id is not None:
+        stmt = stmt.where(MoneyMovement.counterparty_id == counterparty_id)
+    if initiator_id is not None:
+        stmt = stmt.where(MoneyMovement.initiator_id == initiator_id)
+    if account_id is not None:
+        stmt = stmt.where(MoneyMovement.account_id == account_id)
+    if organization_id is not None:
+        # «любой счёт этой организации»
+        stmt = stmt.where(
+            MoneyMovement.account_id.in_(
+                select(BankAccount.id).where(BankAccount.organization_id == organization_id)
+            )
+        )
+    if amount_min is not None:
+        stmt = stmt.where(MoneyMovement.amount >= amount_min)
+    if amount_max is not None:
+        stmt = stmt.where(MoneyMovement.amount <= amount_max)
+    if tax_min is not None:
+        stmt = stmt.where(MoneyMovement.tax >= tax_min)
+    if tax_max is not None:
+        stmt = stmt.where(MoneyMovement.tax <= tax_max)
+    effective_date = _effective_date()
     if date_from is not None:
         stmt = stmt.where(effective_date >= date_from)
     if date_to is not None:
@@ -315,13 +828,23 @@ def update_money_movement(
 
     source_kind = _resolve_source(db, new_subkind, new_client, new_employee, new_supply)
 
+    if "account_id" in payload:
+        mm.account_id = _resolve_account(db, payload["account_id"])
+
+    if payload.get("counterparty_id") is not None:
+        if db.get(Counterparty, payload["counterparty_id"]) is None:
+            raise _bad_request("Контрагент не найден")
+
     for field in (
         "amount", "currency", "tax", "assessment", "affects_profit",
-        "payment_purpose", "comment", "external_number",
-        "subkind", "client_id", "employee_id", "supply_id",
+        "payment_purpose", "comment", "external_number", "link",
+        "subkind", "client_id", "employee_id", "supply_id", "counterparty_id",
     ):
         if field in payload:
             setattr(mm, field, payload[field])
+
+    if "document_ids" in payload and payload["document_ids"] is not None:
+        mm.documents = db.query(FileAsset).filter(FileAsset.id.in_(payload["document_ids"])).all()
 
     mm.direction = _direction_for(new_subkind)
     mm.source_kind = source_kind
@@ -339,9 +862,110 @@ def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
     db.commit()
 
 
+def _month_range(day: date) -> tuple[date, date]:
+    """Календарный месяц, содержащий `day`: [начало, конец) — конец исключён."""
+    start = date(day.year, day.month, 1)
+    end = date(day.year + 1, 1, 1) if day.month == 12 else date(day.year, day.month + 1, 1)
+    return start, end
+
+
+def _compute_kpi_for_period(
+    db: Session, employee_id: int, period_start: date, period_end: date
+) -> EmployeeKpi:
+    """0042: KPI сотрудника за календарный месяц по задачам (`app.tasks`) —
+    единственный источник, синхронизированный со всеми разделами и одинаково
+    применимый к любой роли (см. спеку 0042 → «Решение по открытым вопросам»).
+
+    Оцениваются задачи, где сотрудник — среди `assignees`, с `deadline` в
+    периоде и уже прошедшим (иначе не с чем сравнивать «в срок»): выполненная
+    до дедлайна — вес 1, с опозданием — 0.5, не выполненная — 0.
+    `kpi = round(100 * Σweight / N)`, `None` — если оценённых задач нет
+    (отсутствие данных не равно провалу по KPI).
+
+    Текущий (незакрытый) период перезаписывается при каждом вызове; вызывать
+    для прошлых периодов не нужно — они не пересчитываются (история)."""
+    now = _utcnow()
+    period_start_dt = datetime(period_start.year, period_start.month, period_start.day, tzinfo=timezone.utc)
+    period_end_dt = datetime(period_end.year, period_end.month, period_end.day, tzinfo=timezone.utc)
+
+    tasks = (
+        db.query(Task)
+        .join(task_assignees, task_assignees.c.task_id == Task.id)
+        .filter(
+            task_assignees.c.user_id == employee_id,
+            Task.deadline >= period_start_dt,
+            Task.deadline < period_end_dt,
+            Task.deadline < now,
+        )
+        .all()
+    )
+
+    durations: dict[int, TaskWorkDuration] = {}
+    task_ids = [t.id for t in tasks]
+    if task_ids:
+        durations = {
+            d.task_id: d
+            for d in db.query(TaskWorkDuration).filter(TaskWorkDuration.task_id.in_(task_ids)).all()
+        }
+
+    on_time = late = overdue = 0
+    for t in tasks:
+        duration = durations.get(t.id)
+        if t.status is TaskStatus.DONE and duration and duration.completed_at:
+            if _aware(duration.completed_at) <= _aware(t.deadline):
+                on_time += 1
+            else:
+                late += 1
+        elif t.status is TaskStatus.DONE:
+            on_time += 1
+        else:
+            overdue += 1
+
+    total = on_time + late + overdue
+    kpi = round(100 * (on_time + 0.5 * late) / total) if total else None
+
+    row = (
+        db.query(EmployeeKpi)
+        .filter(EmployeeKpi.employee_id == employee_id, EmployeeKpi.period_start == period_start)
+        .one_or_none()
+    )
+    if row is None:
+        row = EmployeeKpi(employee_id=employee_id, period_start=period_start)
+        db.add(row)
+    row.period_end = period_end
+    row.tasks_total = total
+    row.tasks_on_time = on_time
+    row.tasks_late = late
+    row.tasks_overdue = overdue
+    row.kpi = kpi
+    db.flush()
+    return row
+
+
+def get_employee_kpi_history(db: Session, employee_id: int, limit: int = 6) -> list[EmployeeKpi]:
+    """0042: текущий месяц пересчитывается, затем читаем до `limit` последних
+    сохранённых периодов (включая только что пересчитанный), новые сверху."""
+    employee = db.query(User).filter(User.id == employee_id, User.is_active.is_(True)).one_or_none()
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
+
+    period_start, period_end = _month_range(_utcnow().date())
+    _compute_kpi_for_period(db, employee_id, period_start, period_end)
+    db.commit()
+    return (
+        db.query(EmployeeKpi)
+        .filter(EmployeeKpi.employee_id == employee_id)
+        .order_by(EmployeeKpi.period_start.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
     """0023: сотрудники (все активные пользователи — worker и admin) с их
-    текущей незакрытой (draft/approved) зарплатной проводкой, если есть."""
+    текущей незакрытой (draft/approved) зарплатной проводкой, если есть,
+    датой/суммой последней проведённой проводки и настоящим KPI за текущий
+    месяц (0042 — заменяет случайную заглушку 0041)."""
     employees = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name).all()
     open_by_employee: dict[int, MoneyMovement] = {
         mm.employee_id: mm
@@ -352,16 +976,41 @@ def list_employee_salary_overview(db: Session) -> list[EmployeeSalaryOverview]:
         )
         .all()
     }
-    return [
+    # Проведённые проводки, от новых к старым — первая на сотрудника и есть
+    # его последнее начисление (без DISTINCT ON — переносимо на SQLite тестов).
+    last_posted_by_employee: dict[int, MoneyMovement] = {}
+    posted_movements = (
+        db.query(MoneyMovement)
+        .filter(
+            MoneyMovement.subkind == MoneySubkind.SALARY_PAYOUT,
+            MoneyMovement.status == MoneyMovementStatus.POSTED,
+        )
+        .order_by(MoneyMovement.posted_at.desc())
+        .all()
+    )
+    for mm in posted_movements:
+        last_posted_by_employee.setdefault(mm.employee_id, mm)
+
+    period_start, period_end = _month_range(_utcnow().date())
+    rows = [
         EmployeeSalaryOverview(
             employee_id=employee.id,
             full_name=employee.full_name,
             open_movement=MoneyMovementOut.from_movement(open_by_employee[employee.id])
             if employee.id in open_by_employee
             else None,
+            last_posted_at=last_posted_by_employee[employee.id].posted_at
+            if employee.id in last_posted_by_employee
+            else None,
+            last_posted_amount=last_posted_by_employee[employee.id].amount
+            if employee.id in last_posted_by_employee
+            else None,
+            kpi=_compute_kpi_for_period(db, employee.id, period_start, period_end).kpi,
         )
         for employee in employees
     ]
+    db.commit()
+    return rows
 
 
 def _adjust_supplier_paid(db: Session, mm: MoneyMovement, delta: float) -> None:
@@ -435,8 +1084,13 @@ class ImportOutcome:
     skipped: int = 0
     created_ids: list[int] = field(default_factory=list)
     preliminary_subkind: int = 0  # проводок с «предварительным» видом
-    unmatched_source: int = 0  # строк с контрагентом, не сопоставленным клиенту
+    # строк, где колонка контрагента оказалась пустой — привязывать не к чему
+    unmatched_source: int = 0
     missing_payment_purpose: int = 0
+    # строк, совпавших с уже существующей проводкой этого счёта (0081-e)
+    duplicates: int = 0
+    counterparties_created: int = 0
+    counterparties_matched: int = 0
 
 
 def _norm_name(value: str) -> str:
@@ -467,33 +1121,109 @@ def _match_client_by_name(db: Session, name: str | None) -> Client | None:
     return contained[0] if len(contained) == 1 else None
 
 
+
+def _counterparty_ids(db: Session) -> set[int]:
+    return {cid for (cid,) in db.query(Counterparty.id)}
+
+
+def _duplicate_movement_exists(db: Session, account_id: int, row) -> bool:
+    """Строка считается дублем, если на этом счёте уже есть проводка с тем же
+    номером документа, датой и суммой. Номер документа — критичная колонка
+    импорта, так что он есть всегда; счёт в условии обязателен: одна и та же
+    выписка, загруженная на счёт другого юрлица, — не дубль."""
+    if not row.external_number:
+        return False
+    query = db.query(MoneyMovement.id).filter(
+        MoneyMovement.account_id == account_id,
+        MoneyMovement.external_number == row.external_number,
+        MoneyMovement.amount == row.amount,
+    )
+    if row.doc_date is not None:
+        query = query.filter(MoneyMovement.doc_date == row.doc_date)
+    else:
+        query = query.filter(MoneyMovement.doc_date.is_(None))
+    return query.first() is not None
+
+
+def _settled_subkind_for(
+    db: Session, counterparty_id: int, direction: MoneyDirection
+) -> MoneySubkind | None:
+    """Единственная статья, которой проводились все прошлые платежи этого
+    контрагента в этом направлении. Разнобой или пустая история — None."""
+    rows = (
+        db.query(MoneyMovement.subkind)
+        .filter(
+            MoneyMovement.counterparty_id == counterparty_id,
+            MoneyMovement.direction == direction,
+            MoneyMovement.status == MoneyMovementStatus.POSTED,
+        )
+        .distinct()
+        .all()
+    )
+    if len(rows) != 1:
+        return None
+    subkind = rows[0][0]
+    return subkind if subkind not in _PRELIMINARY.values() else None
+
+
 def import_payments(
     db: Session,
     headers: list[str],
     data: list[list[str]],
     mapping: payment_import.PaymentColumnMapping,
     initiator_id: int,
+    account_id: int,
 ) -> ImportOutcome:
+    """Выписка из банк-клиента ложится на конкретный счёт (0081-e): каждая
+    строка становится проводкой в `draft` на `account_id`, её контрагент
+    сопоставляется с единым справочником, повторная загрузка того же файла на
+    тот же счёт дублей не плодит."""
+    account_id = _resolve_account(db, account_id)
     built = payment_import.build_rows(headers, data, mapping)
     outcome = ImportOutcome(skipped=built.skipped)
 
     for row in built.items:
+        if _duplicate_movement_exists(db, account_id, row):
+            outcome.duplicates += 1
+            continue
+
         subkind = row.subkind or _PRELIMINARY[row.direction]
         preliminary = row.subkind is None
 
-        client = _match_client_by_name(db, row.counterparty)
+        known_before = _counterparty_ids(db)
+        counterparty = match_or_create_counterparty(db, row.counterparty, row.counterparty_inn)
+        if counterparty is None:
+            outcome.unmatched_source += 1
+        elif counterparty.id in known_before:
+            outcome.counterparties_matched += 1
+        else:
+            outcome.counterparties_created += 1
+
+        # Операционная привязка (клиент/поставщик) — из контрагента, если он
+        # ссылается на нашу запись; на ней держится 0011-f, поэтому она
+        # остаётся рядом с новой, а не вместо неё.
+        client = (
+            db.get(Client, counterparty.client_id)
+            if counterparty is not None and counterparty.client_id is not None
+            else _match_client_by_name(db, row.counterparty)
+        )
         source_kind = MoneySourceKind.NONE
         client_id: int | None = None
-        comment = None
         if client is not None:
             client_id = client.id
             source_kind = MoneySourceKind.CLIENT
             if preliminary and row.direction is MoneyDirection.INCOME:
                 subkind = MoneySubkind.SALE_INCOME
                 preliminary = False
-        elif row.counterparty:
-            comment = f"Контрагент: {row.counterparty.strip()}"
-            outcome.unmatched_source += 1
+
+        if preliminary and counterparty is not None:
+            # Если по этому контрагенту уже проводили платежи и все они одной
+            # статьи — берём её, не дёргая ИИ. Разнобой в истории — оставляем
+            # предварительную: гадать не будем.
+            settled = _settled_subkind_for(db, counterparty.id, row.direction)
+            if settled is not None:
+                subkind = settled
+                preliminary = False
 
         mm = MoneyMovement(
             direction=_direction_for(subkind),
@@ -504,12 +1234,14 @@ def import_payments(
             assessment=MoneyAssessment.ACTUAL,
             affects_profit=True,
             initiator_id=initiator_id,
+            account_id=account_id,
             status=MoneyMovementStatus.DRAFT,
             doc_date=row.doc_date,
             payment_purpose=row.payment_purpose,
-            comment=comment,
+            comment=None,
             external_number=row.external_number,
             source_kind=source_kind,
+            counterparty_id=counterparty.id if counterparty is not None else None,
             client_id=client_id,
         )
         db.add(mm)

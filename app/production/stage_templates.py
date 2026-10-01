@@ -10,7 +10,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, JSON, String, Table, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, JSON, String, Table, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -65,6 +65,9 @@ class TemplateBlock(Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # [{"page_number": int, "note": str | None}, ...]
     kr_page_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Копируется в ProductionBlock.requires_materials при применении шаблона
+    # (app/production/stage_plan.py). False — этапу материалы не нужны.
+    requires_materials: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
 
     template: Mapped["ProductionStageTemplate"] = relationship(back_populates="blocks")
     tasks: Mapped[list["TemplateBlockTask"]] = relationship(back_populates="block", cascade="all, delete-orphan")

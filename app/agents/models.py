@@ -61,8 +61,11 @@ class AgentShiftItem(Base):
     stance: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     legal_verdict: Mapped[str] = mapped_column(String(32), nullable=False)
-    # False = no live source and no Claude; stance is an honest "нет данных", not analysis.
+    # True только если в позиции использован живой хит базы DurovOS. Ответ Claude
+    # без живых хитов — это не «живые данные» (0084-e).
     has_live_data: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # live / llm_without_facts / none; NULL — строка смены до 0084-e, источник неизвестен.
+    stance_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reviews: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
 
     shift: Mapped[AgentShift] = relationship(back_populates="items")
@@ -80,6 +83,11 @@ class AgentApproval(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    # Снимок того, что согласуется (agent, stance, citations, legal_verdict), и
+    # sha256 от него. Решение принимается только с тем хэшем, который видел
+    # человек (0084-e). NULL — согласование до 0084-e, снимка нет.
+    subject_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    subject_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     decided_by_id: Mapped[int | None] = mapped_column(

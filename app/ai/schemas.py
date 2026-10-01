@@ -119,7 +119,9 @@ class SpeakRequest(BaseModel):
     voice: str | None = Field(default=None, max_length=64)
 
 
-SectionStatus = Literal["red", "yellow", "green"]
+# unknown — оценка не выполнена (ИИ недоступен, а детерминированного пола
+# у раздела нет); не «зелёный» по умолчанию.
+SectionStatus = Literal["red", "yellow", "green", "unknown"]
 
 
 class SectionAnalyticsOut(BaseModel):
@@ -127,6 +129,12 @@ class SectionAnalyticsOut(BaseModel):
     generated_at: datetime
     summary: str
     status: SectionStatus
+    # ai — статус и текст от модели (статус мог быть поднят до пола);
+    # rules — ИИ недоступен, ответ собран из правил без модели.
+    source: Literal["ai", "rules"] = "ai"
+    # Заполнено, если модель дала статус лучше, чем позволяют факты, и
+    # сервер заменил его полом (см. app/ai/analytics.py::status_floor).
+    status_floor_reason: str | None = None
 
 
 class PriorityTaskOut(BaseModel):
@@ -220,3 +228,17 @@ class MeetingDetailOut(MeetingOut):
 class TaskPrioritiesOut(BaseModel):
     generated_at: datetime
     priorities: list[PriorityTaskOut]
+
+
+# --- 0010: ручная проверка канала записи в базу знаний ----------------------
+
+
+class McpNoteCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    body: str = Field(min_length=1)
+    source: str = Field(min_length=1, max_length=255)  # тег идемпотентности, напр. "manual-test:1"
+    folder: str | None = None
+
+
+class McpNoteOut(BaseModel):
+    path: str

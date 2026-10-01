@@ -7,7 +7,13 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.db.session import get_db
 from app.users.models import User
 from app.users.schemas import PasswordChange, Token, UserAccessUpdate, UserCreate, UserOut, UserUpdate
-from app.users.service import change_password, create_user, reset_password_to_default, set_module_access
+from app.users.service import (
+    apply_account_change,
+    change_password,
+    create_user,
+    reset_password_to_default,
+    set_module_access,
+)
 
 app = FastAPI(
     title="Soborbum — Auth & Users",
@@ -75,7 +81,12 @@ def get_user(user_id: int, db: Session = Depends(get_db), _: User = Depends(requ
 
 
 @app.patch("/users/{user_id}", response_model=UserOut)
-def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_admin),
+):
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
@@ -83,10 +94,13 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
         user.full_name = payload.full_name
     if payload.password is not None:
         user.hashed_password = hash_password(payload.password)
-    if payload.is_active is not None:
-        user.is_active = payload.is_active
-    if payload.role is not None:
-        user.role = payload.role
+    # Роль и активность — через сервис: он же держит проверки на самого себя
+    # и на последнего администратора (0074).
+    try:
+        apply_account_change(db, actor, user, role=payload.role, is_active=payload.is_active)
+    except ValueError as error:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
     db.commit()
     db.refresh(user)
     return UserOut.from_model(user)

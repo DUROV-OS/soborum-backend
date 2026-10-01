@@ -6,7 +6,12 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Деплой только после зелёных тестов и миграций (0084-a).
+  checks:
+    uses: ./.github/workflows/checks.yml
+
   deploy:
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
@@ -60,5 +65,5 @@ jobs:
 
           scp -i ~/.ssh/deploy_key /tmp/soborbum-mcp.env "$SSH_USER@$SSH_HOST:/tmp/soborbum-mcp.env"
           ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
-            'cd /srv/soborbum-backend && git config --global --add safe.directory /srv/soborbum-backend && git fetch --prune origin && git reset --hard origin/main && python3 scripts/merge_env.py /tmp/soborbum-mcp.env && rm -f /tmp/soborbum-mcp.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build)'
+            'cd /srv/soborbum-backend && git config --global --add safe.directory /srv/soborbum-backend && git fetch --prune origin && git reset --hard origin/main && python3 scripts/merge_env.py /tmp/soborbum-mcp.env && rm -f /tmp/soborbum-mcp.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build) && sh scripts/wait_ready.sh 90'
           rm -f /tmp/soborbum-mcp.env

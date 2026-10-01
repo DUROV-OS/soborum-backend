@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.common.module_access import Module as AccessModule
 from app.cycle.models import CycleStatus
+from app.production import readiness
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.production.schemas import BlockCreate, BlockMaterialCreate, BlockUpdate
 from app.tasks import service as task_service
@@ -205,8 +206,10 @@ def delete_block(db: Session, block: ProductionBlock) -> None:
             detail="Нельзя удалить блок: есть незавершённые задачи",
         )
     db.query(Task).filter(Task.block_id == block.id).update({"block_id": None}, synchronize_session="fetch")
+    production_id = block.production_id
     db.delete(block)
     db.flush()
+    readiness.invalidate_production_caches(db, production_id)
 
 
 def create_block(db: Session, production_id: int, payload: BlockCreate) -> ProductionBlock:
@@ -215,17 +218,26 @@ def create_block(db: Session, production_id: int, payload: BlockCreate) -> Produ
     if sequence is None:
         sequence = (db.query(ProductionBlock).filter(ProductionBlock.production_id == production_id).count()) + 1
     block = ProductionBlock(
-        production_id=production_id, name=payload.name, description=payload.description, sequence=sequence
+        production_id=production_id,
+        name=payload.name,
+        description=payload.description,
+        sequence=sequence,
+        requires_materials=payload.requires_materials,
     )
     db.add(block)
     db.flush()
+    readiness.invalidate_production_caches(db, production_id)
     return block
 
 
 def update_block(db: Session, block: ProductionBlock, payload: BlockUpdate) -> ProductionBlock:
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "requires_materials" and value is None:
+            continue  # колонка NOT NULL: «не передано» и null значат одно — не менять
         setattr(block, field, value)
     db.flush()
+    if payload.requires_materials is not None:
+        readiness.invalidate_production_caches(db, block.production_id)
     return block
 
 
@@ -287,6 +299,7 @@ def add_block_material(db: Session, block_id: int, payload: BlockMaterialCreate)
     )
     db.add(material)
     db.flush()
+    readiness.invalidate_production_caches(db, material.block.production_id)
     return material
 
 
@@ -298,6 +311,7 @@ def update_required_quantity(
     diff = quantity_required - float(material.quantity_required)
     material.quantity_required = quantity_required
     db.flush()
+    readiness.invalidate_production_caches(db, material.block.production_id)
     if diff > 0:
         warehouse_service.log_movement(
             db, material.warehouse_material, diff, StockMovementReason.REQUIRED_ADJUSTED_UP, actor, material.id
@@ -317,6 +331,7 @@ def request_material(db: Session, material: BlockMaterial, quantity: float, requ
     material.quantity_required -= quantity
     material.quantity_requested += quantity
     db.flush()
+    readiness.invalidate_production_caches(db, material.block.production_id)
 
     request = MaterialRequest(
         block_material_id=material.id,

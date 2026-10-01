@@ -44,7 +44,8 @@ def _make_client_at_payment(db, house_model_key=None, houses_count=1, admin=None
         db, ClientCreate(full_name="Клиент 0066-f", phone="+79160000000", email="f@example.com")
     )
     client_service.transition_stage(db, client)  # LEAD -> DISCUSSION
-    client_service.transition_stage(db, client)  # DISCUSSION -> APPROVAL
+    client_service.transition_stage(db, client)  # DISCUSSION -> SITE_VISIT
+    client_service.transition_stage(db, client)  # SITE_VISIT -> APPROVAL
     client.contract_file_id = 1
     client.contract_appendix_file_id = 1
     client.ar_file_id = 1

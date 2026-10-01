@@ -1,9 +1,12 @@
 import enum
-from datetime import datetime
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     BigInteger,
+    and_,
     Boolean,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -15,17 +18,29 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.db.base import Base
+from app.tasks.models import Task, TaskLinkType
 
 
 class ClientStage(str, enum.Enum):
+    """Путь клиента от первого обращения до принятого дома (0079).
+
+    Значения первых пяти стадий остались от пятиколоночного пути — поменялись
+    только человеческие подписи (см. STAGE_LABELS):
+    `approval` — «Ипотека/Одобрение в банке», `payment` — «Договор подписан/
+    Аванс внесён», `postpayment` — «Дом в производстве».
+    """
+
     LEAD = "lead"
     DISCUSSION = "discussion"
+    SITE_VISIT = "site_visit"
     APPROVAL = "approval"
     PAYMENT = "payment"
     POSTPAYMENT = "postpayment"
+    ACCEPTANCE = "acceptance"
+    COMPLETED = "completed"
 
 
 class ClientChatState(str, enum.Enum):
@@ -66,6 +81,19 @@ class PaymentPlan(str, enum.Enum):
     POST_PAYMENT = "post_payment"
 
 
+class ContractSource(str, enum.Enum):
+    """Откуда взялся файл договора (или приложения) у клиента (0084-i).
+
+    - UPLOADED — человек загрузил файл (скан, PDF от юриста и т.п.);
+    - GENERATED — Марина сама написала текст и приложила его
+      (`ai/tools.py::attach_generated_document`). Такой файл — черновик, а не
+      подписанный договор: гейт стадии его не пропускает никогда.
+    """
+
+    UPLOADED = "uploaded"
+    GENERATED = "generated"
+
+
 PAYMENT_PLAN_LABELS: dict[str, PaymentPlan] = {
     "полная предоплата": PaymentPlan.FULL_PREPAYMENT,
     "аванс + оплата после получения": PaymentPlan.ADVANCE_THEN_BALANCE,
@@ -97,10 +125,46 @@ def parse_payment_plan(value: str) -> PaymentPlan:
 CLIENT_STAGE_ORDER = [
     ClientStage.LEAD,
     ClientStage.DISCUSSION,
+    ClientStage.SITE_VISIT,
     ClientStage.APPROVAL,
     ClientStage.PAYMENT,
     ClientStage.POSTPAYMENT,
+    ClientStage.ACCEPTANCE,
+    ClientStage.COMPLETED,
 ]
+
+STAGE_LABELS: dict[ClientStage, str] = {
+    ClientStage.LEAD: "Лид",
+    ClientStage.DISCUSSION: "Обсуждение",
+    ClientStage.SITE_VISIT: "Гость на объекте",
+    ClientStage.APPROVAL: "Ипотека/Одобрение в банке",
+    ClientStage.PAYMENT: "Договор подписан/Аванс внесён",
+    ClientStage.POSTPAYMENT: "Дом в производстве",
+    ClientStage.ACCEPTANCE: "Приёмка",
+    ClientStage.COMPLETED: "Успешно реализовано",
+}
+
+# Стадии, с которых клиента двигает человек кнопкой «следующая стадия».
+# Всё, что после «Дом в производстве», двигается автоматически по монтажу
+# (app.installation.service) — руками такие стадии не переводят, и задача
+# «перевести на следующую стадию» на них не заводится.
+MANUAL_TRANSITION_STAGES = [
+    ClientStage.LEAD,
+    ClientStage.DISCUSSION,
+    ClientStage.SITE_VISIT,
+    ClientStage.APPROVAL,
+    ClientStage.PAYMENT,
+]
+
+
+def stage_label(stage: ClientStage) -> str:
+    return STAGE_LABELS[stage]
+
+
+def stages_after(stage: ClientStage) -> list[ClientStage]:
+    """Стадии строго позже указанной — чтобы проверки «клиент уже прошёл X»
+    не перечисляли стадии руками и не отставали при добавлении новых."""
+    return CLIENT_STAGE_ORDER[CLIENT_STAGE_ORDER.index(stage) + 1 :]
 
 
 class Client(Base):
@@ -121,6 +185,16 @@ class Client(Base):
     # Паспорт/ИНН/дата рождения больше не собираются — для работы с клиентом
     # достаточно знать, где и как с ним связаться.
     contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+    # --- Источник клиента (0079-c) ---
+    # Часть клиентов приходит через агентства недвижимости-партнёров. Без
+    # отметки связь с агентством после сделки теряется. Прямой клиент —
+    # via_agency = False и пустые agency_*; у клиентов, заведённых до 0079,
+    # так и есть (server_default). В отличие от остальных базовых данных
+    # источник редактируется после создания: агентство часто выясняется позже.
+    via_agency: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    agency_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agency_contact: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at
@@ -153,6 +227,31 @@ class Client(Base):
     # (0061) — see client_service.set_contract_files. Не бывает одного без
     # другого: оба обязательны для ухода со стадии APPROVAL.
     contract_appendix_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
+    # --- Источник и проверка договора/приложения (0084-i) ---
+    # Загрузка файла не равна проверке: у каждого из двух документов свой
+    # источник и своя отметка «проверен кем, когда, что сверено». Замена файла
+    # (загрузкой или генерацией Мариной) отметку сбрасывает.
+    # `*_verification_required` ставит только код загрузки/генерации 0084-i —
+    # у договоров, приложенных до выкладки, он False (server_default), и гейт
+    # стадии для них ограничивается предупреждением, не блокирует переход.
+    contract_source: Mapped[ContractSource | None] = mapped_column(
+        Enum(ContractSource, name="contract_source"), nullable=True
+    )
+    contract_verification_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    contract_verified_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    contract_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    contract_verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contract_appendix_source: Mapped[ContractSource | None] = mapped_column(
+        Enum(ContractSource, name="contract_source"), nullable=True
+    )
+    contract_appendix_verification_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    contract_appendix_verified_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    contract_appendix_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    contract_appendix_verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     # house_project — опционален с 0061 (не у каждого клиента есть в системе);
     # не входит в _DOCUMENTS_REQUIRED. АР/КР — обязательны с 0061.
     house_project_file_id: Mapped[int | None] = mapped_column(ForeignKey("file_assets.id"), nullable=True)
@@ -176,20 +275,86 @@ class Client(Base):
     # перевести в COMPLETED (см. app.installation.service.complete_installation).
     balance_paid: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     balance_paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Срок оплаты остатка по договору (0084-j). Вводится вручную в карточке
+    # клиента для планов с остатком; правила автоматического расчёта (от
+    # монтажа и т.п.) пока нет. Без срока просрочку не определить — это
+    # отдельный сигнал «срок не указан», а не нарушение (см. balance_state).
+    balance_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     cycle: Mapped["Cycle"] = relationship(back_populates="client")  # noqa: F821
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    # Задачи менеджера по клиенту (0079-d) — обычные задачи системы, связанные
+    # с клиентом через link_type/link_id, поэтому связь только на чтение и без
+    # внешнего ключа: задачами владеет раздел «Задачи», здесь их только видно.
+    followup_tasks: Mapped[list["Task"]] = relationship(  # noqa: F821
+        "Task",
+        primaryjoin=lambda: and_(
+            foreign(Task.link_id) == Client.id,
+            Task.link_type == TaskLinkType.CLIENT_FOLLOWUP,
+        ),
+        order_by="Task.id.desc()",
+        viewonly=True,
+    )
     chat_links: Mapped[list["ClientChatLink"]] = relationship(
         back_populates="client", cascade="all, delete-orphan", order_by="ClientChatLink.id"
     )
     contract_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_file_id])  # noqa: F821
     contract_appendix_file: Mapped["FileAsset"] = relationship(foreign_keys=[contract_appendix_file_id])  # noqa: F821
+    contract_verified_by: Mapped["User | None"] = relationship(foreign_keys=[contract_verified_by_id])  # noqa: F821
+    contract_appendix_verified_by: Mapped["User | None"] = relationship(  # noqa: F821
+        foreign_keys=[contract_appendix_verified_by_id]
+    )
     house_project_file: Mapped["FileAsset"] = relationship(foreign_keys=[house_project_file_id])  # noqa: F821
     ar_file: Mapped["FileAsset"] = relationship(foreign_keys=[ar_file_id])  # noqa: F821
     kr_file: Mapped["FileAsset"] = relationship(foreign_keys=[kr_file_id])  # noqa: F821
     # Read-only reference into the house_models catalog (0043) — this section
     # doesn't own or manage that data, just points at it.
     house_model: Mapped["HouseModelCard | None"] = relationship(viewonly=True)  # noqa: F821
+
+
+# Срок остатка — дата без времени; «сегодня» для неё — по Москве, где работает
+# компания, а не по часовому поясу сервера.
+BALANCE_TZ = ZoneInfo("Europe/Moscow")
+
+
+class BalanceState(str, enum.Enum):
+    """Состояние остатка «после получения» (0084-j). Вычисляется, не хранится.
+
+    - NOT_APPLICABLE — полная предоплата: остатка нет;
+    - PAID — остаток принят;
+    - NO_DUE_DATE — остаток не принят, срок не указан: просрочку не
+      определить, это отдельный сигнал, а не нарушение;
+    - PENDING — срок указан и ещё не прошёл (включая сегодняшний день);
+    - OVERDUE — срок прошёл, остаток не принят.
+    """
+
+    NOT_APPLICABLE = "not_applicable"
+    NO_DUE_DATE = "no_due_date"
+    PENDING = "pending"
+    OVERDUE = "overdue"
+    PAID = "paid"
+
+
+def balance_today() -> date:
+    return datetime.now(BALANCE_TZ).date()
+
+
+def balance_due_deadline(due: date) -> datetime:
+    """Дедлайн задачи приёма остатка — конец дня срока по Москве: в день
+    срока остаток ещё не просрочен."""
+    return datetime.combine(due, time(23, 59, 59), tzinfo=BALANCE_TZ)
+
+
+def balance_state(client: "Client", today: date | None = None) -> BalanceState:
+    if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
+        return BalanceState.NOT_APPLICABLE
+    if client.balance_paid:
+        return BalanceState.PAID
+    if client.balance_due_date is None:
+        return BalanceState.NO_DUE_DATE
+    if client.balance_due_date < (today or balance_today()):
+        return BalanceState.OVERDUE
+    return BalanceState.PENDING
 
 
 class ClientNote(Base):
