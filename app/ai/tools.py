@@ -18,7 +18,15 @@ from sqlalchemy.orm import Session
 
 from app.ai.models import ChatDomain
 from app.clients import service as client_service
-from app.clients.models import Client, ClientStage, ContractSource, OrderType, balance_state, parse_payment_plan
+from app.clients.models import (
+    Client,
+    ClientStage,
+    ContractSource,
+    OrderType,
+    balance_state,
+    parse_payment_plan,
+    stage_label,
+)
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientDocumentsUpdate,
@@ -118,6 +126,10 @@ def _serialize_client(c: Client) -> dict:
         "id": c.id,
         "cycle_id": c.cycle_id,
         "stage": c.stage.value,
+        # Человеческая подпись рядом со слагом (0086): по одному `approval`
+        # модель пересказывала стадию человеку как «согласование» — название,
+        # которого в интерфейсе нет с 0079.
+        "stage_label": stage_label(c.stage),
         "full_name": c.full_name,
         "phone": c.phone,
         "email": c.email,
@@ -187,7 +199,17 @@ def _list_clients(db: Session, user: User, stage: str | None = None) -> dict:
     if stage:
         query = query.filter(Client.stage == ClientStage(stage))
     clients = query.order_by(Client.id.desc()).limit(50).all()
-    return {"clients": [{"id": c.id, "full_name": c.full_name, "stage": c.stage.value} for c in clients]}
+    return {
+        "clients": [
+            {
+                "id": c.id,
+                "full_name": c.full_name,
+                "stage": c.stage.value,
+                "stage_label": stage_label(c.stage),
+            }
+            for c in clients
+        ]
+    }
 
 
 @register(
