@@ -52,7 +52,7 @@ def test_create_supplier_order_computes_total_cost_and_supplier_balance(db, api,
     assert supplier_data["balance"] == 50000
 
 
-def test_status_machine_no_skipping_and_received_is_frozen(db, api, acc_user):
+def test_status_machine_no_skipping_and_received_is_frozen(db, api, acc_user, make_user):
     supplier = _supplier(db)
     api_client = api(acc_user)
     order_id = api_client.post(
@@ -82,21 +82,34 @@ def test_status_machine_no_skipping_and_received_is_frozen(db, api, acc_user):
     assert api_client.patch(
         f"/api/accounting/supplier-orders/{order_id}", json={"comment": "поздно"}
     ).status_code == 409
-    assert api_client.delete(f"/api/accounting/supplier-orders/{order_id}").status_code == 409
+    admin_client = api(make_user(admin=True))
+    assert admin_client.delete(f"/api/accounting/supplier-orders/{order_id}").status_code == 409
 
 
-def test_delete_ordered_order_recomputes_balance(db, api, acc_user):
+def test_delete_ordered_order_recomputes_balance(db, api, acc_user, make_user):
     supplier = _supplier(db)
     api_client = api(acc_user)
     order_id = api_client.post(
         "/api/accounting/supplier-orders", json=_order_body(supplier.id)
     ).json()["id"]
 
-    assert api_client.delete(f"/api/accounting/supplier-orders/{order_id}").status_code == 204
+    admin_client = api(make_user(admin=True))
+    assert admin_client.delete(f"/api/accounting/supplier-orders/{order_id}").status_code == 204
 
     supplier_data = api_client.get(f"/api/warehouse/suppliers/{supplier.id}").json()
     assert supplier_data["total_ordered"] == 0
     assert supplier_data["balance"] == 0
+
+
+def test_delete_requires_admin(db, api, acc_user):
+    supplier = _supplier(db)
+    api_client = api(acc_user)
+    order_id = api_client.post(
+        "/api/accounting/supplier-orders", json=_order_body(supplier.id)
+    ).json()["id"]
+
+    # acc_user имеет только EDIT на «Бухгалтерию» — удаление требует FULL (админ)
+    assert api_client.delete(f"/api/accounting/supplier-orders/{order_id}").status_code == 403
 
 
 def test_create_without_items_or_without_price_is_rejected(db, api, acc_user):
