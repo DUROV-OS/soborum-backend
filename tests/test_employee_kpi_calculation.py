@@ -51,10 +51,21 @@ def _period_now():
     return accounting_service._month_range(_now().date())
 
 
+def _period_of(moment):
+    """Период, в который попадает сам дедлайн фикстуры.
+
+    KPI считается по задачам с дедлайном внутри календарного месяца периода
+    (app.accounting.service._compute_kpi_for_period), поэтому период нельзя
+    брать от «сегодня», если дедлайн отодвинут в прошлое: первого числа
+    «сейчас минус два дня» уходит в прошлый месяц, задачи выпадают из выборки
+    и тест формулы падает на пустом наборе (0087)."""
+    return accounting_service._month_range(moment.date())
+
+
 def test_kpi_weighs_on_time_late_and_overdue_tasks(db, make_user):
     employee = make_user()
-    period_start, period_end = _period_now()
     deadline = _now() - timedelta(days=2)
+    period_start, period_end = _period_of(deadline)
 
     on_time_task = task_service.create_task(
         db, title="Сдать в срок", deadline=deadline, assignee_ids=[employee.id]
@@ -110,8 +121,8 @@ def test_kpi_current_period_is_overwritten_not_duplicated(db, make_user):
     """Текущий месяц пересчитывается на месте (upsert), не копится строками —
     только прошлые периоды застывают («история не переписывается»)."""
     employee = make_user()
-    period_start, period_end = _period_now()
     deadline = _now() - timedelta(hours=5)
+    period_start, period_end = _period_of(deadline)
 
     task = task_service.create_task(db, title="Задача", deadline=deadline, assignee_ids=[employee.id])
     db.commit()
