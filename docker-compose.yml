@@ -41,11 +41,17 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@soborbum.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      AI_PROVIDER: ${AI_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # ANTHROPIC_BASE_URL is intentionally NOT set here: the anthropic SDK
       # reads it from the env directly, and an injected "" breaks every call.
       # It reaches the container via env_file (.env.mcp) only when actually set.
       AI_MODEL: ${AI_MODEL:-claude-sonnet-5}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # OPENAI_BASE_URL - same as ANTHROPIC_BASE_URL: the openai SDK reads it
+      # from the env itself, so an injected "" would break every call. Reaches
+      # the container via env_file (.env.mcp) only when actually set.
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5}
       AI_EFFORT: ${AI_EFFORT:-medium}
       MCP_SERVER_URL: ${MCP_SERVER_URL:-}
       MCP_OAUTH_CLIENT_ID: ${MCP_OAUTH_CLIENT_ID:-}
