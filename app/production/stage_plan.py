@@ -118,12 +118,10 @@ def instantiate_stage_plan(db, production: Production, template: ProductionStage
                     warehouse_material_id=template_material.warehouse_material_id,
                     inventory_number="",
                     unit=template_material.unit,
-                    # Количество не «угадывается» по тексту КР — структурного
-                    # распознавания количеств по спецификации конкретного
-                    # заказа в проекте пока нет (0057-a закрыта без
-                    # реализации); инженер донаполняет вручную, как и любой
-                    # материал блока сегодня (update_required_quantity).
-                    quantity_required=0,
+                    # Норматив на дом из спецификации КР типового проекта
+                    # (0088-e). Не найден в КР — 0, инженер донаполняет
+                    # вручную (update_required_quantity), как раньше.
+                    quantity_required=template_material.quantity or 0,
                 )
             )
 

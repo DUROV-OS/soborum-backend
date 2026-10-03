@@ -28,6 +28,11 @@ from app.production.stage_templates import (
 )
 
 _MAX_PAGE_CHARS = 2000
+# Страницы спецификации / ведомости материалов (0088-e) — таблица с
+# количествами длиннее обычной страницы и при обрезке до 2000 символов теряет
+# хвост, а нормативы на дом берутся именно оттуда.
+_MAX_SPEC_PAGE_CHARS = 8000
+_SPEC_PAGE_MARKERS = ("спецификац", "ведомост", "кол-во", "количество")
 
 SUBMIT_TOOL_NAME = "submit_stage_template"
 
@@ -45,6 +50,12 @@ SYSTEM_PROMPT = (
     "3. Зависимости блока (depends_on_sequence) указывай через sequence "
     "других блоков ЭТОГО ЖЕ ответа, только если КР явно подразумевает порядок "
     "(нельзя начать одно, не закончив другое).\n"
+    "4. Количество материала (quantity) — норматив на ОДИН дом — указывай, "
+    "только если оно явно написано в тексте КР (спецификация, ведомость "
+    "материалов) у этого материала; бери число как есть, в единицах unit. Не "
+    "вычисляй по чертежам и размерам, не суммируй и не угадывай: если явного "
+    "числа нет или ты не уверен, что оно относится к этому материалу, — не "
+    "указывай quantity вовсе.\n"
     "Отвечай ТОЛЬКО вызовом инструмента submit_stage_template, без текста."
 )
 
@@ -100,6 +111,10 @@ TOOL_SCHEMA = {
                                 "properties": {
                                     "name": {"type": "string"},
                                     "unit": {"type": "string"},
+                                    "quantity": {
+                                        "type": "number",
+                                        "description": "Норматив на один дом, только если явно указан в КР",
+                                    },
                                     "kr_page_ref": {
                                         "type": "object",
                                         "properties": {
@@ -136,14 +151,35 @@ def _find_existing_template(db: Session, house_model_key: str | None) -> Product
     )
 
 
+def _is_spec_page(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _SPEC_PAGE_MARKERS)
+
+
 def _kr_payload(extraction) -> list[dict]:
     payload = []
     for page in extraction.pages:
         text = (page.get("text") or "").strip()
         if not text:
             continue
-        payload.append({"page_number": page["page_number"], "text": text[:_MAX_PAGE_CHARS]})
+        limit = _MAX_SPEC_PAGE_CHARS if _is_spec_page(text) else _MAX_PAGE_CHARS
+        payload.append({"page_number": page["page_number"], "text": text[:limit]})
     return payload
+
+
+def _ai_quantity(raw) -> float | None:
+    """Норматив из ответа ИИ: только положительное число. Всё остальное
+    (пусто, ноль, текст вроде «по месту») — «в КР не найдено», а не 0."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = float(raw.replace(",", ".").strip())
+        except ValueError:
+            return None
+    if isinstance(raw, (int, float)) and raw > 0:
+        return float(raw)
+    return None
 
 
 def _call_ai(pages_payload: list[dict]) -> dict:
@@ -236,6 +272,7 @@ def _persist_draft(db: Session, client: Client, graph: dict) -> ProductionStageT
                     name=raw_material["name"],
                     unit=raw_material["unit"],
                     kr_page_ref=raw_material.get("kr_page_ref"),
+                    quantity=_ai_quantity(raw_material.get("quantity")),
                 )
             )
     db.flush()
