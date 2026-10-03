@@ -376,6 +376,84 @@ def create_inventory_operation(
     return create_stock_operation(db, kind, lines, created_by, occurred_at=occurred_at, note=note)
 
 
+_RECIPIENT_MAX = 255
+
+
+def _required_text(value: str | None, detail: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        raise _bad_request(detail)
+    if len(value) > _RECIPIENT_MAX:
+        raise _bad_request(f"Слишком длинное значение (больше {_RECIPIENT_MAX} символов)")
+    return value
+
+
+def get_production_or_404(db: Session, production_id: int) -> Production:
+    production = db.get(Production, production_id)
+    if not production:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Дом не найден")
+    return production
+
+
+def create_manual_issue(
+    db: Session,
+    lines: list[tuple[int, float]],
+    created_by: User,
+    *,
+    destination_kind: IssueDestinationKind,
+    received_by: str | None,
+    destination: str | None = None,
+    production_id: int | None = None,
+    note: str | None = None,
+    occurred_at: datetime | None = None,
+) -> WarehouseOperation:
+    """Отпуск на объект / в цех / на доработки / в дом без привязки к техкарте:
+    нормативы производства не меняются (0088-b)."""
+    received_by = _required_text(received_by, "Укажите, кто получил материал")
+    if destination_kind == IssueDestinationKind.HOUSE:
+        if production_id is None:
+            raise _bad_request("Выберите дом")
+        destination = house_label(get_production_or_404(db, production_id))
+    else:
+        destination = _required_text(destination, "Укажите, куда отпущен материал")
+        production_id = None
+    return create_stock_operation(
+        db,
+        WarehouseOperationKind.ISSUE_MANUAL,
+        lines,
+        created_by,
+        occurred_at=occurred_at,
+        note=note,
+        destination_kind=destination_kind,
+        destination=destination,
+        production_id=production_id,
+        received_by=received_by,
+    )
+
+
+def recent_issue_values(db: Session, destination_kind: IssueDestinationKind | None = None, limit: int = 20) -> dict:
+    """Подсказки для формы отпуска: последние введённые «куда» и «кто получил»."""
+
+    def latest(column, *filters):
+        rows = (
+            db.query(column)
+            .filter(column.isnot(None), *filters)
+            .group_by(column)
+            .order_by(func.max(WarehouseOperation.created_at).desc())
+            .limit(limit)
+            .all()
+        )
+        return [value for (value,) in rows]
+
+    destination_filters = [WarehouseOperation.destination_kind == destination_kind] if destination_kind else [
+        WarehouseOperation.destination_kind != IssueDestinationKind.HOUSE
+    ]
+    return {
+        "destinations": latest(WarehouseOperation.destination, *destination_filters),
+        "received_by": latest(WarehouseOperation.received_by),
+    }
+
+
 def get_operation_or_404(db: Session, operation_id: int) -> WarehouseOperation:
     operation = db.get(WarehouseOperation, operation_id)
     if not operation:
