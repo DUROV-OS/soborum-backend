@@ -10,7 +10,7 @@
 from datetime import datetime
 
 from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Integer, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column, object_session
 
 from app.db.base import Base
 
@@ -49,3 +49,14 @@ class MaxBotMessage(Base):
     attachments: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)  # мс
     deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+def bot_knows_chat(obj, chat_id: int | None) -> bool:
+    """Видел ли бот чат ``chat_id`` (есть строка в max_bot_chats). Привязки
+    клиентов и поставщиков, сделанные до 0082, хранят id чатов
+    пользовательского аккаунта — бот их не знает, лента по ним отдаёт 404.
+    ``obj`` — ORM-объект привязки: берём его сессию."""
+    if chat_id is None:
+        return False
+    session: Session | None = object_session(obj)
+    return session is not None and session.get(MaxBotChat, chat_id) is not None

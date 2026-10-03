@@ -57,6 +57,13 @@ def list_chats(
     return result
 
 
+@app.get("/bot")
+def get_bot(_: User = Depends(get_current_user)):
+    """Профиль бота для подсказок в интерфейсе: ``{name, username, link}``,
+    ``link`` открывает бота в MAX. Нет токена → 503, MAX недоступен → 502."""
+    return max_service.bot_profile()
+
+
 @app.get("/chats/{chat_id}")
 def get_chat(
     chat_id: int,

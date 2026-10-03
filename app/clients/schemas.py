@@ -41,7 +41,8 @@ class ClientCreate(ClientSourceUpdate):
 class ClientChatLinkCreate(BaseModel):
     """Новая привязка клиента к чату MAX (0053). `max_chat_id` уникален
     глобально — 409, если чат уже занят другим клиентом (см.
-    client_service.create_chat_link). `0` — «Избранное»."""
+    client_service.create_chat_link). Чат должен быть чатом бота — см.
+    `ClientChatLinkOut.bot_chat_known`."""
 
     max_chat_id: int
     label: str
@@ -60,6 +61,9 @@ class ClientChatLinkOut(BaseModel):
     max_chat_id: int
     label: str
     state: ClientChatState | None
+    # False — чат со старого аккаунта MAX (до 0082): бот его не видит,
+    # фронт вместо ленты предлагает привязать чат бота
+    bot_chat_known: bool = False
     created_at: datetime
 
 
