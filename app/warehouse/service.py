@@ -208,13 +208,17 @@ def log_movement(
     created_by: User,
     reference_id: int | None = None,
     note: str | None = None,
+    operation_id: int | None = None,
 ) -> StockMovement:
+    # Вызывается после изменения quantity_in_stock — значит, остаток уже «после».
     movement = StockMovement(
         warehouse_material_id=material.id,
         delta=delta,
         reason=reason,
         reference_id=reference_id,
         note=note,
+        operation_id=operation_id,
+        balance_after=float(material.quantity_in_stock),
         created_by_id=created_by.id,
     )
     db.add(movement)
