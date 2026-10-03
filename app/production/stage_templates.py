@@ -10,7 +10,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, JSON, String, Table, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Table, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -70,9 +70,13 @@ class TemplateBlock(Base):
     requires_materials: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
 
     template: Mapped["ProductionStageTemplate"] = relationship(back_populates="blocks")
-    tasks: Mapped[list["TemplateBlockTask"]] = relationship(back_populates="block", cascade="all, delete-orphan")
+    # order_by id: без него Postgres отдаёт только что изменённую строку последней —
+    # при правке нормативов (0088-e) строки «прыгали» в конец списка.
+    tasks: Mapped[list["TemplateBlockTask"]] = relationship(
+        back_populates="block", cascade="all, delete-orphan", order_by="TemplateBlockTask.id"
+    )
     materials: Mapped[list["TemplateBlockMaterial"]] = relationship(
-        back_populates="block", cascade="all, delete-orphan"
+        back_populates="block", cascade="all, delete-orphan", order_by="TemplateBlockMaterial.id"
     )
 
     # Блоки шаблона, от которых зависит этот блок — тот же паттерн, что
@@ -118,5 +122,8 @@ class TemplateBlockMaterial(Base):
     # Не всегда однозначно сопоставляется с каталогом при генерации —
     # донаполняется инженером на проверке ([[0066-e]]).
     warehouse_material_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=True)
+    # Норматив на один дом из спецификации КР (0088-e) — основа отпуска по
+    # техкарте. NULL — в тексте КР количество не найдено, инженер заполняет сам.
+    quantity: Mapped[float | None] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=True)
 
     block: Mapped["TemplateBlock"] = relationship(back_populates="materials")
