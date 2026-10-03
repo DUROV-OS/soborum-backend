@@ -304,6 +304,14 @@ class ProductionStageTemplateOut(BaseModel):
     blocks: list[TemplateBlockOut] = []
 
 
+class FillQuantitiesOut(BaseModel):
+    """Итог «Заполнить нормативы из КР» (0088-e)."""
+
+    filled: int
+    remaining: int
+    template: ProductionStageTemplateOut
+
+
 class TemplateBlockPatch(BaseModel):
     name: str | None = None
     description: str | None = None

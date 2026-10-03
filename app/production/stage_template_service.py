@@ -182,10 +182,9 @@ def _ai_quantity(raw) -> float | None:
     return None
 
 
-def _call_ai(pages_payload: list[dict]) -> dict:
-    """Единственная точка сетевого вызова Claude — вынесена отдельно, чтобы
-    тесты монки-патчили именно её (как `deadlines._ai_pick_bottleneck`),
-    не поднимая реальную сеть, и считали число вызовов."""
+def _forced_tool_call(system: str, payload, tool: dict) -> dict:
+    """Один вызов Claude с принудительным инструментом; ответ без инструмента
+    или оборванный по лимиту токенов — явная ошибка, а не тихий частичный результат."""
     from app.core.llm import anthropic_client
 
     # Полный граф на реальный многостраничный КР — не короткая структурированная
@@ -196,10 +195,10 @@ def _call_ai(pages_payload: list[dict]) -> dict:
     response = anthropic_client(timeout=300.0).messages.create(
         model=settings.ai_model,
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": json.dumps(pages_payload, ensure_ascii=False)}],
-        tools=[TOOL_SCHEMA],
-        tool_choice={"type": "tool", "name": SUBMIT_TOOL_NAME},
+        system=system,
+        messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        tools=[tool],
+        tool_choice={"type": "tool", "name": tool["name"]},
     )
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
     if tool_use is None:
@@ -210,9 +209,16 @@ def _call_ai(pages_payload: list[dict]) -> dict:
         # решение модели. Явная ошибка вместо недостоверного результата.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Ответ ИИ оборван по лимиту токенов — граф не сформирован полностью, попробуйте ещё раз",
+            detail="Ответ ИИ оборван по лимиту токенов — результат неполный, попробуйте ещё раз",
         )
-    return _normalize_graph(tool_use.input)
+    return tool_use.input
+
+
+def _call_ai(pages_payload: list[dict]) -> dict:
+    """Единственная точка сетевого вызова Claude для генерации графа — вынесена
+    отдельно, чтобы тесты монки-патчили именно её (как
+    `deadlines._ai_pick_bottleneck`), не поднимая реальную сеть, и считали число вызовов."""
+    return _normalize_graph(_forced_tool_call(SYSTEM_PROMPT, pages_payload, TOOL_SCHEMA))
 
 
 def _normalize_graph(raw: dict) -> dict:
@@ -389,3 +395,119 @@ def confirm_template(db: Session, template: ProductionStageTemplate, user) -> Pr
     template.confirmed_by_id = user.id
     db.flush()
     return template
+
+
+# ------------------------------- дозаполнение нормативов из КР (0088-e) --
+
+QUANTITIES_TOOL_NAME = "submit_material_quantities"
+
+QUANTITIES_SYSTEM_PROMPT = (
+    "Ты — инженер-технолог производства модульных домов «Soborbum». Тебе передан "
+    "JSON с двумя полями: kr_pages — постраничный текст КР (конструктивных "
+    "решений) одного дома, {page_number, text}; materials — материалы шаблона "
+    "производства этого дома без норматива, {material_id, name, unit, block}.\n\n"
+    "Для каждого материала найди в тексте КР явно указанное количество на ОДИН "
+    "дом (спецификация, ведомость материалов). СТРОГО следуй правилам:\n"
+    "1. Только число, явно написанное в тексте у этого материала, в единицах unit. "
+    "Не вычисляй по чертежам и размерам, не суммируй строки, не угадывай.\n"
+    "2. Если явного числа нет или нет уверенности, что оно относится именно к "
+    "этому материалу, — не включай материал в ответ.\n"
+    "3. У каждого найденного количества обязательна ссылка на страницу КР (kr_page_ref).\n"
+    "Отвечай ТОЛЬКО вызовом инструмента submit_material_quantities, без текста."
+)
+
+QUANTITIES_TOOL_SCHEMA = {
+    "name": QUANTITIES_TOOL_NAME,
+    "description": "Отправить нормативы на один дом, найденные в тексте КР.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "quantities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "material_id": {"type": "integer"},
+                        "quantity": {"type": "number"},
+                        "kr_page_ref": {
+                            "type": "object",
+                            "properties": {
+                                "page_number": {"type": "integer"},
+                                "note": {"type": "string"},
+                            },
+                            "required": ["page_number"],
+                        },
+                    },
+                    "required": ["material_id", "quantity", "kr_page_ref"],
+                },
+            },
+        },
+        "required": ["quantities"],
+    },
+}
+
+# Материалов в шаблоне реального дома — сотни; ответ на всех сразу упирается в
+# лимит токенов, поэтому спрашиваем порциями.
+_QUANTITIES_BATCH = 120
+
+
+def _call_ai_quantities(pages_payload: list[dict], materials: list[dict]) -> list[dict]:
+    """Точка сетевого вызова для дозаполнения нормативов — тесты монки-патчат её."""
+    raw = _forced_tool_call(
+        QUANTITIES_SYSTEM_PROMPT,
+        {"kr_pages": pages_payload, "materials": materials},
+        QUANTITIES_TOOL_SCHEMA,
+    )
+    quantities = raw.get("quantities")
+    if isinstance(quantities, str):
+        try:
+            quantities = json.loads(quantities)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ вернул нераспознаваемый список нормативов")
+        if isinstance(quantities, dict):
+            quantities = quantities.get("quantities")
+    return quantities if isinstance(quantities, list) else []
+
+
+def fill_quantities_from_kr(db: Session, template: ProductionStageTemplate) -> dict:
+    """Проставляет норматив только материалам шаблона, у которых его нет; ничего
+    другого в шаблоне не меняет, поэтому допустимо и для подтверждённого шаблона.
+    Развёрнутые ранее дома не трогает — их нормативы правятся в производстве дома."""
+    missing = [m for block in template.blocks for m in block.materials if m.quantity is None]
+    if not missing:
+        return {"filled": 0, "remaining": 0}
+
+    if not settings.anthropic_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Нужен ключ ИИ (ANTHROPIC_API_KEY) для заполнения нормативов из КР",
+        )
+    extraction = kr_extraction.get_kr_extraction(db, template.source_client_id)
+    pages_payload = _kr_payload(extraction) if extraction is not None and extraction.pages else []
+    if not pages_payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нет постраничного разбора КР, по которому строился шаблон",
+        )
+
+    by_id = {m.id: m for m in missing}
+    block_names = {b.id: b.name for b in template.blocks}
+    filled = 0
+    for start in range(0, len(missing), _QUANTITIES_BATCH):
+        batch = [
+            {"material_id": m.id, "name": m.name, "unit": m.unit, "block": block_names.get(m.template_block_id)}
+            for m in missing[start : start + _QUANTITIES_BATCH]
+        ]
+        for item in _call_ai_quantities(pages_payload, batch):
+            if not isinstance(item, dict):
+                continue
+            material = by_id.get(item.get("material_id"))
+            quantity = _ai_quantity(item.get("quantity"))
+            if material is None or quantity is None or material.quantity is not None:
+                continue
+            material.quantity = quantity
+            if material.kr_page_ref is None and isinstance(item.get("kr_page_ref"), dict):
+                material.kr_page_ref = item["kr_page_ref"]
+            filled += 1
+    db.flush()
+    return {"filled": filled, "remaining": len(missing) - filled}

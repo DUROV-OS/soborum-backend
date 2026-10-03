@@ -21,6 +21,7 @@ from app.production.schemas import (
     BlockMaterialUpdate,
     BlockOut,
     BlockUpdate,
+    FillQuantitiesOut,
     KrExtractionOut,
     MaterialRequestCreate,
     MaterialRequestOut,
@@ -322,6 +323,21 @@ def update_stage_template_material(
     db.commit()
     db.refresh(template)
     return template
+
+
+@app.post("/stage-templates/{template_id}/fill-quantities", response_model=FillQuantitiesOut)
+def fill_stage_template_quantities(
+    template_id: int, db: Session = Depends(get_db), _: User = Depends(require_production_edit)
+):
+    template = stage_template_service.get_template_or_404(db, template_id)
+    result = stage_template_service.fill_quantities_from_kr(db, template)
+    db.commit()
+    db.refresh(template)
+    return FillQuantitiesOut(
+        filled=result["filled"],
+        remaining=result["remaining"],
+        template=ProductionStageTemplateOut.model_validate(template),
+    )
 
 
 @app.post("/stage-templates/{template_id}/confirm", response_model=ProductionStageTemplateOut)
