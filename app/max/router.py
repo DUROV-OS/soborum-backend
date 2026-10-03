@@ -38,11 +38,12 @@ def list_chats(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Список чатов с последним сообщением в каждом. ``limit`` — сколько
+    """Чаты, где состоит бот, с последним сообщением в каждом (из БД — списка
+    чатов у Bot API нет). ``limit`` — сколько
     самых свежих вернуть (по умолчанию все). Каждый чат дополнительно
     аннотирован ``linkedClientId``/``linkedClientName``, если он привязан к
     клиенту (app.clients) — для обратной привязки «из MAX к клиенту»."""
-    result = max_service.list_chats(limit)
+    result = max_service.list_chats(db, limit)
     linked = {
         max_chat_id: (client_id, client_name)
         for max_chat_id, client_id, client_name in db.query(
@@ -61,11 +62,13 @@ def get_chat(
     chat_id: int,
     limit: int = 50,
     backward: int = 0,
+    db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Сообщения одного чата. ``limit`` — сколько последних сообщений,
-    ``backward`` — сколько дополнительно подгрузить назад."""
-    return max_service.get_chat(chat_id, limit=limit, backward=backward)
+    """Сообщения одного чата из БД бота. ``limit`` — сколько последних
+    сообщений, ``backward`` — сколько дополнительно подгрузить назад. Чат,
+    которого бот не видел, → 404."""
+    return max_service.get_chat(db, chat_id, limit=limit, backward=backward)
 
 
 @app.post("/messages", status_code=201)
