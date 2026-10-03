@@ -1302,7 +1302,7 @@ def ai_fill_subkinds(db: Session, movement_ids: list[int]) -> tuple[int, int]:
     if not payment_import.ai_enabled():
         return 0, len(rows)
 
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     listing = "\n".join(
         f"{r.id}. назначение: {r.payment_purpose or '—'} | контрагент: "
@@ -1318,9 +1318,9 @@ def ai_fill_subkinds(db: Session, movement_ids: list[int]) -> tuple[int, int]:
         "Для каждой выбери вид. Если не определяется однозначно — пустая строка."
     )
     try:
-        client = anthropic_client(timeout=45.0, max_retries=2)
+        client = llm_client(timeout=45.0, max_retries=2)
         response = client.messages.create(
-            model=settings.ai_model,
+            model=settings.llm_model,
             max_tokens=1024,
             system="Ты классифицируешь платежи по видам. Отвечай только вызовом assign_subkinds.",
             messages=[{"role": "user", "content": user}],

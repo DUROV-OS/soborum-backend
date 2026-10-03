@@ -12,13 +12,13 @@ import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 
-import anthropic
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.ai.meetings import transcript_lines
 from app.ai.models import Meeting, MeetingNotes
 from app.core.config import settings
+from app.core.llm import LLM_ERRORS
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ _locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
 
 
 def notes_ai_enabled() -> bool:
-    return bool(settings.anthropic_api_key)
+    return settings.llm_configured
 
 
 def _clean_list(value) -> list[str]:
@@ -106,11 +106,11 @@ def meeting_context_line(meeting: Meeting) -> str:
 
 
 def _generate(transcript_text: str) -> dict:
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
-    client = anthropic_client(timeout=60.0, max_retries=2)
+    client = llm_client(timeout=60.0, max_retries=2)
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=1536,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"Транскрипт совещания:\n\n{transcript_text}"}],
@@ -142,11 +142,11 @@ def _empty_notes(db: Session, meeting: Meeting) -> MeetingNotes:
 
 def refresh_notes(db: Session, meeting: Meeting, *, force: bool = False) -> tuple[MeetingNotes, bool]:
     """Возвращает (notes, stale). stale=True — последний вызов модели не удался и
-    отдаётся прошлая версия. Требует настроенного ANTHROPIC_API_KEY."""
+    отдаётся прошлая версия. Требует ключа активного ИИ-провайдера."""
     if not notes_ai_enabled():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"detail": "ИИ-заметки отключены: не задан ANTHROPIC_API_KEY", "ai_enabled": False},
+            detail={"detail": "ИИ-заметки отключены: нет ключа активного ИИ-провайдера", "ai_enabled": False},
         )
 
     with _locks[meeting.id]:
@@ -166,7 +166,7 @@ def refresh_notes(db: Session, meeting: Meeting, *, force: bool = False) -> tupl
 
         try:
             result = _generate(meeting_context_line(meeting) + _transcript_text(lines))
-        except (anthropic.APIError, RuntimeError, ValueError):
+        except (*LLM_ERRORS, RuntimeError, ValueError):
             if existing is not None:
                 return existing, True
             notes = _empty_notes(db, meeting)

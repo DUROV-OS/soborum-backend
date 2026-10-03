@@ -32,10 +32,10 @@ def _transcript_block(db: Session, meeting: Meeting) -> str:
 
 
 def answer_meeting_question(db: Session, user: User, meeting: Meeting, question: str) -> str:
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Марина не подключена: не задан ANTHROPIC_API_KEY.",
+            detail="Марина не подключена: нет ключа активного ИИ-провайдера.",
         )
     text = (question or "").strip()
     if not text:
