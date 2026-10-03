@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
+from types import SimpleNamespace
 
 import anthropic
+import httpx
 import openai
 from anthropic.types import Message
 
@@ -101,20 +103,100 @@ def _is_reasoning_model(model: str) -> bool:
 
 
 class OpenAIMessagesClient:
-    """Anthropic-shaped facade over openai.OpenAI().responses."""
+    """Anthropic-shaped facade over openai.OpenAI().responses.
+
+    client.beta.messages is the same object: the only beta our callers use is
+    the MCP connector, and Responses supports remote MCP natively."""
 
     def __init__(self, client: openai.OpenAI):
         self._client = client
         self.messages = _Messages(client)
+        self.beta = SimpleNamespace(messages=self.messages)
 
 
 class _Messages:
     def __init__(self, client: openai.OpenAI):
         self._client = client
 
-    def create(self, **kwargs) -> Message:
-        response = self._client.responses.create(**to_openai_request(**kwargs))
+    def create(self, *, betas=None, mcp_servers=None, **kwargs) -> Message:
+        response = self._client.responses.create(**to_openai_request(mcp_servers=mcp_servers, **kwargs))
         return to_anthropic_message(response)
+
+    def stream(self, *, betas=None, mcp_servers=None, **kwargs) -> "_MessageStream":
+        return _MessageStream(self._client, to_openai_request(mcp_servers=mcp_servers, **kwargs))
+
+
+def _event(type_: str, **fields) -> SimpleNamespace:
+    return SimpleNamespace(type=type_, **fields)
+
+
+class _MessageStream:
+    """Context manager with the slice of anthropic's MessageStream that
+    app.ai.engine reads: iterate content_block_start / content_block_delta
+    (text_delta) / content_block_stop events, then get_final_message()."""
+
+    def __init__(self, client: openai.OpenAI, request: dict):
+        self._client = client
+        self._request = request
+        self._source = None
+        self._final = None
+
+    def __enter__(self) -> "_MessageStream":
+        self._source = self._client.responses.create(**self._request, stream=True)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        close = getattr(self._source, "close", None)
+        if close is not None:
+            close()
+
+    def __iter__(self):
+        for event in self._source:
+            etype = getattr(event, "type", "")
+            if etype == "response.output_item.added":
+                start = _block_start(event.item)
+                if start is not None:
+                    yield _event("content_block_start", content_block=start)
+            elif etype == "response.output_text.delta":
+                yield _event("content_block_delta", delta=SimpleNamespace(type="text_delta", text=event.delta))
+            elif etype == "response.output_item.done":
+                if getattr(event.item, "type", None) == "message":
+                    yield _event("content_block_stop")
+            elif etype in ("response.completed", "response.incomplete"):
+                self._final = event.response
+            elif etype == "response.failed":
+                error = getattr(event.response, "error", None)
+                raise _stream_error(getattr(error, "message", None) or "response failed", error)
+            elif etype == "error":
+                raise _stream_error(getattr(event, "message", None) or "stream error", event)
+
+    def get_final_message(self) -> Message:
+        if self._final is None:
+            for _ in self:
+                pass
+        if self._final is None:
+            raise _stream_error("stream ended without a final response", None)
+        return to_anthropic_message(self._final)
+
+
+def _block_start(item) -> SimpleNamespace | None:
+    """Output item -> the content_block the engine reads for its status line."""
+    itype = getattr(item, "type", None)
+    if itype == "message":
+        return SimpleNamespace(type="text", text="")
+    if itype == "function_call":
+        return SimpleNamespace(type="tool_use", name=item.name)
+    if itype == "web_search_call":
+        return SimpleNamespace(type="server_tool_use", name="web_search")
+    if itype == "mcp_call":
+        return SimpleNamespace(type="server_tool_use", name=f"{item.server_label}:{item.name}")
+    return None
+
+
+def _stream_error(message: str, body) -> openai.APIError:
+    # Same exception family as a failed HTTP call, so LLM_ERRORS catches it.
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    return openai.APIError(message, request, body=body)
 
 
 def to_openai_request(
@@ -126,6 +208,7 @@ def to_openai_request(
     tools: list[dict] | None = None,
     tool_choice: dict | None = None,
     output_config: dict | None = None,
+    mcp_servers: list[dict] | None = None,
     **ignored,
 ) -> dict:
     """Anthropic messages.create kwargs -> OpenAI responses.create kwargs.
@@ -144,6 +227,7 @@ def to_openai_request(
     if instructions:
         request["instructions"] = instructions
     converted_tools = [t for t in (_to_tool(tool) for tool in tools or []) if t is not None]
+    converted_tools += [_to_mcp_tool(server) for server in mcp_servers or []]
     if converted_tools:
         request["tools"] = converted_tools
         if tool_choice:
@@ -174,8 +258,33 @@ def _to_tool(tool: dict) -> dict | None:
             # no additionalProperties=false everywhere).
             "strict": False,
         }
-    log.warning("openai adapter: tool %r has no OpenAI equivalent, skipped", tool.get("type") or tool.get("name"))
+    server_type = str(tool.get("type") or "")
+    if server_type.startswith("web_search"):
+        # Anthropic's max_uses has no per-tool OpenAI counterpart.
+        return {"type": "web_search"}
+    if server_type.startswith("web_fetch"):
+        # No OpenAI equivalent; web_search alone covers "look it up online".
+        return None
+    log.warning("openai adapter: tool %r has no OpenAI equivalent, skipped", server_type or tool.get("name"))
     return None
+
+
+def _to_mcp_tool(server: dict) -> dict:
+    """Anthropic beta mcp_servers entry -> OpenAI remote MCP tool. Keeps the
+    read-only allowlist, and OpenAI calls the server itself (no approval hop),
+    same as Anthropic's connector."""
+    tool: dict = {
+        "type": "mcp",
+        "server_label": server["name"],
+        "server_url": server["url"],
+        "require_approval": "never",
+    }
+    if server.get("authorization_token"):
+        tool["authorization"] = server["authorization_token"]
+    allowed = (server.get("tool_configuration") or {}).get("allowed_tools")
+    if allowed:
+        tool["allowed_tools"] = list(allowed)
+    return tool
 
 
 def _to_tool_choice(choice: dict):
@@ -293,7 +402,7 @@ def to_anthropic_message(response) -> Message:
                 "name": item.name,
                 "input": _parse_arguments(item.arguments),
             })
-        # reasoning / web_search_call / mcp_call items are provider-side
+        # reasoning / web_search_call / mcp_call / mcp_list_tools items are provider-side
         # bookkeeping: their effect is already in the text, and they cannot be
         # replayed with store=False.
 
