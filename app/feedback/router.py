@@ -65,12 +65,12 @@ def update_feedback_status(
     request_id: int,
     payload: FeedbackStatusUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     request = db.get(FeedbackRequest, request_id)
     if not request:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
-    return FeedbackRequestOut.from_model(set_status(db, request, payload.status))
+    return FeedbackRequestOut.from_model(set_status(db, request, payload.status, admin))
 
 
 @app.get("/requests/{request_id}/files/{file_id}")

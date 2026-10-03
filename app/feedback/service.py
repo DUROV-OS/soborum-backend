@@ -7,6 +7,8 @@ from app.common.files import FilePurpose, save_text_file, save_upload_file
 from app.feedback.models import (
     FeedbackAttachment,
     FeedbackAttachmentKind,
+    FeedbackEvent,
+    FeedbackEventKind,
     FeedbackRequest,
     FeedbackStatus,
 )
@@ -15,6 +17,7 @@ from app.users.models import User, UserRole
 MAX_SCREENSHOTS = 5
 MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024
 MAX_LOG_CHARS = 200_000
+MAX_EVENT_CHARS = 5000
 
 
 def can_read(user: User, request: FeedbackRequest) -> bool:
@@ -86,16 +89,67 @@ def _validate_screenshot(upload: UploadFile) -> None:
         raise ValueError(f"«{upload.filename}» больше 10 МБ")
 
 
-def list_requests(db: Session, user: User) -> list[FeedbackRequest]:
-    """Администратору — все заявки, сотруднику — только свои. Новые сверху."""
+def list_requests(db: Session, user: User, *, mine: bool = False) -> list[FeedbackRequest]:
+    """Администратору — все заявки, сотруднику — только свои. Новые сверху.
+    `mine` — только свои для любой роли («Мои заявки», 0090)."""
     query = db.query(FeedbackRequest)
-    if user.role != UserRole.ADMIN:
+    if mine or user.role != UserRole.ADMIN:
         query = query.filter(FeedbackRequest.author_id == user.id)
     return query.order_by(FeedbackRequest.id.desc()).all()
 
 
-def set_status(db: Session, request: FeedbackRequest, status: FeedbackStatus) -> FeedbackRequest:
-    request.status = status
+def set_status(db: Session, request: FeedbackRequest, status: FeedbackStatus, actor: User) -> FeedbackRequest:
+    """Меняет статус и пишет смену в ленту заявки (0090). Повторная установка
+    того же статуса в ленте не отражается."""
+    if request.status != status:
+        db.add(
+            FeedbackEvent(
+                feedback_id=request.id,
+                author_id=actor.id,
+                kind=FeedbackEventKind.STATUS,
+                old_status=request.status,
+                new_status=status,
+            )
+        )
+        request.status = status
     db.commit()
     db.refresh(request)
+    return request
+
+
+def add_event(
+    db: Session, request: FeedbackRequest, actor: User, *, kind: FeedbackEventKind, text: str
+) -> FeedbackRequest:
+    """Комментарий администратора или «изменение в системе» в ленту заявки.
+    `ValueError` — на пустой или слишком длинный текст и на попытку записать
+    смену статуса вручную."""
+    if kind not in (FeedbackEventKind.COMMENT, FeedbackEventKind.CHANGE):
+        raise ValueError("В ленту можно добавить только комментарий или изменение в системе")
+    text = text.strip()
+    if not text:
+        raise ValueError("Текст записи обязателен")
+    if len(text) > MAX_EVENT_CHARS:
+        raise ValueError(f"Текст записи длиннее {MAX_EVENT_CHARS} символов")
+    db.add(FeedbackEvent(feedback_id=request.id, author_id=actor.id, kind=kind, text=text))
+    db.commit()
+    db.refresh(request)
+    return request
+
+
+def unseen_updates(request: FeedbackRequest, user: User) -> int:
+    """Сколько записей ленты автор ещё не видел. Для не-автора — 0: счётчик
+    существует только в «Моих заявках». Свои же записи (админ комментирует
+    собственную заявку) непрочитанными не считаются."""
+    if request.author_id != user.id:
+        return 0
+    seen = request.author_seen_event_id or 0
+    return sum(1 for e in request.events if e.id > seen and e.author_id != user.id)
+
+
+def mark_seen(db: Session, request: FeedbackRequest) -> FeedbackRequest:
+    """Автор открыл заявку — всё в ленте на этот момент прочитано."""
+    if request.events:
+        request.author_seen_event_id = request.events[-1].id
+        db.commit()
+        db.refresh(request)
     return request
