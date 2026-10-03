@@ -454,6 +454,179 @@ def recent_issue_values(db: Session, destination_kind: IssueDestinationKind | No
     }
 
 
+# --- Отпуск по техкарте (0088-b) ---
+# Техкарта = АР/КР типового проекта; её нормативы развёрнуты в производство
+# дома как BlockMaterial. К отпуску — quantity_required (ещё не запрошено и не
+# выдано); то, что уже в заявках на одобрении, этой операцией не трогается.
+
+
+def _house_block_materials(db: Session, production_id: int) -> list[BlockMaterial]:
+    return (
+        db.query(BlockMaterial)
+        .join(ProductionBlock, ProductionBlock.id == BlockMaterial.block_id)
+        .filter(ProductionBlock.production_id == production_id)
+        .options(joinedload(BlockMaterial.block), joinedload(BlockMaterial.warehouse_material))
+        .order_by(ProductionBlock.sequence, ProductionBlock.id, BlockMaterial.id)
+        .all()
+    )
+
+
+def techcard_houses(db: Session, all_houses: bool = False) -> list[dict]:
+    """Дома, у которых есть невыданный норматив; `all_houses` — все дома
+    (выбор дома в ручном отпуске без доступа к разделу «Производство»)."""
+    rows = (
+        db.query(ProductionBlock.production_id, func.count(func.distinct(BlockMaterial.warehouse_material_id)))
+        .join(BlockMaterial, BlockMaterial.block_id == ProductionBlock.id)
+        .filter(BlockMaterial.quantity_required > 0)
+        .group_by(ProductionBlock.production_id)
+        .all()
+    )
+    positions = dict(rows)
+    query = db.query(Production)
+    if not all_houses:
+        if not positions:
+            return []
+        query = query.filter(Production.id.in_(positions))
+    productions = query.order_by(Production.cycle_id.desc(), Production.house_index.asc()).all()
+    result = []
+    for production in productions:
+        client = production.cycle.client if production.cycle else None
+        house_model = client.house_model if client else None
+        result.append(
+            {
+                "production_id": production.id,
+                "house_name": production.name,
+                "client_name": client.full_name if client else None,
+                "house_model_title": house_model.title if house_model else None,
+                "positions_to_issue": positions.get(production.id, 0),
+            }
+        )
+    return result
+
+
+def techcard_preview(db: Session, production: Production) -> dict:
+    by_material: dict[int, dict] = {}
+    for bm in _house_block_materials(db, production.id):
+        material = bm.warehouse_material
+        row = by_material.setdefault(
+            material.id,
+            {
+                "warehouse_material_id": material.id,
+                "material_title": material.title,
+                "material_code": material.code,
+                "unit": material.unit,
+                "is_fractional": material.is_fractional,
+                "norm_total": 0.0,
+                "provided": 0.0,
+                "requested": 0.0,
+                "to_issue": 0.0,
+                "in_stock": float(material.quantity_in_stock),
+                "blocks": [],
+            },
+        )
+        required, requested, provided = (
+            float(bm.quantity_required), float(bm.quantity_requested), float(bm.quantity_provided)
+        )
+        row["norm_total"] += required + requested + provided
+        row["provided"] += provided
+        row["requested"] += requested
+        row["to_issue"] += required
+        if required > 0:
+            row["blocks"].append({"block_id": bm.block_id, "block_name": bm.block.name, "to_issue": required})
+    lines = list(by_material.values())
+    for row in lines:
+        row["balance_after"] = row["in_stock"] - row["to_issue"]
+        row["shortage"] = row["balance_after"] < -1e-9
+
+    block_ids = db.query(ProductionBlock.id).filter(ProductionBlock.production_id == production.id)
+    unmatched = (
+        db.query(func.count(Task.id))
+        .filter(
+            Task.link_type == TaskLinkType.BLOCK_MATERIAL_MATCH,
+            Task.block_id.in_(block_ids),
+            Task.status != TaskStatus.DONE,
+        )
+        .scalar()
+    )
+    client = production.cycle.client if production.cycle else None
+    house_model = client.house_model if client else None
+    return {
+        "production_id": production.id,
+        "house_label": house_label(production),
+        "house_model_title": house_model.title if house_model else None,
+        "zero_norm_count": sum(1 for row in lines if row["norm_total"] <= 0),
+        "unmatched_materials_count": unmatched or 0,
+        "lines": lines,
+    }
+
+
+def issue_by_techcard(
+    db: Session,
+    production: Production,
+    created_by: User,
+    *,
+    received_by: str | None,
+    lines: list[tuple[int, float]] | None = None,
+    note: str | None = None,
+    occurred_at: datetime | None = None,
+) -> WarehouseOperation:
+    """Без `lines` — весь остаток норматива дома; с `lines` — указанные
+    количества, каждое не больше остатка норматива по материалу. Нехватка на
+    складе — 400 от create_stock_operation, ничего не проводится."""
+    received_by = _required_text(received_by, "Укажите, кто получил материал")
+    block_materials = _house_block_materials(db, production.id)
+    to_issue: dict[int, float] = {}
+    for bm in block_materials:
+        to_issue[bm.warehouse_material_id] = to_issue.get(bm.warehouse_material_id, 0.0) + float(bm.quantity_required)
+
+    if lines is None:
+        lines = [(material_id, qty) for material_id, qty in to_issue.items() if qty > 0]
+    else:
+        titles = {bm.warehouse_material_id: bm.warehouse_material.title for bm in block_materials}
+        checked = []
+        for material_id, qty in lines:
+            if material_id not in to_issue:
+                raise _bad_request("Материала нет в техкарте этого дома")
+            if float(qty) > to_issue[material_id] + 1e-9:
+                raise _bad_request(
+                    f"По «{titles[material_id]}» к отпуску по техкарте осталось {_fmt_qty(to_issue[material_id])}"
+                )
+            if float(qty) > 0:
+                checked.append((material_id, float(qty)))
+        lines = checked
+    if not lines:
+        raise _bad_request("По техкарте этого дома нечего отпускать")
+
+    operation = create_stock_operation(
+        db,
+        WarehouseOperationKind.ISSUE_TECHCARD,
+        lines,
+        created_by,
+        occurred_at=occurred_at,
+        note=note,
+        destination_kind=IssueDestinationKind.HOUSE,
+        destination=house_label(production),
+        production_id=production.id,
+        received_by=received_by,
+    )
+
+    # Отпущенное переносится из «нужно» в «выдано» по блокам в порядке этапов.
+    for material_id, qty in lines:
+        remaining = qty
+        for bm in block_materials:
+            if remaining <= 1e-9:
+                break
+            if bm.warehouse_material_id != material_id or float(bm.quantity_required) <= 0:
+                continue
+            take = min(remaining, float(bm.quantity_required))
+            bm.quantity_required = float(bm.quantity_required) - take
+            bm.quantity_provided = float(bm.quantity_provided) + take
+            remaining -= take
+    db.flush()
+    readiness.invalidate_production_caches(db, production.id)
+    return operation
+
+
 def get_operation_or_404(db: Session, operation_id: int) -> WarehouseOperation:
     operation = db.get(WarehouseOperation, operation_id)
     if not operation:
