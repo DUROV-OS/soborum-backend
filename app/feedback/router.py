@@ -14,6 +14,7 @@ from app.feedback.models import FeedbackAttachment, FeedbackRequest
 from app.feedback.schemas import FeedbackEventCreate, FeedbackRequestOut, FeedbackStatusUpdate
 from app.feedback.service import (
     add_event,
+    can_add_event,
     can_read,
     create_request,
     list_requests,
@@ -98,17 +99,21 @@ def add_feedback_event(
     request_id: int,
     payload: FeedbackEventCreate,
     db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
 ):
-    """Комментарий администратора или «изменение в системе» в ленту заявки (0090)."""
-    request = db.get(FeedbackRequest, request_id)
-    if not request:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    """Запись в ленту заявки (0090): комментарий — администратор или автор
+    заявки, «изменение в системе» — только администратор."""
+    request = _readable_request(db, user, request_id)
+    if not can_add_event(user, request, payload.kind):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Изменение в системе отмечает только администратор",
+        )
     try:
-        request = add_event(db, request, admin, kind=payload.kind, text=payload.text)
+        request = add_event(db, request, user, kind=payload.kind, text=payload.text)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
-    return _out(request, admin)
+    return _out(request, user)
 
 
 @app.post("/requests/{request_id}/seen", response_model=FeedbackRequestOut)

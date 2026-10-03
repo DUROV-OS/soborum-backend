@@ -117,12 +117,21 @@ def set_status(db: Session, request: FeedbackRequest, status: FeedbackStatus, ac
     return request
 
 
+def can_add_event(user: User, request: FeedbackRequest, kind: FeedbackEventKind) -> bool:
+    """Комментарий — администратор или автор заявки; «изменение в системе» —
+    только администратор: что поменяли в системе, решает не автор."""
+    if user.role == UserRole.ADMIN:
+        return True
+    return kind == FeedbackEventKind.COMMENT and request.author_id == user.id
+
+
 def add_event(
     db: Session, request: FeedbackRequest, actor: User, *, kind: FeedbackEventKind, text: str
 ) -> FeedbackRequest:
-    """Комментарий администратора или «изменение в системе» в ленту заявки.
-    `ValueError` — на пустой или слишком длинный текст и на попытку записать
-    смену статуса вручную."""
+    """Комментарий (администратора или автора) или «изменение в системе» в
+    ленту заявки. Права проверяет вызывающий (`can_add_event`). `ValueError` —
+    на пустой или слишком длинный текст и на попытку записать смену статуса
+    вручную."""
     if kind not in (FeedbackEventKind.COMMENT, FeedbackEventKind.CHANGE):
         raise ValueError("В ленту можно добавить только комментарий или изменение в системе")
     text = text.strip()

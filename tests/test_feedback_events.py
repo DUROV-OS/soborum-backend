@@ -60,11 +60,43 @@ def test_admin_adds_comment_and_change(api, make_user):
     ]
 
 
-def test_worker_cannot_add_event_even_to_own_request(api, make_user):
+def test_author_comments_own_request_but_cannot_mark_change(api, make_user):
     author = make_user(Module.WAREHOUSE)
     created = _submit(api(author))
 
-    assert _event(api(author), created["id"]).status_code == 403
+    response = _event(api(author), created["id"], text="Да, теперь работает")
+
+    assert response.status_code == 201
+    event = response.json()["events"][0]
+    assert (event["kind"], event["text"], event["author"]["id"]) == ("comment", "Да, теперь работает", author.id)
+    # Свой комментарий непрочитанным для автора не считается.
+    assert response.json()["unseen_updates"] == 0
+    assert _event(api(author), created["id"], kind="change", text="Починил сам").status_code == 403
+
+
+def test_stranger_cannot_comment_foreign_request(api, make_user):
+    author = make_user(Module.WAREHOUSE)
+    stranger = make_user(Module.WAREHOUSE)
+    created = _submit(api(author))
+
+    assert _event(api(stranger), created["id"]).status_code == 403
+    assert _event(api(stranger), created["id"], kind="change").status_code == 403
+
+
+def test_admin_sees_author_comment_in_feed(api, make_user):
+    author = make_user(Module.WAREHOUSE)
+    admin = make_user(admin=True)
+    created = _submit(api(author))
+    _event(api(admin), created["id"], text="Уточните, на каком складе")
+    _event(api(author), created["id"], text="Основной склад")
+
+    body = api(admin).get(f"/api/feedback/requests/{created['id']}").json()
+
+    assert [(e["author"]["id"], e["text"]) for e in body["events"]] == [
+        (admin.id, "Уточните, на каком складе"),
+        (author.id, "Основной склад"),
+    ]
+    assert api(author).get(f"/api/feedback/requests/{created['id']}").json()["unseen_updates"] == 1
 
 
 def test_event_validation(api, make_user):

@@ -92,7 +92,8 @@ class FeedbackStatusUpdate(BaseModel):
 
 
 class FeedbackEventCreate(BaseModel):
-    """Запись администратора в ленту. `status` вручную не создаётся — его
+    """Запись в ленту: комментарий (админ или автор) или изменение в системе
+    (только админ). `status` вручную не создаётся — его
     пишет смена статуса."""
 
     kind: Literal[FeedbackEventKind.COMMENT, FeedbackEventKind.CHANGE]
