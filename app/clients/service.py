@@ -11,14 +11,18 @@ from app.clients.models import (
     ClientChatLink,
     ClientNote,
     ClientStage,
+    ContractSource,
     OrderType,
     PaymentPlan,
+    balance_due_deadline,
     stage_label,
 )
 from app.clients.schemas import (
+    ClientBalanceDueDateUpdate,
     ClientBalancePaymentUpdate,
     ClientChatLinkCreate,
     ClientChatLinkUpdate,
+    ClientContractVerify,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
@@ -28,7 +32,7 @@ from app.clients.schemas import (
     ClientTaskCreate,
     ClientTaskDeadlineUpdate,
 )
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.cycle.models import Cycle, CycleStatus
 from app.partners.models import Partner
 from app.tasks import service as task_service
@@ -326,6 +330,48 @@ def record_balance_payment(
     return client
 
 
+def _format_due(value) -> str:
+    return value.strftime("%d.%m.%Y") if value else "без срока"
+
+
+def update_balance_due_date(
+    db: Session, client: Client, payload: ClientBalanceDueDateUpdate, actor: User
+) -> Client:
+    """Срок оплаты остатка по договору (0084-j) — вводится вручную для
+    планов с остатком. Не зависит от фиксации документных данных: срок часто
+    договаривают уже после подписания договора.
+
+    Открытая задача «принять оплату после получения» получает этот срок
+    дедлайном; перенос пишется в журнал задачи так же, как перенос срока у
+    задач по клиенту."""
+    if client.payment_plan == PaymentPlan.FULL_PREPAYMENT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="У клиента полная предоплата — остатка «после получения» нет",
+        )
+    if client.balance_paid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Остаток уже принят")
+    was = client.balance_due_date
+    client.balance_due_date = payload.balance_due_date
+    db.flush()
+    if was != payload.balance_due_date:
+        task = _open_balance_payment_task(db, client.id)
+        if task is not None:
+            task.deadline = balance_due_deadline(payload.balance_due_date) if payload.balance_due_date else None
+            db.flush()
+            task_service.add_report(
+                db,
+                task,
+                actor,
+                kind=TaskReportKind.DEADLINE_SHIFT,
+                comment=(
+                    f"Срок оплаты остатка изменён с {_format_due(was)} "
+                    f"на {_format_due(payload.balance_due_date)}"
+                ),
+            )
+    return client
+
+
 def _set_document_file(db: Session, client: Client, field: str, file_id: int) -> Client:
     if client.documents_locked_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
@@ -334,27 +380,124 @@ def _set_document_file(db: Session, client: Client, field: str, file_id: int) ->
     return client
 
 
+# Договор и приложение — два документа с общими правилами источника и
+# проверки (0084-i). Подпись и окончание причастия («проверен» /
+# «проверено») — для сообщений гейта и отказов.
+CONTRACT_DOCUMENT_LABELS = {
+    "contract": ("Договор", ""),
+    "contract_appendix": ("Приложение к договору", "о"),
+}
+
+
+def _mark_contract_document_replaced(client: Client, document: str, source: ContractSource) -> None:
+    """Новый файл договора/приложения: источник — какой пришёл, прежняя
+    отметка проверки к новому файлу не относится и сбрасывается. Флаг
+    `verification_required` ставится только здесь — так гейт отличает файлы,
+    приложенные после ввода проверки, от старых (см. transition_stage)."""
+    setattr(client, f"{document}_source", source)
+    setattr(client, f"{document}_verification_required", True)
+    setattr(client, f"{document}_verified_by_id", None)
+    setattr(client, f"{document}_verified_at", None)
+    setattr(client, f"{document}_verification_note", None)
+
+
 def set_contract_files(db: Session, client: Client, contract_file_id: int, appendix_file_id: int) -> Client:
     """Обычный путь загрузки (0061): договор и приложение к договору одним
-    действием на фронте — нет эндпоинта на один без другого."""
+    действием на фронте — нет эндпоинта на один без другого. Загрузка не
+    равна проверке (0084-i): оба документа становятся «загружен, не
+    проверен»."""
     if client.documents_locked_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Документные данные уже зафиксированы")
     client.contract_file_id = contract_file_id
     client.contract_appendix_file_id = appendix_file_id
+    _mark_contract_document_replaced(client, "contract", ContractSource.UPLOADED)
+    _mark_contract_document_replaced(client, "contract_appendix", ContractSource.UPLOADED)
     db.flush()
     return client
 
 
-def set_contract_file(db: Session, client: Client, file_id: int) -> Client:
+def set_contract_file(db: Session, client: Client, file_id: int, *, source: ContractSource) -> Client:
     """Точечная установка одного файла — для сценариев вроде генерации
     документа Мариной по одному, где второй документ приходит отдельным
     вызовом. Гейт стадии всё равно требует оба (contract_file_id и
     contract_appendix_file_id) — см. _DOCUMENTS_REQUIRED."""
-    return _set_document_file(db, client, "contract_file_id", file_id)
+    _set_document_file(db, client, "contract_file_id", file_id)
+    _mark_contract_document_replaced(client, "contract", source)
+    db.flush()
+    return client
 
 
-def set_contract_appendix_file(db: Session, client: Client, file_id: int) -> Client:
-    return _set_document_file(db, client, "contract_appendix_file_id", file_id)
+def set_contract_appendix_file(db: Session, client: Client, file_id: int, *, source: ContractSource) -> Client:
+    _set_document_file(db, client, "contract_appendix_file_id", file_id)
+    _mark_contract_document_replaced(client, "contract_appendix", source)
+    db.flush()
+    return client
+
+
+def _other_document_editor_exists(db: Session, actor: User) -> bool:
+    """Есть ли, кроме `actor`, активный пользователь с правом правки
+    документов клиента (EDIT и выше в «Клиентах», администратор — всегда)."""
+    return any(
+        user.id != actor.id and user.access_level(Module.CLIENTS) >= AccessLevel.EDIT
+        for user in user_service.users_with_access(db, Module.CLIENTS)
+    )
+
+
+def verify_contract_document(db: Session, client: Client, payload: ClientContractVerify, actor: User) -> Client:
+    """Отметка «проверен» у договора или приложения (0084-i): кто, когда и
+    что сверено. Заметка обязательна — без неё отметка ничего не говорит.
+
+    Правила (0084 → «Принятые решения», п.2):
+    - сгенерированный Мариной документ отметить нельзя — это черновик, а не
+      подписанный договор, гейт его не пропускает ни при каком варианте;
+    - свой же загруженный файл отметить нельзя, если в системе есть другой
+      пользователь с правом правки документов клиента.
+
+    Фиксация документных данных (`documents_locked_at`) отметку не
+    запрещает: проверка не меняет файл, а у договоров, приложенных до
+    0084-i, её иначе не поставить."""
+    document = payload.document
+    label, ending = CONTRACT_DOCUMENT_LABELS[document]
+    note = payload.note.strip()
+    if not note:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Напишите, что сверено: стороны, сумма, график оплаты, модель дома",
+        )
+    asset = getattr(client, f"{document}_file")
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{label}: файл не приложен")
+    if getattr(client, f"{document}_source") == ContractSource.GENERATED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{label} сгенерирован{ending} Мариной — это черновик. Загрузите подписанный файл и проверьте его",
+        )
+    if asset.uploaded_by_id == actor.id and _other_document_editor_exists(db, actor):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{label}: файл загружен вами — проверить его должен другой сотрудник",
+        )
+    setattr(client, f"{document}_verified_by_id", actor.id)
+    setattr(client, f"{document}_verified_at", datetime.now(timezone.utc))
+    setattr(client, f"{document}_verification_note", note)
+    db.flush()
+    return client
+
+
+def _contract_gate_error(client: Client) -> str | None:
+    """Гейт выхода из «согласования» по договору и приложению (0084-i).
+
+    - Сгенерированный Мариной документ не проходит никогда.
+    - Файл, приложенный после ввода проверки (`verification_required`), —
+      только с отметкой «проверен».
+    - Старый файл без отметки гейт пропускает: для него карточка показывает
+      предупреждение «не проверен»."""
+    for document, (label, ending) in CONTRACT_DOCUMENT_LABELS.items():
+        if getattr(client, f"{document}_source") == ContractSource.GENERATED:
+            return f"{label} сгенерирован{ending} Мариной — приложите подписанный документ"
+        if getattr(client, f"{document}_verification_required") and getattr(client, f"{document}_verified_at") is None:
+            return f"{label} не проверен{ending} — отметьте проверку в карточке клиента"
+    return None
 
 
 def set_house_project_file(db: Session, client: Client, file_id: int) -> Client:
@@ -524,6 +667,9 @@ def transition_stage(db: Session, client: Client) -> Client:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Не заполнены документные поля: {', '.join(missing)}",
             )
+        contract_error = _contract_gate_error(client)
+        if contract_error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=contract_error)
         if client.order_type == OrderType.SINGLE:
             client.houses_count = 1
         elif client.order_type == OrderType.MULTIPLE and client.houses_count < 2:
@@ -752,15 +898,32 @@ def _apply_stage_plan(db: Session, client: Client, production, template_cache: d
         instantiate_stage_plan(db, production, template)
 
 
+def _open_balance_payment_task(db: Session, client_id: int) -> Task | None:
+    return (
+        db.query(Task)
+        .filter(
+            Task.link_type == TaskLinkType.CLIENT_BALANCE_PAYMENT,
+            Task.link_id == client_id,
+            Task.status != TaskStatus.DONE,
+        )
+        .order_by(Task.id.desc())
+        .first()
+    )
+
+
 def _create_balance_payment_task(db: Session, client: Client) -> None:
     assignees = user_service.users_with_access(db, Module.CLIENTS)
-    task_service.create_link_task(
+    task = task_service.create_link_task(
         db,
         title=f"Клиент «{client.full_name}»: принять оплату после получения (остаток)",
         link_type=TaskLinkType.CLIENT_BALANCE_PAYMENT,
         link_id=client.id,
         assignees=assignees,
     )
+    # Срок остатка (0084-j), если его уже указали до старта производства.
+    if client.balance_due_date is not None:
+        task.deadline = balance_due_deadline(client.balance_due_date)
+        db.flush()
 
 
 @task_sync.register(TaskLinkType.CLIENT_BALANCE_PAYMENT)

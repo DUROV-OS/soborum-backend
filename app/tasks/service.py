@@ -6,9 +6,20 @@ from sqlalchemy.orm import Session
 from app.ai import story_points as ai_story_points
 from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.common.module_access import Module
+from app.production import readiness
+from app.tasks import policy as review_policy
 from app.tasks import sync as task_sync
 from app.tasks import timelog
-from app.tasks.models import Task, TaskLinkType, TaskPriority, TaskReport, TaskReportKind, TaskStatus
+from app.tasks.models import (
+    Task,
+    TaskLinkType,
+    TaskPriority,
+    TaskReport,
+    TaskReportKind,
+    TaskReportRevision,
+    TaskStatus,
+)
+from app.tasks.schemas import TaskScope
 from app.users.models import User
 
 ALLOWED_MANUAL_TRANSITIONS = {
@@ -55,6 +66,32 @@ def is_mine_or_claimable(task: Task, user: User) -> bool:
     if user in task.assignees or user in task.reviewers:
         return True
     return is_claimable_for(task, user)
+
+
+def default_board_scope(user: User) -> TaskScope:
+    """Область, в которой пользователь видит «все свои» задачи на доске: «Все
+    задачи», если есть доступ `tasks_all`, иначе «Мои задачи» (0084-h)."""
+    return TaskScope.ALL if user.has_access(Module.TASKS_ALL) else TaskScope.MINE
+
+
+def apply_scope(tasks: list[Task], user: User, scope: TaskScope) -> list[Task]:
+    """Фильтр `scope` доски (0021): ALL — без фильтра, MINE — свои и свободные,
+    CLAIMABLE — только свободные. Права на ALL проверяет вызывающий."""
+    if scope == TaskScope.MINE:
+        return [t for t in tasks if is_mine_or_claimable(t, user)]
+    if scope == TaskScope.CLAIMABLE:
+        return [t for t in tasks if is_claimable_for(t, user)]
+    return tasks
+
+
+def open_tasks_query(db: Session, user: User, scope: TaskScope, query=None) -> list[Task]:
+    """Открытые (не done) задачи в области `scope` — один набор и для числа на
+    Пульсе, и для `GET /api/tasks?status=open` (0084-h). `query` — уже
+    отфильтрованный запрос доски (исполнитель, блок и т.д.), по умолчанию все
+    задачи."""
+    base = query if query is not None else db.query(Task)
+    tasks = base.filter(Task.status != TaskStatus.DONE).order_by(Task.id.desc()).all()
+    return apply_scope(tasks, user, scope)
 
 
 def claim_task(db: Session, task: Task, user: User) -> Task:
@@ -217,6 +254,10 @@ def update_task(
 
 
 def _cascade_readiness(db: Session, completed_task: Task) -> None:
+    if completed_task.block is not None:
+        # Закрытие задачи блока меняет допуск следующих блоков и, для задачи
+        # сверки материала, состояние материалов (0084-c).
+        readiness.invalidate_production_caches(db, completed_task.block.production_id)
     dependents = [t for t in completed_task.blocks if t.status == TaskStatus.NOT_READY]
     became_ready = []
     for dependent in dependents:
@@ -229,6 +270,29 @@ def _cascade_readiness(db: Session, completed_task: Task) -> None:
             db, dependent, TaskStatus.NOT_READY, TaskStatus.READY,
             automatic=True, note="dependencies satisfied",
         )
+
+
+def _assign_policy_reviewer(db: Session, task: Task, actor: User | None) -> None:
+    """Задачу, требующую приёмки, сдали, а принять её некому (0084-f).
+    Проверяющим становится ответственный — если он есть и сам не исполнитель
+    этой задачи (свою работу он принять не может, см. policy). Иначе ничего
+    не придумываем: задача остаётся «на проверке», TaskOut.review_blocked_reason
+    говорит, что проверяющего нет."""
+    responsible = task.responsible or (
+        db.get(User, task.responsible_id) if task.responsible_id is not None else None
+    )
+    if responsible is None or not review_policy.can_accept_own_work(task, responsible):
+        return
+    task.reviewers.append(responsible)
+    db.add(
+        TaskReport(
+            task_id=task.id,
+            author_id=(actor or responsible).id,
+            kind=TaskReportKind.REVIEWER_ASSIGNED,
+            comment=f"Проверяющий назначен по политике: ответственный — {responsible.full_name}",
+        )
+    )
+    db.flush()
 
 
 def _finalize_status(
@@ -249,9 +313,14 @@ def _finalize_status(
     if previous != new_status:
         timelog.record_stage(db, task, previous, new_status, actor=actor, automatic=automatic)
 
-    if task.status == TaskStatus.IN_REVIEW and not task.reviewers:
+    if task.status == TaskStatus.IN_REVIEW and not task.reviewers and not review_policy.requires_review(task):
         # Auto-close when there is nobody to review: not attributable to a person.
+        # Задачи, требующие приёмки (0084-f, app/tasks/policy.py), так не
+        # закрываются — остаются «на проверке», пока их не примут.
         return _finalize_status(db, task, TaskStatus.DONE, automatic=True)
+
+    if task.status == TaskStatus.IN_REVIEW and not review_policy.eligible_reviewers(task):
+        _assign_policy_reviewer(db, task, actor)
 
     if task.status == TaskStatus.DONE:
         _cascade_readiness(db, task)
@@ -278,8 +347,18 @@ def set_status(db: Session, task: Task, new_status: TaskStatus, actor: User) -> 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Перевести задачу может только исполнитель")
     if role_required == "reviewer" and actor not in task.reviewers:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Перевести задачу может только проверяющий")
+    if new_status == TaskStatus.DONE:
+        _ensure_not_own_acceptance(task, actor)
 
     return _finalize_status(db, task, new_status, actor=actor)
+
+
+def _ensure_not_own_acceptance(task: Task, actor: User) -> None:
+    if not review_policy.can_accept_own_work(task, actor):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Принять свою сдачу нельзя: задачу блока производства принимает другой сотрудник",
+        )
 
 
 def _add_report(
@@ -343,7 +422,9 @@ def submit_report(
     пустой комментарий) не сохраняется ни то, ни другое.
 
     Задача без проверяющих после этого сразу становится DONE (обычное
-    поведение _finalize_status), отчёт при этом остаётся у задачи.
+    поведение _finalize_status), отчёт при этом остаётся у задачи — кроме
+    задач, требующих приёмки по app/tasks/policy.py (0084-f): те остаются
+    «на проверке».
     """
     text = (comment or "").strip()
     if not text:
@@ -400,6 +481,9 @@ def review_task(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Перевести задачу может только проверяющий",
         )
+    if accept:
+        # До записи в журнал: отказ не должен оставлять «принято» в отчётах.
+        _ensure_not_own_acceptance(task, actor)
 
     if text or attachments:
         _add_report(
@@ -418,11 +502,17 @@ def edit_report_comment(db: Session, task: Task, report_id: int, actor: User, co
     и закрытая задача не должна этому мешать.
 
     Менять можно только свой комментарий и только текст: вид записи, автора,
-    дату отправки и вложения правка не трогает.
+    дату отправки и вложения правка не трогает. Прежний текст перед
+    перезаписью сохраняется ревизией (0084-g) с признаком «после приёмки».
     """
     report = db.get(TaskReport, report_id)
     if report is None or report.task_id != task.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отчёт не найден")
+    if report.kind == TaskReportKind.REVIEWER_ASSIGNED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Служебную запись журнала изменить нельзя",
+        )
     if report.author_id != actor.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -437,10 +527,39 @@ def edit_report_comment(db: Session, task: Task, report_id: int, actor: User, co
         )
 
     if text != report.comment:
+        now = datetime.now(timezone.utc)
+        report.revisions.append(
+            TaskReportRevision(
+                comment=report.comment,
+                edited_by_id=actor.id,
+                edited_at=now,
+                after_acceptance=_is_accepted_after(task, report),
+            )
+        )
         report.comment = text
-        report.updated_at = datetime.now(timezone.utc)
+        report.updated_at = now
         db.flush()
     return report
+
+
+def get_report_or_404(db: Session, task: Task, report_id: int) -> TaskReport:
+    """Запись журнала именно этой задачи — для чтения её ревизий."""
+    report = db.get(TaskReport, report_id)
+    if report is None or report.task_id != task.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отчёт не найден")
+    return report
+
+
+def _is_accepted_after(task: Task, report: TaskReport) -> bool:
+    """Приняли ли задачу уже после этой записи: задача закрыта или в журнале
+    есть решение «принято», оставленное позже неё. Правка в этот момент —
+    правка того, что проверяющий уже принял."""
+    if task.status == TaskStatus.DONE:
+        return True
+    return any(
+        r.kind == TaskReportKind.REVIEW_ACCEPTED and r.id > report.id
+        for r in task.reports
+    )
 
 
 def force_close(db: Session, task: Task) -> None:

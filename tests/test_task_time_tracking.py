@@ -98,6 +98,8 @@ def test_rollup_is_partial_while_in_progress(db, make_user):
 
 
 def test_auto_done_without_reviewers_is_marked_automatic(db, make_user):
+    # Задача без block_id: автозакрытие разрешено политикой (0084-f). Задачи
+    # блоков производства так не закрываются — tests/test_task_review_policy.py.
     worker = make_user(Module.TASKS)
     task = task_service.create_task(db, title="Вывезти мусор", assignee_ids=[worker.id])
     db.flush()

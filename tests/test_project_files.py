@@ -1,9 +1,14 @@
+import shutil
 from pathlib import Path
+
+import pytest
 
 from app.common.file_text import extract_asset_text, model_hint
 from app.common.files import FileAsset, FilePurpose
 
 
+# OCR — внешний бинарник tesseract; ни в CI, ни в образе бэкенда его нет.
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract не установлен")
 def test_ocr_reads_scanned_pdf(tmp_path):
     from PIL import Image, ImageDraw, ImageFont
     import pymupdf

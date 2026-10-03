@@ -27,7 +27,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-import anthropic
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -49,15 +48,15 @@ from app.users.models import User
 MAX_CASCADE_DEPTH = 4  # tree is only 3 levels deep; this is just a runaway-recursion guard
 
 
-def _get_client() -> anthropic.Anthropic:
-    if not settings.anthropic_api_key:
+def _get_client():
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ИИ не настроен: не задан ANTHROPIC_API_KEY (см. backend/.env)",
+            detail="ИИ не настроен: нет ключа активного провайдера (AI_PROVIDER, см. backend/.env)",
         )
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
-    return anthropic_client()
+    return llm_client()
 
 
 def _tool_use_input(response, tool_name: str) -> dict | None:
@@ -65,7 +64,7 @@ def _tool_use_input(response, tool_name: str) -> dict | None:
     return block.input if block else None
 
 
-def _create_with_search(client: anthropic.Anthropic, mcp_token: str | None, kwargs: dict):
+def _create_with_search(client, mcp_token: str | None, kwargs: dict):
     """Like conductor._research_brief's call, but for a subagent that also
     has to end in a specific structured tool call: attaches the read-only
     knowledge-base MCP connector when configured, on top of whatever tools
@@ -85,7 +84,7 @@ def _create_with_search(client: anthropic.Anthropic, mcp_token: str | None, kwar
 
 
 def _call_subagent(
-    client: anthropic.Anthropic, mcp_token: str | None, system: str, user_content: str,
+    client, mcp_token: str | None, system: str, user_content: str,
     tool_schema: dict, tool_name: str, max_tokens: int,
 ) -> dict:
     """One subagent turn that can search the knowledge base and the web
@@ -96,7 +95,7 @@ def _call_subagent(
     structured answer - see the comment below for why that fallback can't
     just replay the first response's content as history."""
     kwargs = {
-        "model": settings.ai_model,
+        "model": settings.llm_model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": [{"role": "user", "content": user_content}],
@@ -123,7 +122,7 @@ def _call_subagent(
             "\n\nЧерновые заметки по итогам предыдущего исследования (могут быть неполными):\n" + already_written
         )
     fallback_response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": fallback_user_content}],
@@ -136,7 +135,7 @@ def _call_subagent(
 # ------------------------------------------------------------------ stage 1 --
 
 def _collect_opinions(
-    db: Session, client: anthropic.Anthropic, node_ctx: dict, user_message: str, history_note: str | None,
+    db: Session, client, node_ctx: dict, user_message: str, history_note: str | None,
     context: dict,
 ) -> list[dict]:
     payload = {"node": node_ctx, "request": user_message, "production_snapshot": context["production"]}
@@ -167,7 +166,7 @@ def _collect_opinions(
 
 
 def gather_role_opinions(
-    db: Session, client: anthropic.Anthropic, node_ctx: dict, question: str, history_note: str | None, context: dict
+    db: Session, client, node_ctx: dict, question: str, history_note: str | None, context: dict
 ) -> list[dict]:
     """Public entry point for polling the 7 council roles over an arbitrary
     question about a node, without the proposal/synthesis machinery around
@@ -177,7 +176,7 @@ def gather_role_opinions(
 
 
 def _synthesize(
-    client: anthropic.Anthropic, node_ctx: dict, user_message: str, history_note: str | None, opinions: list[dict],
+    client, node_ctx: dict, user_message: str, history_note: str | None, opinions: list[dict],
     context: dict,
 ) -> dict:
     payload = {
@@ -189,7 +188,7 @@ def _synthesize(
     if history_note:
         payload["previous_round"] = history_note
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=1024,
         system=prompts.SYNTHESIS_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -202,7 +201,7 @@ def _synthesize(
     return result
 
 
-def _run_council(db: Session, client: anthropic.Anthropic, node: BoardNode, user_message: str, history_note: str | None) -> dict:
+def _run_council(db: Session, client, node: BoardNode, user_message: str, history_note: str | None) -> dict:
     node_ctx = board_service.node_context(node)
     # The conductor gathers production data and a knowledge-base/web research
     # briefing before the council opinions and synthesis are drafted, so both
@@ -282,7 +281,7 @@ def cancel_proposal(db: Session, proposal: BoardProposal) -> BoardProposal:
 
 # --------------------------------------------------------------- stage 4-6 --
 
-def _decide_node_edit(client: anthropic.Anthropic, node: BoardNode, round_data: dict) -> dict:
+def _decide_node_edit(client, node: BoardNode, round_data: dict) -> dict:
     payload = {
         "node": board_service.node_context(node),
         "council_summary": round_data.get("summary"),
@@ -292,7 +291,7 @@ def _decide_node_edit(client: anthropic.Anthropic, node: BoardNode, round_data: 
         "employee_request": round_data.get("user_message"),
     }
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=1024,
         system=prompts.EDITOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -333,7 +332,7 @@ def _apply_node_edit(
         board_service.apply_structural_ops(db, node, structural, source, proposal_id, actor, changes)
 
 
-def _review_children(client: anthropic.Anthropic, parent: BoardNode, change_note: str) -> dict | None:
+def _review_children(client, parent: BoardNode, change_note: str) -> dict | None:
     payload = {
         "parent_change": change_note,
         "parent_level": parent.level,
@@ -343,7 +342,7 @@ def _review_children(client: anthropic.Anthropic, parent: BoardNode, change_note
         ],
     }
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=2048,
         system=prompts.CASCADE_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -354,7 +353,7 @@ def _review_children(client: anthropic.Anthropic, parent: BoardNode, change_note
 
 
 def cascade_down(
-    db: Session, client: anthropic.Anthropic, parent: BoardNode, change_note: str, source: BoardChangeSource,
+    db: Session, client, parent: BoardNode, change_note: str, source: BoardChangeSource,
     proposal_id: int | None, actor: User, changes: list[BoardNodeChange], depth: int = 0,
 ) -> None:
     if not parent.children or depth > MAX_CASCADE_DEPTH:
@@ -401,7 +400,7 @@ def cascade_down(
             )
 
 
-def _review_ancestor(client: anthropic.Anthropic, ancestor: BoardNode, siblings: list[BoardNode], change_note: str) -> dict | None:
+def _review_ancestor(client, ancestor: BoardNode, siblings: list[BoardNode], change_note: str) -> dict | None:
     payload = {
         "change_note": change_note,
         "self": {
@@ -411,7 +410,7 @@ def _review_ancestor(client: anthropic.Anthropic, ancestor: BoardNode, siblings:
         "other_children": [{"id": c.id, "title": c.title, "color": c.color.value} for c in siblings],
     }
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=1024,
         system=prompts.ANCESTOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -422,7 +421,7 @@ def _review_ancestor(client: anthropic.Anthropic, ancestor: BoardNode, siblings:
 
 
 def cascade_up(
-    db: Session, client: anthropic.Anthropic, changed_node: BoardNode, change_note: str, source: BoardChangeSource,
+    db: Session, client, changed_node: BoardNode, change_note: str, source: BoardChangeSource,
     proposal_id: int | None, actor: User, changes: list[BoardNodeChange],
 ) -> None:
     ancestor = changed_node.parent

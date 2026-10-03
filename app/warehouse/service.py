@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.accounting.models import SupplierOrder
 from app.common.module_access import Module as AccessModule
 from app.max.models import bot_knows_chat
+from app.production import readiness
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, ProductionBlock
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
@@ -243,7 +244,7 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> 
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
 
-    module_material = request.module_material
+    module_material = request.block_material
     warehouse_material = request.warehouse_material
 
     module_material.quantity_requested -= request.quantity
@@ -254,6 +255,7 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> 
     request.decided_by_id = decided_by.id
     request.decided_at = datetime.now(timezone.utc)
     db.flush()
+    readiness.invalidate_production_caches(db, module_material.block.production_id)
 
     log_movement(db, warehouse_material, -float(request.quantity), StockMovementReason.ISSUED, decided_by, request.id)
 
@@ -270,7 +272,7 @@ def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> M
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
 
-    module_material = request.module_material
+    module_material = request.block_material
     warehouse_material = request.warehouse_material
 
     module_material.quantity_requested -= request.quantity
@@ -280,6 +282,7 @@ def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> M
     request.decided_by_id = decided_by.id
     request.decided_at = datetime.now(timezone.utc)
     db.flush()
+    readiness.invalidate_production_caches(db, module_material.block.production_id)
 
     log_movement(db, warehouse_material, 0, StockMovementReason.REQUEST_REJECTED_RETURN, decided_by, request.id)
 

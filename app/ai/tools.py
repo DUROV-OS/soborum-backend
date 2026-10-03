@@ -10,6 +10,7 @@ turn blowing up.
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from functools import partial
 from typing import Callable
 
 from fastapi import HTTPException, status
@@ -17,7 +18,15 @@ from sqlalchemy.orm import Session
 
 from app.ai.models import ChatDomain
 from app.clients import service as client_service
-from app.clients.models import Client, ClientStage, OrderType, parse_payment_plan
+from app.clients.models import (
+    Client,
+    ClientStage,
+    ContractSource,
+    OrderType,
+    balance_state,
+    parse_payment_plan,
+    stage_label,
+)
 from app.clients.schemas import (
     ClientBalancePaymentUpdate,
     ClientDocumentsUpdate,
@@ -117,6 +126,10 @@ def _serialize_client(c: Client) -> dict:
         "id": c.id,
         "cycle_id": c.cycle_id,
         "stage": c.stage.value,
+        # Человеческая подпись рядом со слагом (0086): по одному `approval`
+        # модель пересказывала стадию человеку как «согласование» — название,
+        # которого в интерфейсе нет с 0079.
+        "stage_label": stage_label(c.stage),
         "full_name": c.full_name,
         "phone": c.phone,
         "email": c.email,
@@ -129,12 +142,22 @@ def _serialize_client(c: Client) -> dict:
         "advance_amount": c.advance_amount,
         "installation_address": c.installation_address,
         "contract_file_id": c.contract_file_id,
+        # Загрузка ≠ проверка (0084-i): Марина должна видеть, откуда файл и
+        # проверен ли он, а не считать приложенный договор подписанным.
+        "contract_source": c.contract_source.value if c.contract_source else None,
+        "contract_verified": c.contract_verified_at is not None,
+        "contract_appendix_source": c.contract_appendix_source.value if c.contract_appendix_source else None,
+        "contract_appendix_verified": c.contract_appendix_verified_at is not None,
         "house_project_file_id": c.house_project_file_id,
         **_attached_specs(c),
         "documents_locked": c.documents_locked_at is not None,
         "is_paid": c.is_paid,
         "payment_locked": c.payment_locked_at is not None,
         "balance_paid": c.balance_paid,
+        # Срок и состояние остатка (0084-j): «в срок» — не нарушение, просрочка
+        # — только после срока, без срока — отдельный сигнал.
+        "balance_due_date": c.balance_due_date.isoformat() if c.balance_due_date else None,
+        "balance_state": balance_state(c).value,
         "notes": [{"id": n.id, "text": n.text, "created_at": _iso(n.created_at)} for n in c.notes],
     }
 
@@ -176,7 +199,17 @@ def _list_clients(db: Session, user: User, stage: str | None = None) -> dict:
     if stage:
         query = query.filter(Client.stage == ClientStage(stage))
     clients = query.order_by(Client.id.desc()).limit(50).all()
-    return {"clients": [{"id": c.id, "full_name": c.full_name, "stage": c.stage.value} for c in clients]}
+    return {
+        "clients": [
+            {
+                "id": c.id,
+                "full_name": c.full_name,
+                "stage": c.stage.value,
+                "stage_label": stage_label(c.stage),
+            }
+            for c in clients
+        ]
+    }
 
 
 @register(
@@ -192,8 +225,13 @@ def _add_client_note(db: Session, user: User, client_id: int, text: str) -> dict
 
 _GENERATED_DOCUMENT_HANDLERS = {
     "house_project": (FilePurpose.HOUSE_PROJECT, client_service.set_house_project_file),
-    "contract": (FilePurpose.CONTRACT, client_service.set_contract_file),
-    "contract_appendix": (FilePurpose.CONTRACT_APPENDIX, client_service.set_contract_appendix_file),
+    # Сгенерированный договор помечается источником GENERATED (0084-i): это
+    # черновик, гейт стадии его не пропускает.
+    "contract": (FilePurpose.CONTRACT, partial(client_service.set_contract_file, source=ContractSource.GENERATED)),
+    "contract_appendix": (
+        FilePurpose.CONTRACT_APPENDIX,
+        partial(client_service.set_contract_appendix_file, source=ContractSource.GENERATED),
+    ),
 }
 
 
@@ -768,7 +806,7 @@ def _list_tasks(db: Session, user: User, assignee_id: int | None = None, status:
 
 @register(
     "get_user_workload",
-    "Загрузка сотрудников: сколько у каждого сейчас незавершённых задач. Используй это, чтобы "
+    "Загрузка сотрудников: сколько у каждого сейчас задач на исполнении (где он исполнитель). Используй это, чтобы "
     "предложить, кому поручить новую задачу, вместо угадывания.",
     {"module": {"type": "string", "enum": [m.value for m in Module]}},
     required_module=Module.TASKS, read_only=True, domains=[ChatDomain.TASKS],

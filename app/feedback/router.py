@@ -4,15 +4,23 @@
 `admin`. Файлы заявки отдаёт этот же раздел, а не общий `/api/files/{id}`:
 право на них определяется авторством заявки, а не доступом к разделу."""
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_admin
 from app.db.session import get_db
 from app.feedback.models import FeedbackAttachment, FeedbackRequest
-from app.feedback.schemas import FeedbackRequestOut, FeedbackStatusUpdate
-from app.feedback.service import can_read, create_request, list_requests, set_status
+from app.feedback.schemas import FeedbackEventCreate, FeedbackRequestOut, FeedbackStatusUpdate
+from app.feedback.service import (
+    add_event,
+    can_read,
+    create_request,
+    list_requests,
+    mark_seen,
+    set_status,
+    unseen_updates,
+)
 from app.users.models import User
 
 app = FastAPI(
@@ -22,9 +30,17 @@ app = FastAPI(
 )
 
 
+def _out(request: FeedbackRequest, user: User) -> FeedbackRequestOut:
+    return FeedbackRequestOut.from_model(request, unseen_updates(request, user))
+
+
 @app.get("/requests", response_model=list[FeedbackRequestOut])
-def list_feedback(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return [FeedbackRequestOut.from_model(r) for r in list_requests(db, user)]
+def list_feedback(
+    mine: bool = Query(default=False, description="Только свои заявки — для «Моих заявок», в т.ч. у админа"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return [_out(r, user) for r in list_requests(db, user, mine=mine)]
 
 
 @app.post("/requests", response_model=FeedbackRequestOut, status_code=status.HTTP_201_CREATED)
@@ -52,12 +68,12 @@ def create_feedback(
     except ValueError as error:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
-    return FeedbackRequestOut.from_model(request)
+    return _out(request, user)
 
 
 @app.get("/requests/{request_id}", response_model=FeedbackRequestOut)
 def get_feedback(request_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return FeedbackRequestOut.from_model(_readable_request(db, user, request_id))
+    return _out(_readable_request(db, user, request_id), user)
 
 
 @app.patch("/requests/{request_id}", response_model=FeedbackRequestOut)
@@ -65,12 +81,44 @@ def update_feedback_status(
     request_id: int,
     payload: FeedbackStatusUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     request = db.get(FeedbackRequest, request_id)
     if not request:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
-    return FeedbackRequestOut.from_model(set_status(db, request, payload.status))
+    return _out(set_status(db, request, payload.status, admin), admin)
+
+
+@app.post(
+    "/requests/{request_id}/events",
+    response_model=FeedbackRequestOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_feedback_event(
+    request_id: int,
+    payload: FeedbackEventCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Комментарий администратора или «изменение в системе» в ленту заявки (0090)."""
+    request = db.get(FeedbackRequest, request_id)
+    if not request:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    try:
+        request = add_event(db, request, admin, kind=payload.kind, text=payload.text)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    return _out(request, admin)
+
+
+@app.post("/requests/{request_id}/seen", response_model=FeedbackRequestOut)
+def mark_feedback_seen(request_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Автор открыл заявку в «Моих заявках» — обновления прочитаны (0090).
+    Администратор, открывая чужую заявку, счётчик автора не сбрасывает."""
+    request = _readable_request(db, user, request_id)
+    if request.author_id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Отметить прочитанной может только автор")
+    return _out(mark_seen(db, request), user)
 
 
 @app.get("/requests/{request_id}/files/{file_id}")

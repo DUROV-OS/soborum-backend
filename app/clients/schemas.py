@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from app.clients.models import ClientChatState, ClientStage, OrderType, PaymentPlan
+from app.clients.models import BalanceState, ClientChatState, ClientStage, ContractSource, OrderType, PaymentPlan, balance_state
 from app.common.files import FileAssetOut
 from app.tasks.models import TaskReportKind, TaskStatus
 from app.house_models.schemas import HouseModelBriefOut
@@ -90,6 +91,20 @@ class ClientPaymentEditUnlockUpdate(BaseModel):
 
 class ClientBalancePaymentUpdate(BaseModel):
     balance_paid: bool
+
+
+class ClientContractVerify(BaseModel):
+    """Отметка «проверен» у договора или приложения (0084-i). `note` —
+    что сверено: стороны, сумма, график оплаты, модель дома."""
+
+    document: Literal["contract", "contract_appendix"] = "contract"
+    note: str
+
+
+class ClientBalanceDueDateUpdate(BaseModel):
+    """Срок оплаты остатка (0084-j). `None` — снять срок."""
+
+    balance_due_date: date | None
 
 
 class ClientNoteCreate(BaseModel):
@@ -201,6 +216,16 @@ class ClientTaskOut(BaseModel):
         )
 
 
+class ContractVerifierOut(BaseModel):
+    """Кто отметил договор проверенным — имя нужно карточке, id — для
+    правила «не свой же файл» на фронте."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+
+
 class ClientOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -231,6 +256,18 @@ class ClientOut(BaseModel):
     installation_address: str | None
     contract_file: FileAssetOut | None
     contract_appendix_file: FileAssetOut | None
+    # Источник и проверка договора/приложения (0084-i). `*_verification_required`
+    # False — договор приложен до ввода проверки: гейт только предупреждает.
+    contract_source: ContractSource | None = None
+    contract_verification_required: bool = False
+    contract_verified_by: ContractVerifierOut | None = None
+    contract_verified_at: datetime | None = None
+    contract_verification_note: str | None = None
+    contract_appendix_source: ContractSource | None = None
+    contract_appendix_verification_required: bool = False
+    contract_appendix_verified_by: ContractVerifierOut | None = None
+    contract_appendix_verified_at: datetime | None = None
+    contract_appendix_verification_note: str | None = None
     house_project_file: FileAssetOut | None
     ar_file: FileAssetOut | None
     kr_file: FileAssetOut | None
@@ -241,9 +278,17 @@ class ClientOut(BaseModel):
     payment_edit_unlocked: bool
     balance_paid: bool | None
     balance_paid_at: datetime | None
+    balance_due_date: date | None = None
 
     notes: list[ClientNoteOut] = []
     # Задачи менеджера по клиенту (0079-d): и открытые, и закрытые, свежие
     # сверху. Ближайшую открытую доска выбирает сама — отдельная сводка ради
     # этого не нужна, задач у клиента единицы.
     tasks: list[ClientTaskOut] = Field(default=[], validation_alias="followup_tasks")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def balance_state(self) -> BalanceState:
+        """Состояние остатка (0084-j): вычисляется из плана, отметки приёма и
+        срока — то же правило, что у Пульса."""
+        return balance_state(self)

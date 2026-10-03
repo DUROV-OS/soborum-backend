@@ -151,15 +151,15 @@ def _call_ai(pages_payload: list[dict]) -> dict:
     """Единственная точка сетевого вызова Claude — вынесена отдельно, чтобы
     тесты монки-патчили именно её (как `deadlines._ai_pick_bottleneck`),
     не поднимая реальную сеть, и считали число вызовов."""
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     # Полный граф на реальный многостраничный КР — не короткая структурированная
     # реплика вроде deadlines._ai_pick_bottleneck: генерация с max_tokens=16000
     # не укладывается в дефолтный клиентский timeout (60с, рассчитан на быстрые
     # вызовы) — раньше запрос обрывался клиентом раньше, чем модель успевала
     # дописать JSON. Увеличены оба параметра.
-    response = anthropic_client(timeout=300.0).messages.create(
-        model=settings.ai_model,
+    response = llm_client(timeout=300.0).messages.create(
+        model=settings.llm_model,
         max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(pages_payload, ensure_ascii=False)}],
@@ -272,10 +272,10 @@ def generate_or_reuse_template(db: Session, client: Client) -> ProductionStageTe
             detail="Сначала запустите постраничный разбор КР этого клиента",
         )
 
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Нужен ключ ИИ (ANTHROPIC_API_KEY) для первой генерации шаблона графа этапов",
+            detail="Нужен ключ активного ИИ-провайдера (AI_PROVIDER) для первой генерации шаблона графа этапов",
         )
 
     pages_payload = _kr_payload(extraction)
@@ -328,6 +328,8 @@ def _mark_reviewed(db: Session, template: ProductionStageTemplate) -> None:
 def update_block(db: Session, template: ProductionStageTemplate, block: TemplateBlock, payload) -> TemplateBlock:
     _require_editable(template)
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "requires_materials" and value is None:
+            continue  # колонка NOT NULL: null значит «не менять»
         setattr(block, field, value)
     _mark_reviewed(db, template)
     return block

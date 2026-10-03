@@ -6,6 +6,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from app.clients.models import Client
 from app.common.module_access import Module
 from app.core.config import settings
@@ -15,6 +17,10 @@ from app.production import stage_template_service
 from app.production.stage_templates import ProductionStageTemplate, TemplateStatus
 
 SAMPLE_KR = Path(__file__).resolve().parents[2] / "sources" / "АР КР и Договор" / "КР_1 блок6.pdf"
+
+# Реальный образец лежит вне репозитория (реальные документы в git не кладём),
+# поэтому в CI (0084-a) этих тестов нет — они идут только в локальной рабочей области.
+needs_sample_kr = pytest.mark.skipif(not SAMPLE_KR.is_file(), reason="нет реального образца КР в sources/")
 
 FAKE_GRAPH = {
     "blocks": [
@@ -232,6 +238,7 @@ def test_generate_requires_kr_extraction_first(db, make_user, monkeypatch):
         assert getattr(error, "status_code", None) == 400
 
 
+@needs_sample_kr
 def test_generate_on_real_kr_sample_sends_extracted_text_to_ai(db, make_user, monkeypatch):
     """Сквозной путь на реальном образце (0066-c → 0066-d): постраничный разбор
     настоящего PDF из sources/, затем генерация шаблона с мокнутым Anthropic-

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.cycle.models import Cycle
 from app.dashboard.aktualnoe import _stage_of
+from app.production import readiness
 from app.production.deadlines import generate_deadline_insight
 from app.production.models import (
     BlockMaterial,
@@ -24,6 +25,7 @@ from app.production.models import (
     Production,
     ProductionBlock,
 )
+from app.production.readiness import MaterialsState
 from app.production.schemas import (
     ProductionAktualnoeOut,
     ProductionAttentionOut,
@@ -47,15 +49,30 @@ def _block_ids(db: Session, production: Production) -> list[int]:
 
 
 def build_attention(db: Session, production: Production) -> list[ProductionAttentionOut]:
-    """Сигналы внимания конкретно этого производства — та же логика, что
-    `dashboard/service.py::_snapshot_production` и `dashboard/overview.py`
-    (`pending_material_requests`, недостача материалов, просроченные задачи),
-    но с фильтром по блокам одного производства вместо всей БД."""
+    """Сигналы внимания конкретно этого производства: состояние материалов по
+    оценке готовности (`app/production/readiness.py` — та же, что на
+    «Пульсе»), ожидающие решения заявки и просроченные задачи блоков."""
+    actions: list[ProductionAttentionOut] = []
+
+    assessment = readiness.assess_production(db, production)
+    if assessment.materials_state in readiness.PROBLEM_STATES:
+        reasons = assessment.problem_reasons
+        description = "; ".join(r.text for r in reasons[:3])
+        if len(reasons) > 3:
+            description += f" (и ещё причин: {len(reasons) - 3})"
+        actions.append(
+            ProductionAttentionOut(
+                id=f"production:readiness:{assessment.materials_state.value}",
+                title=assessment.materials_label,
+                description=description or assessment.materials_label,
+                href=f"/production/{production.id}",
+                tone="danger" if assessment.materials_state == MaterialsState.SHORTFALL else "warning",
+            )
+        )
+
     block_ids = _block_ids(db, production)
     if not block_ids:
-        return []
-
-    actions: list[ProductionAttentionOut] = []
+        return actions
 
     pending_requests = (
         db.query(MaterialRequest)
@@ -72,25 +89,6 @@ def build_attention(db: Session, production: Production) -> list[ProductionAtten
                 id="production:pending_material_requests",
                 title="Проверить заявки на материалы",
                 description="Заявки этого дома ожидают решения склада.",
-                href="/production",
-                tone="warning",
-            )
-        )
-
-    shortfall = (
-        db.query(BlockMaterial)
-        .filter(
-            BlockMaterial.block_id.in_(block_ids),
-            (BlockMaterial.quantity_required > 0) | (BlockMaterial.quantity_requested > 0),
-        )
-        .count()
-    )
-    if shortfall:
-        actions.append(
-            ProductionAttentionOut(
-                id="production:material_shortfall",
-                title="Материала не хватает",
-                description="Есть материалы блоков, которые ещё не выданы полностью.",
                 href="/production",
                 tone="warning",
             )

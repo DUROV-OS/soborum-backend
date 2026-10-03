@@ -6,7 +6,12 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Деплой только после зелёных тестов и миграций (0084-a).
+  checks:
+    uses: ./.github/workflows/checks.yml
+
   deploy:
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
@@ -21,7 +26,11 @@ jobs:
           CORS_ALLOWED_ORIGINS: ${{ secrets.CORS_ALLOWED_ORIGINS }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
           MCP_SERVER_URL: ${{ secrets.MCP_SERVER_URL }}
           MCP_OAUTH_CLIENT_ID: ${{ secrets.MCP_OAUTH_CLIENT_ID }}
           MCP_OAUTH_CLIENT_SECRET: ${{ secrets.MCP_OAUTH_CLIENT_SECRET }}
@@ -45,7 +54,8 @@ jobs:
           import os, pathlib
           keys = [
             "APP_ENV", "JWT_SECRET", "ADMIN_EMAIL", "ADMIN_PASSWORD", "CORS_ALLOWED_ORIGINS",
-            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AI_MODEL",
+            "AI_PROVIDER", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AI_MODEL",
+            "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
             "MCP_SERVER_URL", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_CLIENT_SECRET", "MCP_REDIRECT_URI",
             "MOYSKLAD_MCP_URL", "MOYSKLAD_MCP_CLIENT_ID", "MOYSKLAD_MCP_CLIENT_SECRET",
             "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
@@ -63,5 +73,5 @@ jobs:
 
           scp -i ~/.ssh/deploy_key /tmp/soborbum-mcp.env "$SSH_USER@$SSH_HOST:/tmp/soborbum-mcp.env"
           ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
-            'cd /srv/soborbum-backend && git config --global --add safe.directory /srv/soborbum-backend && git fetch --prune origin && git reset --hard origin/main && python3 scripts/merge_env.py /tmp/soborbum-mcp.env && rm -f /tmp/soborbum-mcp.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build)'
+            'cd /srv/soborbum-backend && git config --global --add safe.directory /srv/soborbum-backend && git fetch --prune origin && git reset --hard origin/main && python3 scripts/merge_env.py /tmp/soborbum-mcp.env && rm -f /tmp/soborbum-mcp.env && (test -r .env && docker compose --env-file .env --env-file .env.mcp up -d --build || docker compose --env-file .env.mcp up -d --build) && sh scripts/wait_ready.sh 90'
           rm -f /tmp/soborbum-mcp.env

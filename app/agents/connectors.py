@@ -185,7 +185,8 @@ def _clients_line(d: dict) -> tuple[str, str]:
             + ", ".join(f"{label} {s.get(stage.value, 0)}" for stage, label in _STAGE_SHORT.items())
             + "). "
             f"Ждут подтверждения оплаты {d.get('awaiting_payment_confirmation', 0)}, "
-            f"ждут остаток {d.get('awaiting_balance_payment', 0)}. "
+            f"остаток после получения: в срок {d.get('balance_pending', 0)}, "
+            f"просрочен {d.get('balance_overdue', 0)}, срок не указан {d.get('balance_no_due_date', 0)}. "
             f"Лидов зависло дольше 14 дней {d.get('leads_stuck_over_14_days', 0)}."
         ),
     )
@@ -216,14 +217,28 @@ def _tasks_line(d: dict) -> tuple[str, str]:
 
 
 def _production_line(d: dict) -> tuple[str, str]:
-    return (
-        "База DurovOS · Производство",
-        (
-            f"Проектов {d.get('total_productions', 0)}, блоков {d.get('total_blocks', 0)}. "
-            f"Блоков с нехваткой материала {d.get('blocks_with_material_shortfall', 0)}, "
-            f"заявок на материалы в ожидании {d.get('pending_material_requests', 0)}."
-        ),
+    """Состояние материалов словами и первые причины — из оценки готовности
+    (app/production/readiness.py), чтобы Марина не назвала отсутствие данных
+    благополучием."""
+    text = (
+        f"Проектов {d.get('total_productions', 0)}, в работе {d.get('productions_in_work', 0)}, "
+        f"блоков {d.get('total_blocks', 0)}. "
     )
+    if d.get("worst_state") is None:
+        text += "Производств в работе нет — материалы оценивать не по чему."
+    else:
+        text += (
+            f"Материалы по производствам в работе: недостаточно данных "
+            f"{d.get('productions_insufficient_data', 0)}, нужна сверка "
+            f"{d.get('productions_needs_reconciliation', 0)}, нехватка {d.get('productions_shortfall', 0)}, "
+            f"обеспечены {d.get('productions_provided', 0)}, не требуются {d.get('productions_not_required', 0)}."
+        )
+        for item in (d.get("attention_productions") or [])[:3]:
+            reasons = "; ".join(item.get("reasons") or [])
+            text += f" Производство «{item.get('production')}»: {str(item.get('materials_label', '')).lower()}"
+            text += f" — {reasons}." if reasons else "."
+    text += f" Заявок на материалы в ожидании {d.get('pending_material_requests', 0)}."
+    return ("База DurovOS · Производство", text)
 
 
 def _warehouse_line(d: dict) -> tuple[str, str]:
@@ -271,8 +286,8 @@ def _legal_line(d: dict) -> tuple[str, str]:
     return (
         "База DurovOS · Право",
         (
-            f"Клиентов на согласовании без договора в базе "
-            f"{d.get('approval_without_contract', 0)}. Прошли согласование, но документы "
+            f"Клиентов на стадии «{_STAGE_SHORT[ClientStage.APPROVAL]}» без договора в базе "
+            f"{d.get('approval_without_contract', 0)}. Прошли эту стадию, но документы "
             f"не зафиксированы у {d.get('past_approval_without_locked_docs', 0)}."
         ),
     )
@@ -392,7 +407,7 @@ def _production_charts(snap: dict) -> list[dict]:
     prod = snap.get("production", {})
     tasks = snap.get("tasks", {}).get("status_counts", {})
     bars = [
-        {"label": "Блоки с нехваткой", "value": float(prod.get("blocks_with_material_shortfall", 0))},
+        {"label": "Проблемы с материалами", "value": float(prod.get("productions_needing_attention", 0))},
         {"label": "Задачи в работе", "value": float(tasks.get("in_progress", 0))},
     ]
     bars = [bar for bar in bars if bar["value"] > 0]
@@ -405,7 +420,8 @@ def _production_charts(snap: dict) -> list[dict]:
             "шт",
             bars,
             ["production"],
-            f"Блоков с нехваткой материала {prod.get('blocks_with_material_shortfall', 0)}.",
+            f"Производств с проблемами по материалам {prod.get('productions_needing_attention', 0)}"
+            f" ({str(prod.get('worst_state_label') or 'в работе нет').lower()}).",
             "brand",
         )
     ]

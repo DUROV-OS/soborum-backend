@@ -107,6 +107,8 @@ def test_second_report_after_return_and_survives_acceptance(db, make_user, api):
 
 
 def test_task_without_reviewers_closes_immediately_keeping_report(db, make_user, api):
+    # Задача без block_id: автозакрытие разрешено политикой (0084-f). Задачи
+    # блоков производства так не закрываются — tests/test_task_review_policy.py.
     worker = make_user(Module.TASKS)
     task = _task_in_progress(db, task_service, worker)
 

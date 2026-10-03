@@ -13,7 +13,9 @@ from app.tasks.schemas import (
     TaskCreate,
     TaskOut,
     TaskReportCommentUpdate,
+    TaskReportRevisionOut,
     TaskScope,
+    TaskStatusFilter,
     TaskStatusUpdate,
     TaskUpdate,
     WorkloadOut,
@@ -40,7 +42,7 @@ def list_tasks(
     reviewer_id: int | None = None,
     block_id: int | None = None,
     link_type: TaskLinkType | None = None,
-    task_status: TaskStatus | None = Query(None, alias="status"),
+    task_status: TaskStatusFilter | None = Query(None, alias="status"),
     overdue: bool | None = None,
 ):
     if scope == TaskScope.ALL and not current.has_access(Module.TASKS_ALL):
@@ -55,14 +57,13 @@ def list_tasks(
         query = query.filter(Task.block_id == block_id)
     if link_type is not None:
         query = query.filter(Task.link_type == link_type)
-    if task_status is not None:
-        query = query.filter(Task.status == task_status)
-    tasks = query.order_by(Task.id.desc()).all()
-
-    if scope == TaskScope.MINE:
-        tasks = [t for t in tasks if task_service.is_mine_or_claimable(t, current)]
-    elif scope == TaskScope.CLAIMABLE:
-        tasks = [t for t in tasks if task_service.is_claimable_for(t, current)]
+    if task_status == TaskStatusFilter.OPEN:
+        # Тот же набор, что считает Пульс (0084-h): всё, кроме done, в этой области.
+        tasks = task_service.open_tasks_query(db, current, scope, query)
+    else:
+        if task_status is not None:
+            query = query.filter(Task.status == TaskStatus(task_status.value))
+        tasks = task_service.apply_scope(query.order_by(Task.id.desc()).all(), current, scope)
 
     if overdue:
         now = datetime.now(timezone.utc)
@@ -186,12 +187,29 @@ def edit_report_comment(
     actor: User = Depends(require_tasks_edit),
 ):
     """Поправить текст своего комментария в журнале отчётов. Доступно в любом
-    статусе задачи, включая уже принятую."""
+    статусе задачи, включая уже принятую; прежний текст сохраняется ревизией
+    (см. GET /{task_id}/reports/{report_id}/revisions)."""
     task = task_service.get_task_or_404(db, task_id)
     task_service.edit_report_comment(db, task, report_id, actor, payload.comment)
     db.commit()
     db.refresh(task)
     return TaskOut.from_model(task)
+
+
+@app.get("/{task_id}/reports/{report_id}/revisions", response_model=list[TaskReportRevisionOut])
+def list_report_revisions(
+    task_id: int,
+    report_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_tasks_view),
+):
+    """Прежние версии текста записи журнала, от старой к новой: что было
+    написано до каждой правки, кто и когда поправил, после приёмки ли.
+    Только чтение — ревизии не правятся и не удаляются. Права — как на
+    просмотр задачи."""
+    task = task_service.get_task_or_404(db, task_id)
+    report = task_service.get_report_or_404(db, task, report_id)
+    return [TaskReportRevisionOut.from_model(r) for r in report.revisions]
 
 
 @app.post("/{task_id}/claim", response_model=TaskOut)

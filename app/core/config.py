@@ -1,6 +1,7 @@
 import logging
+from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger("app.core.config")
@@ -83,9 +84,20 @@ class Settings(BaseSettings):
     stage_task_reconcile_interval_seconds: int = 3600
 
     # --- AI assistant (app/ai) ---
+    # Which provider every AI call goes through: "anthropic" (Claude) or
+    # "openai" (ChatGPT). Keys for both may sit in .env at once; switching is
+    # an env change and a restart, no code deploy. See app/core/llm.py.
+    ai_provider: Literal["anthropic", "openai"] = "anthropic"
+
     anthropic_api_key: str = ""
     anthropic_base_url: str = ""
+    # Claude model. Name kept as-is for the existing prod .env.
     ai_model: str = "claude-sonnet-5"
+
+    openai_api_key: str = ""
+    # Empty = the official https://api.openai.com/v1.
+    openai_base_url: str = ""
+    openai_model: str = "gpt-5"
 
     # Reasoning depth / overall token spend per assistant turn: low | medium |
     # high | xhigh | max. "medium" is the main latency lever - it noticeably
@@ -140,6 +152,25 @@ class Settings(BaseSettings):
     dashboard_mcp_client_id: str = ""
     dashboard_mcp_client_secret: str = ""
     dashboard_mcp_scope: str = "dashboard"
+
+    @field_validator("ai_provider", mode="before")
+    @classmethod
+    def _normalize_ai_provider(cls, value):
+        # AI_PROVIDER= (empty) in compose falls back to the default instead of failing.
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return value or "anthropic"
+        return value
+
+    @property
+    def llm_configured(self) -> bool:
+        """The active provider has a key - AI features can run at all."""
+        key = self.openai_api_key if self.ai_provider == "openai" else self.anthropic_api_key
+        return bool(key.strip())
+
+    @property
+    def llm_model(self) -> str:
+        return self.openai_model if self.ai_provider == "openai" else self.ai_model
 
     @property
     def mcp_configured(self) -> bool:

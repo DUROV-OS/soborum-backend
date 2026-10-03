@@ -71,7 +71,7 @@ from app.users.models import User
 
 app = FastAPI(
     title="Soborbum — ИИ",
-    description="Ассистент на Claude поверх всех разделов: чаты по каждому блоку, общий чат "
+    description="Ассистент (Claude или ChatGPT — AI_PROVIDER) поверх всех разделов: чаты по каждому блоку, общий чат "
     "и одобрение действий, которые ИИ предлагает выполнить.",
     version="0.3",
 )
@@ -121,7 +121,7 @@ def _to_pending_out(pa: PendingAction) -> PendingActionOut:
 
 
 def _ask(db: Session, user: User, domain: ChatDomain, payload: AskRequest) -> AskResponse:
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
     chat = ai_service.get_or_create_chat(db, user, domain, payload.chat_id, payload.mode)
     result = engine.run_turn(db, chat, user, payload.message, payload.file_ids, payload.context_note)
@@ -154,7 +154,7 @@ def _sse(events) -> StreamingResponse:
 
 
 def _ask_stream(db: Session, user: User, domain: ChatDomain, payload: AskRequest) -> StreamingResponse:
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
     chat = ai_service.get_or_create_chat(db, user, domain, payload.chat_id, payload.mode)
     # Preflight synchronously so a 400/409 is a real HTTP error, not a stream event.
@@ -239,7 +239,7 @@ def ask_general_stream(payload: AskRequest, db: Session = Depends(get_db), user:
 
 @app.post("/consult/ask/stream")
 def ask_consult_stream(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
     previous: list[str] = []
     chat = None
@@ -268,7 +268,7 @@ def ask_consult_stream(payload: AskRequest, db: Session = Depends(get_db), user:
 
 @app.post("/consult/ask", response_model=ConsultAskResponse)
 def ask_consult(payload: AskRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(503, "Марина пока не подключена. Обратитесь к администратору.")
     previous: list[str] = []
     chat = None

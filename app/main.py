@@ -1,4 +1,5 @@
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ from app.clients.router import app as clients_app
 from app.partners.router import app as partners_app
 from app.conversations.router import app as conversations_app
 from app.common.files import router as files_router
+from app.core import readiness
 from app.core.config import settings
 from app.cycle.router import app as cycle_app
 from app.dashboard.router import app as dashboard_app
@@ -112,7 +114,19 @@ def on_startup() -> None:
 
 @app.get("/health")
 def health():
+    """Liveness: the process answers. Says nothing about the database."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+@app.get("/api/ready", include_in_schema=False)
+def ready(db: Session = Depends(get_db)):
+    """Readiness: DB answers and its alembic revision matches the code (0084-a).
+    Deploy polls this after `docker compose up`; 503 turns the deploy red."""
+    ok, reason = readiness.check(db)
+    if not ok:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": reason})
+    return {"status": "ready"}
 
 
 @app.get("/callback")
