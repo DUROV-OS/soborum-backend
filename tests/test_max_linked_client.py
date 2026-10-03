@@ -21,7 +21,7 @@ def test_chat_list_annotates_linked_client(monkeypatch, api, make_user, db):
     monkeypatch.setattr(
         max_service,
         "list_chats",
-        lambda limit=None: {
+        lambda db, limit=None: {
             "count": 2,
             "chats": [
                 {"id": -777, "title": "Клиентский чат"},
