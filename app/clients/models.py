@@ -382,8 +382,7 @@ class ClientChatLink(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), nullable=False)
-    # 0 — «Избранное» (чат с самим собой); id групп/каналов бывают
-    # отрицательными и большими, поэтому BigInteger.
+    # id групп/каналов бывают отрицательными и большими, поэтому BigInteger.
     max_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # Например «С клиентом», «С помощником» — различает несколько чатов одного клиента в UI.
     label: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -393,3 +392,11 @@ class ClientChatLink(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     client: Mapped["Client"] = relationship(back_populates="chat_links")
+
+    @property
+    def bot_chat_known(self) -> bool:
+        """False — чат со старого пользовательского аккаунта MAX (до 0082),
+        бот его не видит."""
+        from app.max.models import bot_knows_chat
+
+        return bot_knows_chat(self, self.max_chat_id)

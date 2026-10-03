@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.accounting.models import SupplierOrder
 from app.common.module_access import Module as AccessModule
+from app.max.models import bot_knows_chat
 from app.production import readiness
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, ProductionBlock
 from app.tasks import service as task_service
@@ -714,6 +715,7 @@ def supplier_out(supplier: Supplier) -> SupplierOut:
         status=supplier.status,
         contacts=list(supplier.contacts or []),
         max_chat_id=supplier.max_chat_id,
+        max_chat_bot_known=bot_knows_chat(supplier, supplier.max_chat_id),
         created_at=supplier.created_at,
         price_items=[SupplierPriceItemOut.model_validate(i) for i in supplier.price_items],
         price_items_count=len(supplier.price_items),
