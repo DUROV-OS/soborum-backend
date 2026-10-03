@@ -171,8 +171,8 @@ class Supplier(Base):
     # способы связи: [{"kind": "phone|email|messenger|website", "value": "...", "person": "..."}]
     contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     # ID чата MAX (app/max), привязанного к поставщику. Один чат — не более чем у
-    # одного поставщика (uq_suppliers_max_chat_id). 0 — «Избранное»; id групп MAX
-    # бывают большими и отрицательными → BigInteger. NULL — чат не привязан.
+    # одного поставщика (uq_suppliers_max_chat_id). id групп MAX бывают
+    # большими и отрицательными → BigInteger. NULL — чат не привязан.
     max_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
