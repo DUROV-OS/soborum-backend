@@ -42,7 +42,7 @@ python -m venv .venv
 | Порт бэка (127.0.0.1) | 8005 | 8006 |
 | compose-проект/сеть | `soborbum-backend_*` | `soborbum-backend-staging_*` (отдельная БД, недостижима с прод-стороны) |
 | GitHub Secrets | `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`, `JWT_SECRET`, `ADMIN_*`, `CORS_ALLOWED_ORIGINS`, `APP_ENV` | те же имена с префиксом `STAGING_` |
-| Внешние интеграции (`ANTHROPIC_API_KEY`, `MOYSKLAD_MCP_*`, `MAX_TOKEN` и т.п.) | свои секреты | **переиспользует прод-секреты** — осознанный риск, см. `backlog/.../0069-staging-environment.md` |
+| Внешние интеграции (`ANTHROPIC_API_KEY`, `MOYSKLAD_MCP_*`, `MAX_BOT_TOKEN` и т.п.) | свои секреты | **переиспользует прод-секреты** — осознанный риск, см. `backlog/.../0069-staging-environment.md` |
 
 Первичная настройка на сервере (руками, один раз — агент не имеет SSH-доступа):
 
