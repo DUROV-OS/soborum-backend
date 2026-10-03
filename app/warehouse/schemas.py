@@ -337,3 +337,72 @@ class BackfillTaskRequest(BaseModel):
 class BackfillTaskResult(BaseModel):
     task_id: int
     supplier: SupplierOut
+
+
+# --- Отпуск со склада (0088-b) ---
+
+
+class ManualIssueCreate(BaseModel):
+    """«Куда»/«кто получил» проверяются в сервисе — отказ понятной фразой."""
+
+    occurred_at: datetime | None = None
+    destination_kind: IssueDestinationKind
+    destination: str | None = Field(default=None, max_length=255)
+    production_id: int | None = None
+    received_by: str = Field(default="", max_length=255)
+    note: str | None = Field(default=None, max_length=500)
+    lines: list[OperationLineIn]
+
+
+class IssueSuggestionsOut(BaseModel):
+    destinations: list[str]
+    received_by: list[str]
+
+
+class TechcardHouseOut(BaseModel):
+    production_id: int
+    house_name: str
+    client_name: str | None
+    house_model_title: str | None
+    positions_to_issue: int
+
+
+class TechcardBlockShare(BaseModel):
+    block_id: int
+    block_name: str
+    to_issue: float
+
+
+class TechcardPreviewLine(BaseModel):
+    warehouse_material_id: int
+    material_title: str
+    material_code: str
+    unit: str
+    is_fractional: bool
+    norm_total: float
+    provided: float
+    requested: float
+    to_issue: float
+    in_stock: float
+    balance_after: float
+    shortage: bool
+    blocks: list[TechcardBlockShare]
+
+
+class TechcardPreviewOut(BaseModel):
+    production_id: int
+    house_label: str
+    house_model_title: str | None
+    # Материалы техкарты с нулевым нормативом (количество не перенесено из КР).
+    zero_norm_count: int
+    # Открытые задачи «сопоставить материал КР со складом» по блокам дома.
+    unmatched_materials_count: int
+    lines: list[TechcardPreviewLine]
+
+
+class TechcardIssueCreate(BaseModel):
+    occurred_at: datetime | None = None
+    received_by: str = Field(default="", max_length=255)
+    note: str | None = Field(default=None, max_length=500)
+    # None — отпустить весь остаток норматива.
+    lines: list[OperationLineIn] | None = None
