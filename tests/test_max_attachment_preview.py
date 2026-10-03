@@ -28,7 +28,7 @@ class _FakeStreamResponse:
 
 
 def test_preview_supported_extension_returns_bytes_with_content_type(monkeypatch, api, make_user):
-    monkeypatch.setattr(max_service, "get_attachment_url", lambda *a, **k: "https://fd.oneme.ru/getfile?x")
+    monkeypatch.setattr(max_service, "get_attachment_url", lambda *a, **k: "https://files.max.test/getfile?x")
     monkeypatch.setattr(
         httpx, "stream", lambda *a, **k: _FakeStreamResponse([b"%PDF-1.4 fake"])
     )
@@ -57,7 +57,7 @@ def test_preview_rejects_unsupported_extension_without_calling_max(monkeypatch, 
 
 
 def test_preview_rejects_file_over_size_limit_via_content_length(monkeypatch, api, make_user):
-    monkeypatch.setattr(max_service, "get_attachment_url", lambda *a, **k: "https://fd.oneme.ru/getfile?x")
+    monkeypatch.setattr(max_service, "get_attachment_url", lambda *a, **k: "https://files.max.test/getfile?x")
     monkeypatch.setattr(
         httpx,
         "stream",
@@ -73,7 +73,7 @@ def test_preview_rejects_file_over_size_limit_via_content_length(monkeypatch, ap
 
 
 def test_preview_rejects_file_over_size_limit_when_length_header_missing(monkeypatch, api, make_user):
-    monkeypatch.setattr(max_service, "get_attachment_url", lambda *a, **k: "https://fd.oneme.ru/getfile?x")
+    monkeypatch.setattr(max_service, "get_attachment_url", lambda *a, **k: "https://files.max.test/getfile?x")
     big_chunk = b"x" * (max_service.PREVIEW_MAX_SIZE + 1)
     monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeStreamResponse([big_chunk]))
     worker = api(make_user(Module.WAREHOUSE))
