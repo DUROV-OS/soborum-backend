@@ -26,7 +26,9 @@ from app.warehouse.schemas import (
     BackfillTaskRequest,
     BackfillTaskResult,
     InventoryOperationCreate,
+    IssueSuggestionsOut,
     JournalEntryOut,
+    ManualIssueCreate,
     LeadTimeQuestionDraft,
     LeadTimeQuestionSend,
     LeadTimeQuestionSent,
@@ -42,6 +44,9 @@ from app.warehouse.schemas import (
     SupplierUpdate,
     SupplyCreate,
     SupplyOut,
+    TechcardHouseOut,
+    TechcardIssueCreate,
+    TechcardPreviewOut,
     WarehouseMaterialCreate,
     WarehouseMaterialOut,
     WarehouseMaterialUpdate,
@@ -202,6 +207,70 @@ def create_write_off(
     payload: InventoryOperationCreate, db: Session = Depends(get_db), user: User = Depends(require_warehouse_full)
 ):
     return _post_inventory_operation(db, WarehouseOperationKind.WRITE_OFF, payload, user)
+
+
+@app.post("/operations/issue", response_model=WarehouseOperationOut)
+def create_manual_issue(
+    payload: ManualIssueCreate, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)
+):
+    operation = warehouse_service.create_manual_issue(
+        db,
+        [(line.warehouse_material_id, line.quantity) for line in payload.lines],
+        user,
+        destination_kind=payload.destination_kind,
+        destination=payload.destination,
+        production_id=payload.production_id,
+        received_by=payload.received_by,
+        note=payload.note,
+        occurred_at=payload.occurred_at,
+    )
+    db.commit()
+    db.refresh(operation)
+    return _operation_out(operation)
+
+
+@app.get("/operations/destinations", response_model=IssueSuggestionsOut)
+def issue_suggestions(
+    kind: IssueDestinationKind | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse_view),
+):
+    return warehouse_service.recent_issue_values(db, kind)
+
+
+@app.get("/techcard-issue/houses", response_model=list[TechcardHouseOut])
+def techcard_houses(
+    all: bool = False, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)
+):
+    return warehouse_service.techcard_houses(db, all_houses=all)
+
+
+@app.get("/techcard-issue/{production_id}/preview", response_model=TechcardPreviewOut)
+def techcard_preview(production_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
+    production = warehouse_service.get_production_or_404(db, production_id)
+    return warehouse_service.techcard_preview(db, production)
+
+
+@app.post("/techcard-issue/{production_id}", response_model=WarehouseOperationOut)
+def issue_by_techcard(
+    production_id: int,
+    payload: TechcardIssueCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_warehouse_edit),
+):
+    production = warehouse_service.get_production_or_404(db, production_id)
+    operation = warehouse_service.issue_by_techcard(
+        db,
+        production,
+        user,
+        received_by=payload.received_by,
+        lines=None if payload.lines is None else [(l.warehouse_material_id, l.quantity) for l in payload.lines],
+        note=payload.note,
+        occurred_at=payload.occurred_at,
+    )
+    db.commit()
+    db.refresh(operation)
+    return _operation_out(operation)
 
 
 @app.get("/operations/{operation_id}", response_model=WarehouseOperationOut)
