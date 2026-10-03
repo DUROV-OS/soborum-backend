@@ -1,13 +1,13 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, joinedload
 
 from app.accounting.models import SupplierOrder
 from app.common.module_access import Module as AccessModule
 from app.production import readiness
-from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, ProductionBlock
+from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
@@ -15,6 +15,9 @@ from app.users.models import User
 from app.warehouse import price_import
 from app.warehouse.price_import import ColumnMapping
 from app.warehouse.models import (
+    STOCK_IN_REASONS,
+    STOCK_OUT_REASONS,
+    IssueDestinationKind,
     StockMovement,
     StockMovementReason,
     Supplier,
@@ -24,6 +27,8 @@ from app.warehouse.models import (
     SupplyLine,
     Warehouse,
     WarehouseMaterial,
+    WarehouseOperation,
+    WarehouseOperationKind,
 )
 from app.warehouse.schemas import (
     RequestBreakdownItem,
@@ -229,6 +234,8 @@ def log_movement(
 def write_off_material(
     db: Session, material: WarehouseMaterial, quantity: float, reason: str, created_by: User
 ) -> WarehouseMaterial:
+    """Списание одной позиции из карточки материала (0030-e). С 0088 — тот же
+    документ списания, что и с кнопки «Списание», из одной строки."""
     if quantity <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество списания должно быть больше нуля")
     if not reason.strip():
@@ -236,11 +243,237 @@ def write_off_material(
     if quantity > float(material.quantity_in_stock):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Нельзя списать больше, чем есть на складе")
 
-    material.quantity_in_stock -= quantity
-    db.flush()
-    log_movement(db, material, -float(quantity), StockMovementReason.WRITE_OFF, created_by, note=reason.strip())
-    sync_shortage_task(db, material)
+    create_stock_operation(
+        db,
+        WarehouseOperationKind.WRITE_OFF,
+        [(material.id, quantity)],
+        created_by,
+        note=reason,
+    )
     return material
+
+
+# --- Документы операций склада (0088) ---
+
+# Допуск на расхождение часов браузера и сервера при проверке «не в будущем».
+_FUTURE_TOLERANCE = timedelta(minutes=5)
+
+_OPERATION_REASON: dict[WarehouseOperationKind, tuple[StockMovementReason, int]] = {
+    WarehouseOperationKind.RECEIPT: (StockMovementReason.RECEIPT, 1),
+    WarehouseOperationKind.WRITE_OFF: (StockMovementReason.WRITE_OFF, -1),
+    WarehouseOperationKind.ISSUE_TECHCARD: (StockMovementReason.ISSUED_TECHCARD, -1),
+    WarehouseOperationKind.ISSUE_MANUAL: (StockMovementReason.ISSUED_MANUAL, -1),
+}
+
+
+def _bad_request(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+def _fmt_qty(value: float) -> str:
+    return f"{float(value):g}"
+
+
+def resolve_occurred_at(occurred_at: datetime | None) -> datetime:
+    now = datetime.now(timezone.utc)
+    if occurred_at is None:
+        return now
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+    if occurred_at > now + _FUTURE_TOLERANCE:
+        raise _bad_request("Дата операции не может быть в будущем")
+    return occurred_at
+
+
+def _load_operation_lines(
+    db: Session, lines: list[tuple[int, float]]
+) -> list[tuple[WarehouseMaterial, float]]:
+    if not lines:
+        raise _bad_request("Добавьте хотя бы одну позицию")
+    seen: set[int] = set()
+    loaded: list[tuple[WarehouseMaterial, float]] = []
+    for material_id, quantity in lines:
+        if material_id in seen:
+            raise _bad_request("Материал повторяется в нескольких строках — объедините их в одну")
+        seen.add(material_id)
+        material = get_material_or_404(db, material_id)
+        quantity = float(quantity)
+        if quantity <= 0:
+            raise _bad_request(f"Количество по «{material.title}» должно быть больше нуля")
+        if not material.is_fractional and abs(quantity - round(quantity)) > 1e-9:
+            raise _bad_request(f"«{material.title}» учитывается в целых {material.unit} — укажите целое количество")
+        loaded.append((material, quantity))
+    return loaded
+
+
+def _ensure_enough_stock(lines: list[tuple[WarehouseMaterial, float]]) -> None:
+    shortages = [
+        f"{material.title} (есть {_fmt_qty(material.quantity_in_stock)}, нужно {_fmt_qty(quantity)} {material.unit})"
+        for material, quantity in lines
+        if quantity > float(material.quantity_in_stock) + 1e-9
+    ]
+    if shortages:
+        raise _bad_request("Не хватает на складе: " + "; ".join(shortages))
+
+
+def create_stock_operation(
+    db: Session,
+    kind: WarehouseOperationKind,
+    lines: list[tuple[int, float]],
+    created_by: User,
+    *,
+    occurred_at: datetime | None = None,
+    note: str | None = None,
+    destination_kind: IssueDestinationKind | None = None,
+    destination: str | None = None,
+    production_id: int | None = None,
+    received_by: str | None = None,
+) -> WarehouseOperation:
+    """Проводит документ целиком: сначала все проверки, потом изменения остатков.
+    Нехватка хоть по одной позиции расхода — 400, ничего не меняется."""
+    occurred_at = resolve_occurred_at(occurred_at)
+    loaded = _load_operation_lines(db, lines)
+    reason, sign = _OPERATION_REASON[kind]
+    if sign < 0:
+        _ensure_enough_stock(loaded)
+
+    note = (note or "").strip() or None
+    operation = WarehouseOperation(
+        kind=kind,
+        occurred_at=occurred_at,
+        destination_kind=destination_kind,
+        destination=destination,
+        production_id=production_id,
+        received_by=received_by,
+        note=note,
+        created_by_id=created_by.id,
+    )
+    db.add(operation)
+    db.flush()
+
+    for material, quantity in loaded:
+        material.quantity_in_stock = float(material.quantity_in_stock) + sign * quantity
+        db.flush()
+        log_movement(db, material, sign * quantity, reason, created_by, note=note, operation_id=operation.id)
+        sync_shortage_task(db, material)
+    return operation
+
+
+def create_inventory_operation(
+    db: Session,
+    kind: WarehouseOperationKind,
+    lines: list[tuple[int, float]],
+    note: str,
+    created_by: User,
+    occurred_at: datetime | None = None,
+) -> WarehouseOperation:
+    """Оприходование излишков / списание по итогам контроля остатков."""
+    if kind not in (WarehouseOperationKind.RECEIPT, WarehouseOperationKind.WRITE_OFF):
+        raise ValueError(f"не операция контроля остатков: {kind}")
+    if not (note or "").strip():
+        what = "оприходования" if kind == WarehouseOperationKind.RECEIPT else "списания"
+        raise _bad_request(f"Укажите причину {what}")
+    return create_stock_operation(db, kind, lines, created_by, occurred_at=occurred_at, note=note)
+
+
+def get_operation_or_404(db: Session, operation_id: int) -> WarehouseOperation:
+    operation = db.get(WarehouseOperation, operation_id)
+    if not operation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Операция не найдена")
+    return operation
+
+
+def house_label(production: Production) -> str:
+    client = production.cycle.client if production.cycle else None
+    return f"{production.name} — {client.full_name}" if client else production.name
+
+
+def _request_ids_of_production(db: Session, production_id: int):
+    return (
+        db.query(MaterialRequest.id)
+        .join(BlockMaterial, BlockMaterial.id == MaterialRequest.block_material_id)
+        .join(ProductionBlock, ProductionBlock.id == BlockMaterial.block_id)
+        .filter(ProductionBlock.production_id == production_id)
+    )
+
+
+def get_journal(
+    db: Session,
+    *,
+    direction: str | None = None,
+    reason: StockMovementReason | None = None,
+    material_id: int | None = None,
+    production_id: int | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[StockMovement]:
+    """Журнал операций: только движения, менявшие остаток. Дата строки — дата
+    операции из документа, у движений без документа — момент записи."""
+    occurred = func.coalesce(WarehouseOperation.occurred_at, StockMovement.created_at)
+    reasons = {"in": STOCK_IN_REASONS, "out": STOCK_OUT_REASONS}.get(direction or "", STOCK_IN_REASONS + STOCK_OUT_REASONS)
+    query = (
+        db.query(StockMovement)
+        .outerjoin(WarehouseOperation, WarehouseOperation.id == StockMovement.operation_id)
+        .filter(StockMovement.reason.in_(reasons))
+        .options(
+            joinedload(StockMovement.operation),
+            joinedload(StockMovement.warehouse_material),
+            joinedload(StockMovement.created_by),
+        )
+    )
+    if reason is not None:
+        query = query.filter(StockMovement.reason == reason)
+    if material_id is not None:
+        query = query.filter(StockMovement.warehouse_material_id == material_id)
+    if production_id is not None:
+        # Дом — и в документах отпуска (0088-b), и в одобренных заявках производства.
+        query = query.filter(
+            or_(
+                WarehouseOperation.production_id == production_id,
+                (StockMovement.reason == StockMovementReason.ISSUED)
+                & StockMovement.reference_id.in_(_request_ids_of_production(db, production_id)),
+            )
+        )
+    if date_from is not None:
+        query = query.filter(occurred >= date_from)
+    if date_to is not None:
+        query = query.filter(occurred < date_to)
+    return query.order_by(occurred.desc(), StockMovement.id.desc()).offset(offset).limit(limit).all()
+
+
+def productions_of_movements(db: Session, movements: list[StockMovement]) -> dict[int, Production]:
+    """Дом каждой строки журнала: из документа отпуска либо, для одобренной
+    заявки производства, через заявку → материал блока → блок."""
+    result: dict[int, Production] = {}
+    by_operation = {m.id: m.operation.production_id for m in movements if m.operation and m.operation.production_id}
+    request_ids = {
+        m.reference_id for m in movements if m.reason == StockMovementReason.ISSUED and m.reference_id is not None
+    }
+    production_of_request: dict[int, int] = {}
+    if request_ids:
+        rows = (
+            db.query(MaterialRequest.id, ProductionBlock.production_id)
+            .join(BlockMaterial, BlockMaterial.id == MaterialRequest.block_material_id)
+            .join(ProductionBlock, ProductionBlock.id == BlockMaterial.block_id)
+            .filter(MaterialRequest.id.in_(request_ids))
+            .all()
+        )
+        production_of_request = dict(rows)
+    production_ids = set(by_operation.values()) | set(production_of_request.values())
+    productions = (
+        {p.id: p for p in db.query(Production).filter(Production.id.in_(production_ids)).all()}
+        if production_ids
+        else {}
+    )
+    for movement in movements:
+        production_id = by_operation.get(movement.id)
+        if production_id is None and movement.reason == StockMovementReason.ISSUED:
+            production_id = production_of_request.get(movement.reference_id)
+        if production_id in productions:
+            result[movement.id] = productions[production_id]
+    return result
 
 
 def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> MaterialRequest:
