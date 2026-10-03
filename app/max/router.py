@@ -1,7 +1,7 @@
-"""Чтение чатов и сообщений мессенджера MAX (oneme).
+"""Мессенджер MAX через официального бота (0082).
 
-Обёртка вокруг websocket-клиента (app/max/client.py). Всё read-only:
-списки чатов, история одного чата, ссылки на вложения. Доступ — любой
+Чаты и лента — из своей БД (их наполняют события бота, см. /webhook и
+app/max/polling.py), отправка и вложения — через Bot API. Доступ — любой
 авторизованный пользователь; данные MAX общие для организации.
 """
 
@@ -21,13 +21,13 @@ from app.users.models import User
 
 
 class SendMessageIn(BaseModel):
-    chat_id: int = Field(..., description="ID чата MAX. 0 — «Избранное» (чат с самим собой).")
+    chat_id: int = Field(..., description="ID чата MAX, где состоит бот.")
     text: str = Field(..., min_length=1, max_length=4000)
     notify: bool = True
 
 app = FastAPI(
     title="Soborbum — MAX",
-    description="Чтение сообщений из мессенджера MAX (oneme) по websocket.",
+    description="Чаты и сообщения мессенджера MAX через официального бота (Bot API).",
     version="0.1.0",
 )
 
@@ -72,31 +72,35 @@ def get_chat(
 
 
 @app.post("/messages", status_code=201)
-def send_message(payload: SendMessageIn, _: User = Depends(get_current_user)):
-    """Отправить текстовое сообщение в чат MAX (MSG_SEND, opcode 64).
-
-    ``chat_id=0`` — «Избранное» (заметки для себя)."""
-    return max_service.send_message(payload.chat_id, payload.text, notify=payload.notify)
+def send_message(
+    payload: SendMessageIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Отправить текстовое сообщение в чат от имени бота
+    (``POST /messages?chat_id=`` Bot API). Отправленное попадает в ленту
+    как исходящее."""
+    return max_service.send_message(payload.chat_id, payload.text, notify=payload.notify, db=db)
 
 
 @app.post("/messages/attachment", status_code=201)
 async def send_message_with_attachment(
-    chat_id: int = Form(..., description="ID чата MAX. 0 — «Избранное»."),
+    chat_id: int = Form(..., description="ID чата MAX, где состоит бот."),
     text: str = Form("", max_length=4000),
     notify: bool = Form(True),
     file: UploadFile | None = None,
+    db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Отправить сообщение с файлом (0015): грузит вложение в MAX перед
-    MSG_SEND, отдельный эндпоинт (не `/messages`) — тот принимает чистый
-    JSON, здесь нужен multipart для файла. Текст необязателен, если есть
-    файл; без файла и текста — 422. Требует настроенный
-    `MAX_FILE_UPLOAD_OPCODE` (см. `Settings.max_file_upload_opcode`) — пока
-    не задан, отдаёт 503."""
+    """Отправить сообщение с файлом (0015): файл грузится в MAX
+    (``POST /uploads?type=file``) и уходит вложением. Отдельный эндпоинт
+    (не `/messages`) — тот принимает чистый JSON, здесь нужен multipart.
+    Текст необязателен, если есть файл; без файла и текста — 422; файл
+    больше 20 МБ — 413."""
     upload = None
     if file is not None:
         upload = (await file.read(), file.filename or "file", file.content_type or "application/octet-stream")
-    return max_service.send_message(chat_id, text, notify=notify, file=upload)
+    return max_service.send_message(chat_id, text, notify=notify, file=upload, db=db)
 
 
 @app.get("/attachment")
@@ -104,14 +108,16 @@ def get_attachment(
     chat_id: int,
     message_id: str,
     file_id: int,
+    db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Одноразовая ссылка на скачивание вложения типа FILE (``fileId``).
-
-    Домен ``fd.oneme.ru``, без CORS — годится только для навигации/скачивания
-    (``window.open`` / ``<a download>``), не для ``fetch``. Для фото берите
-    ``attach.baseUrl`` напрямую, для видео/аудио — ``GET /media``."""
-    return {"url": max_service.get_attachment_url(chat_id, message_id, file_id)}
+    """Ссылка на скачивание вложения FILE. ``file_id`` — ``fileId`` из
+    attach (индекс вложения в сообщении); ссылка берётся из сохранённого
+    сообщения. Годится для навигации/скачивания (``window.open`` /
+    ``<a download>``), не для ``fetch`` — для этого `/attachment/preview`.
+    Для фото берите ``attach.baseUrl`` напрямую, для видео/аудио —
+    ``GET /media``."""
+    return {"url": max_service.get_attachment_url(db, chat_id, message_id, file_id)}
 
 
 @app.get("/attachment/preview")
@@ -120,19 +126,18 @@ def get_attachment_preview(
     message_id: str,
     file_id: int,
     filename: str,
+    db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """Прокси вложения FILE для показа в приложении (0031), не для скачивания.
 
-    В отличие от `GET /attachment` (одноразовая ссылка на `fd.oneme.ru`, без
-    CORS — годится только для навигации), этот эндпоинт сам скачивает файл с
-    той ссылки и отдаёт его с фронта — с тем же CORS, что и весь `/api`, так
-    что подходит для `fetch`/`<img>`/`<embed>`. ``filename`` — только для
-    определения content-type по расширению (MAX его не сообщает); тип
-    ограничен списком в `max_service.PREVIEWABLE_EXTENSIONS`, остальное —
-    422, чтобы фронт откатился на кнопку «Скачать». Больше 15 МБ — 413,
-    без прокси, тоже откат на скачивание."""
-    data, content_type = max_service.get_attachment_preview(chat_id, message_id, file_id, filename)
+    Бэк сам скачивает файл по ссылке из `GET /attachment` и отдаёт его с тем
+    же CORS, что и весь `/api`, так что подходит для `fetch`/`<img>`/
+    `<embed>`. ``filename`` — только для определения content-type по
+    расширению; тип ограничен списком в `max_service.PREVIEWABLE_EXTENSIONS`,
+    остальное — 422, чтобы фронт откатился на кнопку «Скачать». Больше
+    15 МБ — 413, тоже откат на скачивание."""
+    data, content_type = max_service.get_attachment_preview(db, chat_id, message_id, file_id, filename)
     return Response(content=data, media_type=content_type)
 
 
@@ -141,15 +146,16 @@ def get_media(
     chat_id: int,
     message_id: str,
     media_id: str,
+    db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Воспроизводимая ссылка на вложение VIDEO или AUDIO (голосовое).
+    """Воспроизводимая ссылка на вложение VIDEO или AUDIO.
 
-    ``media_id`` — ``videoId`` либо ``audioId`` из attach (строка). Ответ:
-    ``{ "url": <прямой MP4 или null>, "external": <веб-плеер ok.ru или null> }``.
+    ``media_id`` — ``videoId`` либо ``audioId`` из attach. Ответ:
+    ``{ "url": <прямой MP4/аудио или null>, "external": <запасная ссылка или null> }``.
     Вложение недоступно/удалено → 422 с текстом причины (фронт показывает
-    заглушку), таймаут/сбой MAX → 502."""
-    return max_service.get_media_url(chat_id, message_id, media_id)
+    заглушку), сбой MAX → 502."""
+    return max_service.get_media_url(db, chat_id, message_id, media_id)
 
 
 @app.post("/webhook")
