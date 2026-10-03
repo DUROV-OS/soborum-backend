@@ -31,7 +31,11 @@ jobs:
           # backlog/PROCESS/0069-staging-environment.md.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
           MCP_SERVER_URL: ${{ secrets.MCP_SERVER_URL }}
           MCP_OAUTH_CLIENT_ID: ${{ secrets.MCP_OAUTH_CLIENT_ID }}
           MCP_OAUTH_CLIENT_SECRET: ${{ secrets.MCP_OAUTH_CLIENT_SECRET }}
@@ -54,7 +58,8 @@ jobs:
           import os, pathlib
           keys = [
             "APP_ENV", "JWT_SECRET", "ADMIN_EMAIL", "ADMIN_PASSWORD", "CORS_ALLOWED_ORIGINS",
-            "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AI_MODEL",
+            "AI_PROVIDER", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AI_MODEL",
+            "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
             "MCP_SERVER_URL", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_CLIENT_SECRET", "MCP_REDIRECT_URI",
             "MOYSKLAD_MCP_URL", "MOYSKLAD_MCP_CLIENT_ID", "MOYSKLAD_MCP_CLIENT_SECRET",
             "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
