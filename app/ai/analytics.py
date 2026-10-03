@@ -89,9 +89,9 @@ def status_floor(section: str, snapshot: dict) -> tuple[str | None, str | None, 
 
 
 def _ask_model(section: str, snapshot: dict, floor: str | None, floor_reason: str | None) -> dict:
-    if not settings.anthropic_api_key:
-        raise _NoAnalysis("не задан ANTHROPIC_API_KEY")
-    from app.core.llm import anthropic_client
+    if not settings.llm_configured:
+        raise _NoAnalysis("нет ключа активного ИИ-провайдера")
+    from app.core.llm import llm_client
 
     content = (
         f"Данные раздела «{SECTION_LABELS.get(section, section)}» на "
@@ -101,8 +101,8 @@ def _ask_model(section: str, snapshot: dict, floor: str | None, floor_reason: st
     if floor is not None:
         content += f"\n\nМинимальный статус по правилам: {floor} ({floor_reason})."
     try:
-        response = anthropic_client().messages.create(
-            model=settings.ai_model,
+        response = llm_client().messages.create(
+            model=settings.llm_model,
             max_tokens=768,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": content}],

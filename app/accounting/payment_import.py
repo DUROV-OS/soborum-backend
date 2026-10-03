@@ -222,7 +222,7 @@ def _pad(row: list[str], width: int) -> list[str]:
 
 
 def ai_enabled() -> bool:
-    return bool(settings.anthropic_api_key)
+    return settings.llm_configured
 
 
 def resolve_mapping(headers: list[str], sample: list[list[str]]) -> PaymentColumnMapping:
@@ -300,7 +300,7 @@ _AI_SYSTEM = (
 
 
 def _ai_mapping(headers: list[str], sample: list[list[str]]) -> PaymentColumnMapping:
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     preview = "\n".join(" | ".join(row) for row in sample[:SAMPLE_ROWS_FOR_AI])
     user = (
@@ -310,9 +310,9 @@ def _ai_mapping(headers: list[str], sample: list[list[str]]) -> PaymentColumnMap
         "direction_col / doc_date / counterparty / counterparty_inn / tax / "
         "external_number / subkind / payment_purpose."
     )
-    client = anthropic_client(timeout=45.0, max_retries=2)
+    client = llm_client(timeout=45.0, max_retries=2)
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=600,
         system=_AI_SYSTEM,
         messages=[{"role": "user", "content": user}],

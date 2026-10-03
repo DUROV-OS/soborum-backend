@@ -173,7 +173,7 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
     ) if snapshot else "Рабочие разделы пока не назначены. Обратитесь к администратору."
     return TodayDashboardOut(generated_at=datetime.now(timezone.utc), summary=summary,
                              widgets=widgets, actions=actions,
-                             ai_configured=user.has_access(Module.AI) and bool(settings.anthropic_api_key))
+                             ai_configured=user.has_access(Module.AI) and settings.llm_configured)
 
 
 # --------------------------------------------------------- по одному разделу --
