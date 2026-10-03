@@ -17,7 +17,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
-from app.max import bot_api
+from app.max import bot_api, realtime
 from app.max.ingest import bot_user_id, store_message
 from app.max.models import MaxBotChat, MaxBotMessage
 
@@ -261,6 +261,8 @@ def send_message(
         if row is not None:
             row.is_outgoing = True
         db.commit()
+        # коллеги с этим чатом в соседних вкладках увидят ответ сразу (0091)
+        realtime.chat_updated(int(chat_id))
         return {"chatId": int(chat_id), "message": _fmt_msg(row)}
     finally:
         if own:
