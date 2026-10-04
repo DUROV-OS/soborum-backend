@@ -62,6 +62,7 @@ services:
       MOYSKLAD_MCP_CLIENT_SECRET: ${MOYSKLAD_MCP_CLIENT_SECRET:-}
       MOYSKLAD_TOKEN: ${MOYSKLAD_TOKEN:-}
       MAX_TOKEN: ${MAX_TOKEN:-}
+      MAX_LIVE_UPDATES: ${MAX_LIVE_UPDATES:-true}
       VAULT_ROOT: ${VAULT_ROOT:-}
     volumes:
       - ./app:/app/app
