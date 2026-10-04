@@ -5,7 +5,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
-from app.conversations import max_channel  # noqa: F401  (регистрирует канал MAX)
 from app.conversations import service, telegram_channel
 from app.conversations.schemas import (
     ConversationMessageOut,
