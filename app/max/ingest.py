@@ -14,7 +14,7 @@ import time
 
 from sqlalchemy.orm import Session
 
-from app.max import bot_api, realtime
+from app.max import bot_api
 from app.max.models import MaxBotChat, MaxBotMessage
 
 log = logging.getLogger("app.max.ingest")
@@ -121,21 +121,16 @@ def store_message(db: Session, message: dict, *, count_unread: bool = True) -> M
 
 
 def handle_update(db: Session, update: dict) -> None:
-    """Записать событие в БД и, после commit, сообщить открытым вкладкам
-    (``chat_updated`` по WebSocket, 0091), какой чат перечитать."""
     kind = update.get("update_type")
-    chat_id = update.get("chat_id")
     if kind in ("message_created", "message_edited"):
         if update.get("message"):
-            row = store_message(db, update["message"])
-            chat_id = row.chat_id if row is not None else None
+            store_message(db, update["message"])
     elif kind == "message_removed":
         row = db.get(MaxBotMessage, str(update.get("message_id")))
-        chat_id = None
         if row is not None:
             row.deleted = True
-            chat_id = row.chat_id
     elif kind in ("bot_started", "bot_added"):
+        chat_id = update.get("chat_id")
         if chat_id is None:
             return
         is_group = kind == "bot_added"
@@ -150,11 +145,11 @@ def handle_update(db: Session, update: dict) -> None:
         if ts and (chat.last_event_time or 0) < ts:
             chat.last_event_time = ts
     elif kind in ("bot_removed", "bot_stopped", "dialog_removed"):
-        chat = db.get(MaxBotChat, chat_id)
+        chat = db.get(MaxBotChat, update.get("chat_id"))
         if chat is not None:
             chat.status = "removed"
     elif kind == "chat_title_changed":
-        chat = db.get(MaxBotChat, chat_id)
+        chat = db.get(MaxBotChat, update.get("chat_id"))
         if chat is not None and update.get("title"):
             chat.title = update["title"]
     else:
@@ -165,7 +160,6 @@ def handle_update(db: Session, update: dict) -> None:
 
     max_channel.on_update(db, update)
     db.commit()
-    realtime.chat_updated(chat_id)
 
 
 def handle_updates(db: Session, updates: list[dict]) -> None:
