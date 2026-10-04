@@ -9,7 +9,9 @@
 (`sources/seed_*.sql`, ручные правки БД, старый код без task-sync) — у них
 задачи просто нет. Эта сверка чинит такое: создаёт недостающие задачи,
 закрывает задачи под уже пройденную стадию и лишние дубликаты, закрывает
-задачи у клиентов на стадиях без ручного перевода.
+задачи у клиентов на стадиях без ручного перевода. Заодно приводит заголовок
+и описание открытой задачи к актуальному тексту: задачи, заведённые старым
+кодом, несли в заголовке значение enum («approval») и пустое описание (0094).
 
 Запускается фоновым потоком: сразу после старта приложения и дальше раз в час
 (см. `app/main.py`). Плюс ручной прогон — `POST /api/clients/reconcile-stage-tasks`.
@@ -24,7 +26,13 @@ import time
 from sqlalchemy.orm import Session
 
 from app.clients.models import Client
-from app.clients.service import _open_stage_tasks, ensure_stage_transition_task, needs_stage_task
+from app.clients.service import (
+    _open_stage_tasks,
+    ensure_stage_transition_task,
+    needs_stage_task,
+    stage_task_description,
+    stage_task_title,
+)
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.tasks import service as task_service
@@ -39,6 +47,7 @@ def reconcile_client_stage_tasks(db: Session) -> dict:
     closed_stale = 0
     closed_final = 0
     deduped = 0
+    retexted = 0
 
     clients = db.query(Client).all()
     for client in clients:
@@ -68,12 +77,22 @@ def reconcile_client_stage_tasks(db: Session) -> dict:
                 task_service.force_close(db, task)
                 deduped += 1
 
+        # задачу без стадии в link_meta не переписываем — неизвестно, под какую она стадию
+        if keep and (keep[0].link_meta or {}).get("stage") == client.stage.value:
+            task = keep[0]
+            title, description = stage_task_title(client), stage_task_description(client)
+            if task.title != title or task.description != description:
+                task.title = title
+                task.description = description
+                retexted += 1
+
     return {
         "checked": len(clients),
         "created": created,
         "closed_stale": closed_stale,
         "closed_final": closed_final,
         "deduped": deduped,
+        "retexted": retexted,
     }
 
 
@@ -108,15 +127,22 @@ def _run() -> None:
     while True:
         try:
             report = run_once()
-            if report["created"] or report["closed_stale"] or report["closed_final"] or report["deduped"]:
+            if (
+                report["created"]
+                or report["closed_stale"]
+                or report["closed_final"]
+                or report["deduped"]
+                or report["retexted"]
+            ):
                 log.info(
                     "Сверка: клиентов %s, создано %s, закрыто устаревших %s, "
-                    "закрыто на финале %s, дедуп %s",
+                    "закрыто на финале %s, дедуп %s, обновлён текст %s",
                     report["checked"],
                     report["created"],
                     report["closed_stale"],
                     report["closed_final"],
                     report["deduped"],
+                    report["retexted"],
                 )
         except Exception:
             log.exception("Сверка задач стадий не прошла")
