@@ -285,7 +285,7 @@ def _approval_title(agent: AgentId, detail: str) -> str:
 
 def _no_data_stance(agent_id: AgentId) -> str:
     return (
-        "Нет данных: в базе DurovOS живого факта по роли нет и Claude недоступен — "
+        "Нет данных: в базе DurovOS живого факта по роли нет и ИИ недоступен — "
         "ничего не выдумываю."
     )
 
@@ -299,7 +299,7 @@ def _stance_for_legal(stance: str) -> str:
 
 
 def _claude_stance(agent_id: AgentId, question: str, context: SharedContext) -> str | None:
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         return None
     ranked = _rank_hits(agent_id, context.hits)
     pack = [f"- {hit.title} ({hit.path}): {hit.excerpt}" for hit in ranked if hit.excerpt][:8]
@@ -308,11 +308,11 @@ def _claude_stance(agent_id: AgentId, question: str, context: SharedContext) -> 
             "- (фактов из базы DurovOS и vault в контексте нет — не выдумывай цифры)"
         ]
     try:
-        from app.core.llm import anthropic_client
+        from app.core.llm import llm_client
 
-        client = anthropic_client(timeout=45.0, max_retries=0)
+        client = llm_client(timeout=45.0, max_retries=0)
         response = client.messages.create(
-            model=settings.ai_model,
+            model=settings.llm_model,
             max_tokens=160,
             system=(
                 f"Ты {RU_LABELS[agent_id]} Durov.House. Не чат-бот. "
@@ -330,7 +330,7 @@ def _claude_stance(agent_id: AgentId, question: str, context: SharedContext) -> 
             ],
         )
     except Exception as error:
-        log.warning("Claude не ответил за %s: %s", agent_id, error)
+        log.warning("ИИ не ответил за %s: %s", agent_id, error)
         return None
     chunks = [block.text for block in response.content if getattr(block, "type", "") == "text"]
     text = _clamp_sentences("\n".join(chunks).strip())

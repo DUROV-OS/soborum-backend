@@ -13,7 +13,6 @@ app.board.conductor / app.ai.engine) - no local tool-execution loop.
 import json
 from datetime import datetime, timezone
 
-import anthropic
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -32,15 +31,15 @@ from app.users.models import User
 MAX_HISTORY_MESSAGES = 40
 
 
-def _get_client() -> anthropic.Anthropic:
-    if not settings.anthropic_api_key:
+def _get_client():
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ИИ не настроен: не задан ANTHROPIC_API_KEY (см. backend/.env)",
+            detail="ИИ не настроен: нет ключа активного провайдера (AI_PROVIDER, см. backend/.env)",
         )
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
-    return anthropic_client()
+    return llm_client()
 
 
 # ------------------------------------------------------------------ context --
@@ -91,7 +90,7 @@ def _history_note(discussion: BoardDiscussion) -> str | None:
 def _call(db: Session, system: str, messages: list[dict]) -> str:
     client = _get_client()
     kwargs = {
-        "model": settings.ai_model,
+        "model": settings.llm_model,
         "max_tokens": 4096,
         "system": system,
         "messages": messages,

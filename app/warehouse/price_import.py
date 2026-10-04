@@ -156,7 +156,7 @@ def resolve_mapping(headers: list[str], sample: list[list[str]]) -> ColumnMappin
 
 
 def ai_enabled() -> bool:
-    return bool(settings.anthropic_api_key)
+    return settings.llm_configured
 
 
 def _match_header(value: str | None, headers: list[str]) -> str | None:
@@ -236,7 +236,7 @@ _AI_SYSTEM = (
 
 
 def _ai_mapping(headers: list[str], sample: list[list[str]]) -> ColumnMapping:
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     preview = "\n".join(" | ".join(row) for row in sample[:SAMPLE_ROWS_FOR_AI])
     user = (
@@ -245,9 +245,9 @@ def _ai_mapping(headers: list[str], sample: list[list[str]]) -> ColumnMapping:
         "Сопоставь заголовки с полями: material, price, category, lead_time, "
         "qty_breaks."
     )
-    client = anthropic_client(timeout=45.0, max_retries=2)
+    client = llm_client(timeout=45.0, max_retries=2)
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=512,
         system=_AI_SYSTEM,
         messages=[{"role": "user", "content": user}],
@@ -382,7 +382,7 @@ def ai_assign_categories(pairs: list[tuple[int, str]]) -> dict[int, str]:
     """{id строки прайса -> категория из справочника}. Только уверенные назначения."""
     if not pairs:
         return {}
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     listing = "\n".join(f"{pid}. {material}" for pid, material in pairs)
     user = (
@@ -391,9 +391,9 @@ def ai_assign_categories(pairs: list[tuple[int, str]]) -> dict[int, str]:
         "Для каждой позиции выбери ближайшую категорию из справочника. Если "
         "категория не определяется однозначно — оставь пустую строку."
     )
-    client = anthropic_client(timeout=45.0, max_retries=2)
+    client = llm_client(timeout=45.0, max_retries=2)
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=1024,
         system="Ты классифицируешь строительные материалы по складскому справочнику. Отвечай только вызовом assign_categories.",
         messages=[{"role": "user", "content": user}],
@@ -420,12 +420,12 @@ def ai_assign_categories(pairs: list[tuple[int, str]]) -> dict[int, str]:
 
 def ai_lead_time_message(supplier_name: str, materials: list[str]) -> str:
     """Короткое вежливое сообщение поставщику с просьбой указать сроки поставки."""
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     listing = "\n".join(f"{i}. {m}" for i, m in enumerate(materials, start=1))
-    client = anthropic_client(timeout=45.0, max_retries=2)
+    client = llm_client(timeout=45.0, max_retries=2)
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=600,
         system=(
             "Ты менеджер по снабжению. Напиши короткое вежливое сообщение поставщику "

@@ -18,10 +18,11 @@ def start_shift_loop() -> None:
     if _started or not settings.agent_shift_autorun:
         return
     _started = True
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         log.warning(
-            "ANTHROPIC_API_KEY не задан — почасовая смена не сможет строить реальный "
-            "анализ, роли без живого источника будут помечены «нет данных»."
+            "Нет ключа активного ИИ-провайдера (AI_PROVIDER=%s) — почасовая смена не сможет "
+            "строить реальный анализ, роли без живого источника будут помечены «нет данных».",
+            settings.ai_provider,
         )
     thread = threading.Thread(target=_run, name="agent-shift-loop", daemon=True)
     thread.start()

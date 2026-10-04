@@ -228,10 +228,10 @@ def ai_rate_cycles(activities: list[CycleActivity]) -> dict[int, dict] | None:
     """Спросить у Claude процент/фразу/стадию по каждому циклу. `None` — если
     ИИ не настроен или не вернул валидный ответ (вызывающий откатывается на
     детерминированные значения)."""
-    if not settings.anthropic_api_key or not activities:
+    if not settings.llm_configured or not activities:
         return None
 
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     payload = [
         {
@@ -246,8 +246,8 @@ def ai_rate_cycles(activities: list[CycleActivity]) -> dict[int, dict] | None:
     ]
 
     try:
-        response = anthropic_client().messages.create(
-            model=settings.ai_model,
+        response = llm_client().messages.create(
+            model=settings.llm_model,
             max_tokens=1024,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
@@ -280,7 +280,7 @@ def _build(db: Session) -> AktualnoeOut:
     activities = top_active_cycles(db, TOP_N)
     now = datetime.now(timezone.utc)
     if not activities:
-        return AktualnoeOut(generated_at=now, items=[], ai_configured=bool(settings.anthropic_api_key), degraded=False)
+        return AktualnoeOut(generated_at=now, items=[], ai_configured=settings.llm_configured, degraded=False)
 
     rated = ai_rate_cycles(activities)
     degraded = rated is None
@@ -299,7 +299,7 @@ def _build(db: Session) -> AktualnoeOut:
     return AktualnoeOut(
         generated_at=now,
         items=items,
-        ai_configured=bool(settings.anthropic_api_key),
+        ai_configured=settings.llm_configured,
         degraded=degraded,
     )
 

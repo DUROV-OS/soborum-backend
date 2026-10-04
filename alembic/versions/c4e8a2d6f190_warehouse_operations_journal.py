@@ -1,7 +1,7 @@
 """документ операции склада, остаток после движения, причины оприходования и отпуска (0088-a)
 
 Revision ID: c4e8a2d6f190
-Revises: b8d4f20a6c31
+Revises: b8e4d1f63a27
 Create Date: 2026-10-03 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'c4e8a2d6f190'
-down_revision: Union[str, None] = 'b8d4f20a6c31'
+down_revision: Union[str, None] = 'b8e4d1f63a27'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

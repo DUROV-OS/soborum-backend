@@ -7,7 +7,6 @@ ids out of the real candidate list built below.
 import json
 from datetime import datetime, timezone
 
-import anthropic
 from fastapi import HTTPException, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -60,15 +59,15 @@ TOOL_SCHEMA = {
 }
 
 
-def _get_client() -> anthropic.Anthropic:
-    if not settings.anthropic_api_key:
+def _get_client():
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ИИ не настроен: не задан ANTHROPIC_API_KEY (см. backend/.env)",
+            detail="ИИ не настроен: нет ключа активного провайдера (AI_PROVIDER, см. backend/.env)",
         )
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
-    return anthropic_client()
+    return llm_client()
 
 
 def _load_candidate_tasks(db: Session, user: User) -> list[Task]:
@@ -135,7 +134,7 @@ def generate_task_priorities(db: Session, user: User, force: bool = False) -> Ta
 
     client = _get_client()
     response = client.messages.create(
-        model=settings.ai_model,
+        model=settings.llm_model,
         max_tokens=768,
         system=SYSTEM_PROMPT,
         messages=[
