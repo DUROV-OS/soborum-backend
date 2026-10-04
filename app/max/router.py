@@ -25,6 +25,12 @@ class SendMessageIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
     notify: bool = True
 
+class StartDialogIn(BaseModel):
+    phone: str = Field(..., min_length=1, max_length=32, description="Номер в любом виде: +7 900…, 8 900…, 900…")
+    first_name: str = Field(..., min_length=1, max_length=64)
+    last_name: str | None = Field(None, max_length=64)
+
+
 app = FastAPI(
     title="Soborbum — MAX",
     description="Чтение сообщений из мессенджера MAX (oneme) по websocket.",
@@ -74,6 +80,16 @@ def send_message(payload: SendMessageIn, _: User = Depends(get_current_user)):
 
     ``chat_id=0`` — «Избранное» (заметки для себя)."""
     return max_service.send_message(payload.chat_id, payload.text, notify=payload.notify)
+
+
+@app.post("/contacts", status_code=201)
+def start_dialog(payload: StartDialogIn, _: User = Depends(get_current_user)):
+    """Найти человека в MAX по номеру, при необходимости добавить в контакты
+    аккаунта и вернуть его личный диалог (0093): ``{chatId, contactId, name,
+    alreadyContact}``. Сообщений не отправляет. 404 — номер не
+    зарегистрирован в MAX, 422 — некорректный номер или номер самого
+    аккаунта, 502 — MAX отклонил запрос или не ответил."""
+    return max_service.start_dialog(payload.phone, payload.first_name, payload.last_name)
 
 
 @app.post("/messages/attachment", status_code=201)
