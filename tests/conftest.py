@@ -6,7 +6,9 @@ os.environ["ENABLE_DEMO_SEED"] = "true"
 os.environ["JWT_SECRET"] = "isolated-regression-test-secret-never-use-in-production"
 os.environ["ADMIN_PASSWORD"] = ""
 os.environ["CORS_ALLOWED_ORIGINS"] = "http://localhost:5173"
+os.environ["AI_PROVIDER"] = "anthropic"
 os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = ""
 os.environ["STORAGE_DIR"] = "/tmp/durov-os-tests"
 os.environ["AGENT_SHIFT_AUTORUN"] = "false"
 os.environ["MCP_SERVER_URL"] = ""
@@ -19,6 +21,8 @@ os.environ["DASHBOARD_MCP_URL"] = ""
 os.environ["DASHBOARD_MCP_CLIENT_ID"] = ""
 os.environ["DASHBOARD_MCP_CLIENT_SECRET"] = ""
 os.environ["MOYSKLAD_TOKEN"] = ""
+os.environ["MAX_TOKEN"] = ""
+os.environ["MAX_LIVE_UPDATES"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient

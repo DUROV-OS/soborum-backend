@@ -62,7 +62,7 @@ def test_order_type_required_to_leave_approval_house_model_key_is_not(api, make_
 
     missing_order_type = worker.post(f"/api/clients/{client.id}/transition")
     assert missing_order_type.status_code == 400
-    assert "order_type" in missing_order_type.json()["detail"]
+    assert missing_order_type.json()["detail"] == "Не заполнены поля в карточке клиента: Проект"
 
     ok = worker.patch(f"/api/clients/{client.id}/documents", json={"order_type": "single"})
     assert ok.status_code == 200, ok.text

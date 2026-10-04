@@ -7,6 +7,7 @@ from app.clients.models import BalanceState, ClientChatState, ClientStage, Contr
 from app.common.files import FileAssetOut
 from app.tasks.models import TaskReportKind, TaskStatus
 from app.house_models.schemas import HouseModelBriefOut
+from app.partners.schemas import PartnerBriefOut
 
 
 class ClientContact(BaseModel):
@@ -26,6 +27,9 @@ class ClientSourceUpdate(BaseModel):
     via_agency: bool = False
     agency_name: str | None = None
     agency_contact: str | None = None
+    # Кто рекомендовал — партнёр из базы (0083-c). Источник передаётся целиком:
+    # не переданное поле означает «рекомендателя нет», как и снятая галочка агентства.
+    referrer_partner_id: int | None = None
 
 
 class ClientCreate(ClientSourceUpdate):
@@ -235,6 +239,7 @@ class ClientOut(BaseModel):
     via_agency: bool
     agency_name: str | None
     agency_contact: str | None
+    referrer: PartnerBriefOut | None = None
 
     order_type: OrderType | None
     house_model_key: str | None

@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
 
-from app.max.client import MediaError, UploadError, session
+from app.max import realtime
+from app.max.client import ContactError, MediaError, UploadError, session
 
 
 def _sid(v: Any) -> str | None:
@@ -114,6 +116,19 @@ def _contact_name(ct: dict | None) -> str | None:
     return ct.get("name") or ct.get("firstName") or ct.get("phone")
 
 
+def _dialog_peer_id(chat_id, viewer_id: str) -> str | None:
+    """Собеседник личного диалога: id диалога MAX = id аккаунта XOR id
+    собеседника (так считает web.max.ru; сверено на всех диалогах аккаунта).
+    У групповых чатов id отрицательный — для них собеседника нет."""
+    try:
+        cid, vid = int(chat_id), int(viewer_id)
+    except (TypeError, ValueError):
+        return None
+    if cid <= 0 or not vid:
+        return None
+    return str(cid ^ vid)
+
+
 def _chat_title(c: dict | None, contacts: dict, viewer_id: str = "") -> str | None:
     if not c:
         return None
@@ -165,9 +180,14 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
         vid = s.viewer_id()
         meta = next((c for c in s.chats() if c.get("id") == chat_id), None)
         msgs = s.history(chat_id, forward=limit, backward=backward)
+    title = _chat_title(meta, contacts, vid)
+    if meta is None:
+        # диалога нет среди последних чатов аккаунта — например, только что
+        # добавленный контакт без сообщений (0093): имя берём из контакта.
+        title = _contact_name(contacts.get(_dialog_peer_id(chat_id, vid) or ""))
     return {
         "chatId": chat_id,
-        "title": _chat_title(meta, contacts, vid),
+        "title": title,
         "viewerId": vid,
         "isGroup": _is_group_chat(meta),
         "count": len(msgs),
@@ -203,9 +223,76 @@ def send_message(
             ) from exc
         vid = s.viewer_id()
         contacts = s.contacts_by_id()
+    # коллеги с этим чатом в соседних вкладках увидят ответ сразу (0092)
+    realtime.chat_updated(payload.get("chatId", chat_id))
     return {
         "chatId": payload.get("chatId", chat_id),
         "message": _fmt_msg(payload.get("message"), vid, contacts),
+    }
+
+
+def normalize_phone(raw: str) -> str:
+    """Номер к виду MAX: только цифры с кодом страны. ``8XXXXXXXXXX`` и
+    10 цифр без кода — российский номер, приводим к ``7XXXXXXXXXX``."""
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    elif len(digits) == 10:
+        digits = "7" + digits
+    if not 11 <= len(digits) <= 15:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Некорректный номер телефона")
+    return digits
+
+
+def start_dialog(phone: str, first_name: str, last_name: str | None = None) -> dict[str, Any]:
+    """Найти человека в MAX по номеру и вернуть его личный диалог (0093).
+
+    Нет в контактах аккаунта — добавляем с введённым именем; уже есть —
+    не трогаем (имя в MAX не переписываем). Сообщений не отправляет: диалог
+    появится в списке чатов после первого сообщения сотрудника."""
+    phone = normalize_phone(phone)
+    first_name = first_name.strip()
+    last_name = (last_name or "").strip() or None
+    if not first_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Укажите имя контакта")
+    with session() as s:
+        vid = s.viewer_id()
+        contacts = s.contacts_by_id()
+        try:
+            found = s.contact_by_phone(phone)
+        except ContactError as exc:
+            if exc.code == "not.found":
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Этот номер не зарегистрирован в MAX"
+                ) from exc
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        contact_id = _sid(found.get("id"))
+        if not contact_id:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="MAX не вернул контакт по номеру")
+        if contact_id == vid:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Это номер аккаунта организации"
+            )
+
+        already = contact_id in contacts
+        contact = contacts.get(contact_id) or found
+        if not already:
+            try:
+                added = s.add_contact(phone, first_name, last_name)
+            except (ContactError, TimeoutError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY, detail=f"MAX не добавил контакт: {exc}"
+                ) from exc
+            contact = added.get("contact") or contact
+    name = _contact_name(contact) or " ".join(x for x in (first_name, last_name) if x)
+    return {
+        # id личного диалога — XOR id аккаунта и собеседника (см. _dialog_peer_id)
+        "chatId": int(contact_id) ^ int(vid),
+        "contactId": contact_id,
+        "name": name,
+        "alreadyContact": already,
     }
 
 

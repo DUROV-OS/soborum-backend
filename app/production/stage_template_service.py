@@ -183,17 +183,17 @@ def _ai_quantity(raw) -> float | None:
 
 
 def _forced_tool_call(system: str, payload, tool: dict) -> dict:
-    """Один вызов Claude с принудительным инструментом; ответ без инструмента
+    """Один вызов ИИ с принудительным инструментом; ответ без инструмента
     или оборванный по лимиту токенов — явная ошибка, а не тихий частичный результат."""
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     # Полный граф на реальный многостраничный КР — не короткая структурированная
     # реплика вроде deadlines._ai_pick_bottleneck: генерация с max_tokens=16000
     # не укладывается в дефолтный клиентский timeout (60с, рассчитан на быстрые
     # вызовы) — раньше запрос обрывался клиентом раньше, чем модель успевала
     # дописать JSON. Увеличены оба параметра.
-    response = anthropic_client(timeout=300.0).messages.create(
-        model=settings.ai_model,
+    response = llm_client(timeout=300.0).messages.create(
+        model=settings.llm_model,
         max_tokens=16000,
         system=system,
         messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
@@ -307,10 +307,10 @@ def generate_or_reuse_template(db: Session, client: Client) -> ProductionStageTe
             detail="Сначала запустите постраничный разбор КР этого клиента",
         )
 
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Нужен ключ ИИ (ANTHROPIC_API_KEY) для первой генерации шаблона графа этапов",
+            detail="Нужен ключ активного ИИ-провайдера (AI_PROVIDER) для первой генерации шаблона графа этапов",
         )
 
     pages_payload = _kr_payload(extraction)

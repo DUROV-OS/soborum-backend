@@ -181,7 +181,7 @@ def _fake_llm(monkeypatch, status=None, error=None, no_tool=False):
         )])
 
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
-    monkeypatch.setattr(llm, "anthropic_client", lambda: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    monkeypatch.setattr(llm, "llm_client", lambda: SimpleNamespace(messages=SimpleNamespace(create=create)))
     return calls
 
 

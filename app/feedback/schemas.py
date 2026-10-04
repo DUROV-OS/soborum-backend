@@ -1,14 +1,20 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from typing import Literal
 
-from app.feedback.models import FeedbackAttachmentKind, FeedbackStatus
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.feedback.models import FeedbackAttachmentKind, FeedbackEventKind, FeedbackStatus
 
 
 class FeedbackAuthorOut(BaseModel):
     id: int
     full_name: str
     email: str
+
+    @staticmethod
+    def from_user(user) -> "FeedbackAuthorOut":
+        return FeedbackAuthorOut(id=user.id, full_name=user.full_name, email=user.email)
 
 
 class FeedbackAttachmentOut(BaseModel):
@@ -21,6 +27,16 @@ class FeedbackAttachmentOut(BaseModel):
     kind: FeedbackAttachmentKind
 
 
+class FeedbackEventOut(BaseModel):
+    id: int
+    kind: FeedbackEventKind
+    text: str | None
+    old_status: FeedbackStatus | None
+    new_status: FeedbackStatus | None
+    author: FeedbackAuthorOut
+    created_at: datetime
+
+
 class FeedbackRequestOut(BaseModel):
     id: int
     section: str
@@ -30,9 +46,13 @@ class FeedbackRequestOut(BaseModel):
     updated_at: datetime
     author: FeedbackAuthorOut
     attachments: list[FeedbackAttachmentOut]
+    # Лента разбора заявки по возрастанию времени и число записей, которых
+    # автор ещё не видел (для не-автора всегда 0) — 0090.
+    events: list[FeedbackEventOut]
+    unseen_updates: int = 0
 
     @staticmethod
-    def from_model(request) -> "FeedbackRequestOut":
+    def from_model(request, unseen_updates: int = 0) -> "FeedbackRequestOut":
         return FeedbackRequestOut(
             id=request.id,
             section=request.section,
@@ -40,11 +60,7 @@ class FeedbackRequestOut(BaseModel):
             status=request.status,
             created_at=request.created_at,
             updated_at=request.updated_at,
-            author=FeedbackAuthorOut(
-                id=request.author.id,
-                full_name=request.author.full_name,
-                email=request.author.email,
-            ),
+            author=FeedbackAuthorOut.from_user(request.author),
             attachments=[
                 FeedbackAttachmentOut(
                     id=a.id,
@@ -55,8 +71,30 @@ class FeedbackRequestOut(BaseModel):
                 )
                 for a in request.attachments
             ],
+            events=[
+                FeedbackEventOut(
+                    id=e.id,
+                    kind=e.kind,
+                    text=e.text,
+                    old_status=e.old_status,
+                    new_status=e.new_status,
+                    author=FeedbackAuthorOut.from_user(e.author),
+                    created_at=e.created_at,
+                )
+                for e in request.events
+            ],
+            unseen_updates=unseen_updates,
         )
 
 
 class FeedbackStatusUpdate(BaseModel):
     status: FeedbackStatus
+
+
+class FeedbackEventCreate(BaseModel):
+    """Запись в ленту: комментарий (админ или автор) или изменение в системе
+    (только админ). `status` вручную не создаётся — его
+    пишет смена статуса."""
+
+    kind: Literal[FeedbackEventKind.COMMENT, FeedbackEventKind.CHANGE]
+    text: str = Field(min_length=1)

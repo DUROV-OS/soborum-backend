@@ -3,13 +3,13 @@ outside context for it to work with —
 
 - a production-system snapshot (first-party DB aggregate, no AI call: reuses
   the exact same section builder app.board.actualize already draws on), and
-- a short research briefing from one Claude call that can search the
+- a short research briefing from one LLM call that can search the
   company's knowledge base (the same remote MCP connector app.ai.engine uses)
-  and the public internet (Anthropic's server-side web_search tool) for
+  and the public internet (the provider's server-side web_search tool) for
   anything relevant to the node and the employee's request.
 
-Both connectors are server-side: Anthropic (and, through it, the MCP
-provider) executes the actual search and injects the results inline within
+Both connectors are server-side: the LLM provider (and, through it, the MCP
+server) executes the actual search and injects the results inline within
 one messages.create call - there is no local tool-execution loop here, same
 as app.ai.engine's use of the MCP connector.
 
@@ -20,7 +20,6 @@ rather than blocking the whole flow over an enrichment step.
 
 import json
 
-import anthropic
 from sqlalchemy.orm import Session
 
 from app.ai import mcp_auth
@@ -38,10 +37,10 @@ def _production_snapshot(db: Session) -> dict:
     return builder(db)
 
 
-def _research_brief(client: anthropic.Anthropic, db: Session, node_ctx: dict, user_message: str) -> str | None:
+def _research_brief(client, db: Session, node_ctx: dict, user_message: str) -> str | None:
     payload = {"node": node_ctx, "employee_request": user_message}
     kwargs = {
-        "model": settings.ai_model,
+        "model": settings.llm_model,
         "max_tokens": 1024,
         "system": prompts.CONDUCTOR_SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)}],
@@ -68,7 +67,7 @@ def _research_brief(client: anthropic.Anthropic, db: Session, node_ctx: dict, us
     return text or None
 
 
-def gather_context(client: anthropic.Anthropic, db: Session, node_ctx: dict, user_message: str) -> dict:
+def gather_context(client, db: Session, node_ctx: dict, user_message: str) -> dict:
     return {
         "production": _production_snapshot(db),
         "research_brief": _research_brief(client, db, node_ctx, user_message),
