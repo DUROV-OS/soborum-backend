@@ -10,15 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import time
-
 import httpx
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal
 from app.max import bot_api
-from app.max.ingest import bot_user_id, store_message
+from app.max.client import MediaError, UploadError, session
+from app.max.ingest import bot_user_id
 from app.max.models import MaxBotChat, MaxBotMessage
 
 
@@ -171,103 +169,48 @@ def get_chat(db: Session, chat_id: int, limit: int = 50, backward: int = 0) -> d
     }
 
 
-# Больше — отклоняем ещё до загрузки в MAX.
-MAX_UPLOAD_SIZE = 20 * 1024 * 1024
-
-# Загруженный файл MAX обрабатывает не сразу: отправка с его токеном до
-# готовности отвечает attachment.not.ready — повторяем с растущей паузой.
-ATTACHMENT_RETRIES = 5
-ATTACHMENT_RETRY_DELAY = 1.0
-
-
-def _upload_file(data: bytes, filename: str, content_type: str) -> dict:
-    """``POST /uploads?type=file`` → заливка на одноразовый URL → вложение
-    ``{type: file, payload: {token}}`` для ``POST /messages``."""
-    if len(data) > MAX_UPLOAD_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Файл больше {MAX_UPLOAD_SIZE // (1024 * 1024)} МБ — MAX его не примет",
-        )
-    try:
-        target = bot_api.get_upload_url("file")
-        if not target.get("url"):
-            raise bot_api.BotApiError(None, None, "MAX не вернул URL для загрузки файла")
-        uploaded = bot_api.upload(target["url"], data, filename, content_type)
-    except (bot_api.BotApiError, bot_api.BotNotConfigured) as exc:
-        raise _bot_error(exc) from exc
-    token = uploaded.get("token") or target.get("token")
-    if not token:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="MAX не вернул токен загруженного файла")
-    return {"type": "file", "payload": {"token": token}}
-
-
-def _send(chat_id: int, text: str, attachments: list[dict] | None, notify: bool) -> dict:
-    for attempt in range(ATTACHMENT_RETRIES + 1):
-        try:
-            return bot_api.send_message(chat_id, text, attachments, notify=notify)
-        except bot_api.BotApiError as exc:
-            if exc.code != "attachment.not.ready" or attempt == ATTACHMENT_RETRIES:
-                raise _bot_error(exc) from exc
-            time.sleep(ATTACHMENT_RETRY_DELAY * (attempt + 1))
-        except bot_api.BotNotConfigured as exc:
-            raise _bot_error(exc) from exc
-    raise AssertionError("unreachable")
-
-
 def send_message(
     chat_id,
     text: str,
     notify: bool = True,
     file: tuple[bytes, str, str] | None = None,
-    db: Session | None = None,
 ) -> dict[str, Any]:
-    """Текст и/или файл (``file`` — ``(данные, имя, content_type)``) через
-    бота. Пустой текст допустим только вместе с файлом. Отправленное
-    сохраняется в ленту как исходящее; при отказе MAX — ничего не пишем.
-    ``db`` необязателен (так зовёт warehouse.send_lead_time_question) —
-    тогда открываем свою сессию."""
+    """Текст и/или файл (``file`` — ``(данные, имя, content_type)``). Пустой
+    текст допустим только вместе с файлом — иначе отправлять нечего."""
     text = (text or "").strip()
     if not text and not file:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой текст или вложение")
-    attachments = [_upload_file(*file)] if file is not None else None
-    sent = _send(int(chat_id), text, attachments, notify)
-
-    own = db is None
-    db = db or SessionLocal()
-    try:
-        row = store_message(db, sent, count_unread=False)
-        if row is not None:
-            row.is_outgoing = True
-        db.commit()
-        return {"chatId": int(chat_id), "message": _fmt_msg(row)}
-    finally:
-        if own:
-            db.close()
-
-
-def _stored_attach(db: Session, chat_id: int, message_id: str, index: int) -> dict:
-    """Вложение сохранённого сообщения по индексу (так фронт адресует
-    fileId/videoId/audioId — см. _fmt_attach)."""
-    row = db.get(MaxBotMessage, message_id)
-    attachments = (row.attachments or []) if row is not None and row.chat_id == chat_id else []
-    if not 0 <= index < len(attachments):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Вложение не найдено")
-    return attachments[index]
+    with session() as s:
+        attaches = None
+        if file is not None:
+            data, filename, content_type = file
+            try:
+                uploaded = s.upload_file(data, filename, content_type)
+            except UploadError as exc:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+            attaches = [{"_type": "FILE", "fileId": uploaded["fileId"], "token": uploaded["token"]}]
+        try:
+            payload = s.send_message(chat_id, text, notify=notify, attaches=attaches)
+        except (TimeoutError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+        vid = s.viewer_id()
+        contacts = s.contacts_by_id()
+    return {
+        "chatId": payload.get("chatId", chat_id),
+        "message": _fmt_msg(payload.get("message"), vid, contacts),
+    }
 
 
-def _index(value) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Вложение не найдено") from exc
-
-
-def get_attachment_url(db: Session, chat_id: int, message_id: str, file_id) -> str:
-    attach = _stored_attach(db, chat_id, message_id, _index(file_id))
-    url = (attach.get("payload") or {}).get("url")
-    if not url:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="MAX не прислал ссылку на файл")
-    return url
+def get_attachment_url(chat_id, message_id, file_id) -> str:
+    with session() as s:
+        try:
+            return s.attach_url(file_id, chat_id, message_id)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
 
 
 # Расширения, которые можно показать прямо в браузере (0031). Список — сами
@@ -289,7 +232,7 @@ PREVIEWABLE_EXTENSIONS: dict[str, str] = {
 PREVIEW_MAX_SIZE = 15 * 1024 * 1024
 
 
-def get_attachment_preview(db: Session, chat_id: int, message_id: str, file_id, filename: str) -> tuple[bytes, str]:
+def get_attachment_preview(chat_id, message_id, file_id, filename: str) -> tuple[bytes, str]:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     content_type = PREVIEWABLE_EXTENSIONS.get(ext)
     if content_type is None:
@@ -298,7 +241,7 @@ def get_attachment_preview(db: Session, chat_id: int, message_id: str, file_id, 
             detail=f"Предпросмотр не поддерживается для .{ext or '?'} — скачайте файл",
         )
 
-    url = get_attachment_url(db, chat_id, message_id, file_id)
+    url = get_attachment_url(chat_id, message_id, file_id)
     try:
         with httpx.stream("GET", url, timeout=30, follow_redirects=True) as resp:
             resp.raise_for_status()
@@ -324,40 +267,37 @@ def get_attachment_preview(db: Session, chat_id: int, message_id: str, file_id, 
     return b"".join(chunks), content_type
 
 
-def _best_mp4(urls: dict) -> str | None:
-    """Из ``urls`` ответа ``GET /videos/{token}`` — самый качественный MP4."""
+def _best_mp4(payload: dict) -> str | None:
+    """Из ответа opcode 83 выбираем самый качественный прямой MP4."""
     def _res(key: str) -> int:
         tail = key.split("_", 1)[1]
         return int(tail) if tail.isdigit() else 0
 
-    keys = sorted((k for k in urls if k.startswith("mp4_") and urls[k]), key=_res, reverse=True)
-    return urls[keys[0]] if keys else None
+    keys = sorted((k for k in payload if k.startswith("MP4_")), key=_res, reverse=True)
+    return payload[keys[0]] if keys else None
 
 
-def get_media_url(db: Session, chat_id: int, message_id: str, media_id) -> dict[str, Any]:
-    """Воспроизводимая ссылка на VIDEO или AUDIO вложение.
+def get_media_url(chat_id, message_id, media_id) -> dict[str, Any]:
+    """Воспроизводимая ссылка на VIDEO или AUDIO (голосовое) вложение.
 
-    ``media_id`` — ``videoId``/``audioId`` из attach (индекс вложения).
-    Видео — через ``GET /videos/{token}`` (лучший ``mp4_*``, запасная —
-    ссылка из payload), аудио — ссылка из payload. Возвращает
-    ``{ "url": <прямой файл | None>, "external": <запасная | None> }``.
+    ``media_id`` — ``videoId`` либо ``audioId`` из attach (строка-снежинка).
+    Возвращает ``{ "url": <прямой MP4 | None>, "external": <веб-плеер | None> }``.
     """
-    attach = _stored_attach(db, chat_id, message_id, _index(media_id))
-    payload = attach.get("payload") or {}
-    url, external = None, None
-    if attach.get("type") == "video":
-        if payload.get("token"):
-            try:
-                info = bot_api.get_video(payload["token"])
-            except bot_api.BotNotConfigured as exc:
-                raise _bot_error(exc) from exc
-            except bot_api.BotApiError as exc:
-                # видео удалено / нет доступа — фронт покажет заглушку
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-            url = _best_mp4(info.get("urls") or {})
-        external = payload.get("url")
-    elif attach.get("type") == "audio":
-        url = payload.get("url")
+    with session() as s:
+        try:
+            payload = s.media_url(media_id, chat_id, message_id)
+        except MediaError as exc:
+            # вложение недоступно/удалено — фронт покажет заглушку, не крутилку
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+
+    url = _best_mp4(payload)
+    external = payload.get("EXTERNAL")
     if not url and not external:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
