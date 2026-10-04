@@ -124,21 +124,3 @@ def test_client_without_token_is_not_configured(monkeypatch):
     monkeypatch.setattr(settings, "max_bot_token", "")
     with pytest.raises(bot_api.BotNotConfigured):
         bot_api.get_me()
-
-
-def test_bot_id_lookup_backs_off_after_failure(monkeypatch):
-    """Недоступный MAX не опрашивается на каждом событии — пауза после сбоя."""
-    monkeypatch.undo()  # снять автоподмену bot_user_id из фикстуры _bot
-    calls = []
-
-    def failing_me():
-        calls.append(1)
-        raise bot_api.BotApiError(None, None, "MAX не ответил")
-
-    monkeypatch.setattr(bot_api, "get_me", failing_me)
-    monkeypatch.setattr(ingest, "_bot_id", None)
-    monkeypatch.setattr(ingest, "_bot_id_failed_at", None)
-
-    assert ingest.bot_user_id() is None
-    assert ingest.bot_user_id() is None
-    assert calls == [1]

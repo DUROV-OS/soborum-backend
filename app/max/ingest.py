@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 
 from sqlalchemy.orm import Session
 
@@ -21,27 +20,19 @@ log = logging.getLogger("app.max.ingest")
 
 _bot_id: int | None = None
 _bot_id_lock = threading.Lock()
-# После неудачного GET /me не спрашиваем MAX снова раньше этого срока: иначе
-# при недоступном MAX каждое событие webhook и каждое открытие ленты ждали бы
-# таймаут запроса.
-_BOT_ID_RETRY_SECONDS = 60
-_bot_id_failed_at: float | None = None
 
 
 def bot_user_id() -> int | None:
     """user_id самого бота (из GET /me, кэш на процесс) — по нему сообщение
     считается исходящим. None, если MAX недоступен: тогда исходящим считаем
     сообщение с ``sender.is_bot`` (см. _is_outgoing)."""
-    global _bot_id, _bot_id_failed_at
+    global _bot_id
     if _bot_id is None:
         with _bot_id_lock:
             if _bot_id is None:
-                if _bot_id_failed_at is not None and time.monotonic() - _bot_id_failed_at < _BOT_ID_RETRY_SECONDS:
-                    return None
                 try:
                     _bot_id = int(bot_api.get_me()["user_id"])
                 except (bot_api.BotApiError, bot_api.BotNotConfigured, KeyError, TypeError, ValueError):
-                    _bot_id_failed_at = time.monotonic()
                     return None
     return _bot_id
 
