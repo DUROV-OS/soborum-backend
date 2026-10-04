@@ -16,6 +16,7 @@ from app.agents.router import app as agents_app
 from app.clients.demo_seed import ensure_demo_clients_seed
 from app.clients.reconcile import start_stage_task_reconcile_loop
 from app.conversations.telegram_channel import start_telegram_polling_loop
+from app.max.listener import start_max_listener
 from app.ai import mcp_auth
 from app.ai.router import app as ai_app
 from app.board.router import app as board_app
@@ -108,6 +109,7 @@ def on_startup() -> None:
     start_shift_loop()
     start_stage_task_reconcile_loop()
     start_telegram_polling_loop()
+    start_max_listener()
 
 
 @app.get("/health")
