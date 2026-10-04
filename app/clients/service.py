@@ -674,6 +674,16 @@ _DOCUMENTS_REQUIRED = [
     "ar_file_id",
     "kr_file_id",
 ]
+# Подписи как в карточке клиента (DocumentPanel) — для ошибки перехода (0094).
+_DOCUMENT_FIELD_LABELS = {
+    "order_type": "Проект",
+    "final_price": "Итоговая цена",
+    "installation_address": "Адрес установки",
+    "contract_file_id": "Договор",
+    "contract_appendix_file_id": "Приложение к договору",
+    "ar_file_id": "АР",
+    "kr_file_id": "КР",
+}
 # house_project_file_id сознательно не в списке — с 0061 необязателен: не у
 # каждого клиента он есть в системе.
 
@@ -702,11 +712,11 @@ def transition_stage(db: Session, client: Client) -> Client:
     # still exists in the pipeline, it just no longer gates anything.
 
     if client.stage == ClientStage.APPROVAL:
-        missing = [f for f in _DOCUMENTS_REQUIRED if getattr(client, f) is None]
+        missing = [_DOCUMENT_FIELD_LABELS[f] for f in _DOCUMENTS_REQUIRED if getattr(client, f) is None]
         if missing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Не заполнены документные поля: {', '.join(missing)}",
+                detail=f"Не заполнены поля в карточке клиента: {', '.join(missing)}",
             )
         contract_error = _contract_gate_error(client)
         if contract_error:
