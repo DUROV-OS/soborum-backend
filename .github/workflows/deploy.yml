@@ -41,8 +41,7 @@ jobs:
           DASHBOARD_MCP_URL: ${{ secrets.DASHBOARD_MCP_URL }}
           DASHBOARD_MCP_CLIENT_ID: ${{ secrets.DASHBOARD_MCP_CLIENT_ID }}
           DASHBOARD_MCP_CLIENT_SECRET: ${{ secrets.DASHBOARD_MCP_CLIENT_SECRET }}
-          MAX_BOT_TOKEN: ${{ secrets.MAX_BOT_TOKEN }}
-          MAX_WEBHOOK_SECRET: ${{ secrets.MAX_WEBHOOK_SECRET }}
+          MAX_TOKEN: ${{ secrets.MAX_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -59,13 +58,11 @@ jobs:
             "MCP_SERVER_URL", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_CLIENT_SECRET", "MCP_REDIRECT_URI",
             "MOYSKLAD_MCP_URL", "MOYSKLAD_MCP_CLIENT_ID", "MOYSKLAD_MCP_CLIENT_SECRET",
             "DASHBOARD_MCP_URL", "DASHBOARD_MCP_CLIENT_ID", "DASHBOARD_MCP_CLIENT_SECRET",
-            "MAX_BOT_TOKEN", "MAX_WEBHOOK_SECRET",
+            "MAX_TOKEN",
           ]
           # Emit every managed key, empty ones as `KEY=` so a cleared Secret
           # removes the stale override on prod (see scripts/merge_env.py).
           lines = [f"{key}={os.environ.get(key, '').strip()}" for key in keys]
-          # События MAX-бота здесь приходят webhook'ом — polling выключен всегда.
-          lines.append("MAX_BOT_POLLING=false")
           pathlib.Path("/tmp/soborbum-mcp.env").write_text("\n".join(lines) + "\n", encoding="utf-8")
           filled = sum(1 for line in lines if not line.endswith("="))
           print(f"prepared {len(lines)} env keys ({filled} set, {len(lines) - filled} cleared)")

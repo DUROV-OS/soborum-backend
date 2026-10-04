@@ -61,12 +61,7 @@ services:
       MOYSKLAD_MCP_CLIENT_ID: ${MOYSKLAD_MCP_CLIENT_ID:-}
       MOYSKLAD_MCP_CLIENT_SECRET: ${MOYSKLAD_MCP_CLIENT_SECRET:-}
       MOYSKLAD_TOKEN: ${MOYSKLAD_TOKEN:-}
-      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
-      MAX_BOT_API_URL: ${MAX_BOT_API_URL:-https://platform-api.max.ru}
-      MAX_WEBHOOK_SECRET: ${MAX_WEBHOOK_SECRET:-}
-      # long polling событий бота — только локально (true в backend/.env);
-      # на проде/стейдже события идут webhook'ом, деплой пишет false
-      MAX_BOT_POLLING: ${MAX_BOT_POLLING:-false}
+      MAX_TOKEN: ${MAX_TOKEN:-}
       VAULT_ROOT: ${VAULT_ROOT:-}
     volumes:
       - ./app:/app/app

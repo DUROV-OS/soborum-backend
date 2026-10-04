@@ -180,7 +180,24 @@ class Settings(BaseSettings):
     def moysklad_mcp_configured(self) -> bool:
         return bool(self.moysklad_mcp_url and self.moysklad_mcp_client_id and self.moysklad_mcp_client_secret)
 
-    # --- Мессенджер MAX (app/max) — официальный Bot API (0082) ---
+    # --- Мессенджер MAX (app/max) ---
+    # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
+    # web.max.ru. Без него раздел /api/max отдаёт 503.
+    max_token: str = ""
+    # Opcode запроса URL для загрузки файла (перед отправкой FILE-вложения).
+    # НЕ ПОДТВЕРЖДЁН вживую (0015): найден в клиентском JS web.max.ru как
+    # символ `$m` в отдельном чанке, которого нет в доступных материалах для
+    # реверс-инжиниринга (Desktop/max_idi_nahuy/archive) — числовое значение
+    # не удалось перепроверить живым запросом (среда агента блокирует прямые
+    # сетевые запросы к MAX). Пока не задан — загрузка вложений отдаёт 503
+    # с понятной причиной вместо отправки кадра с угаданным числом. Как
+    # получить: на web.max.ru отправить файл в любой чат с открытым DevTools
+    # → вкладка WS → найти исходящий кадр с payload `{"count":1}` и ответный
+    # с payload `{"info":[{"fileId":...,"url":...}]}` — opcode этого кадра
+    # сюда.
+    max_file_upload_opcode: int | None = None
+
+    # --- MAX-бот, официальный Bot API (0082) ---
     # Токен бота: business.max.ru → Чат-боты → Настройки. Уходит заголовком
     # `Authorization: <token>` (без Bearer), в query больше не принимается.
     max_bot_token: str = ""
