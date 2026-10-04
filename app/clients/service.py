@@ -621,37 +621,41 @@ def delete_note(db: Session, note: ClientNote) -> None:
 
 
 def delete_client(db: Session, client: Client) -> None:
-    """Удалить клиента и его заметки (каскад на уровне БД). Отказ 409, если
-    цикл ещё не завершён, есть незакрытые задачи по клиенту или проводки,
-    ссылающиеся на него — по умолчанию запрет, а не тихий каскад (см. спеку
-    0030-a). Ни цикл, ни производство/монтаж под ним не трогаем — они остаются
-    как историческая запись."""
-    if client.cycle.status != CycleStatus.COMPLETED:
+    """Удалить клиента и его заметки (каскад на уровне БД).
+
+    Можно до производства (цикл `client` — в т.ч. тестового или ошибочно
+    заведённого клиента, 0095) и после завершения цикла. Отказ 409, пока дом в
+    производстве или на монтаже, есть незакрытые задачи по клиенту или проводки
+    — по умолчанию запрет, а не тихий каскад (0030-a).
+
+    Цикл до производства пустой — удаляется вместе с клиентом, чтобы в «Циклах»
+    не висел цикл без клиента. Завершённый цикл с производством/монтажом
+    остаётся исторической записью."""
+    cycle = client.cycle
+    if cycle.status in (CycleStatus.PRODUCTION, CycleStatus.INSTALLATION):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить клиента: цикл ещё не завершён",
+            detail="Нельзя удалить клиента: дом уже в производстве или на монтаже",
         )
+    # Задачу «перевести на следующую стадию» заводит сама система, она открыта
+    # у любого клиента до производства — удаление она не блокирует (0095).
+    # Блокируют задачи, которые ведут люди: задачи менеджера и приём остатка.
     open_task = (
         db.query(Task)
         .filter(
-            Task.link_type.in_(
-                [
-                    TaskLinkType.CLIENT_STAGE,
-                    TaskLinkType.CLIENT_BALANCE_PAYMENT,
-                    TaskLinkType.CLIENT_FOLLOWUP,
-                ]
-            ),
+            Task.link_type.in_([TaskLinkType.CLIENT_BALANCE_PAYMENT, TaskLinkType.CLIENT_FOLLOWUP]),
             Task.link_id == client.id,
             Task.status != TaskStatus.DONE,
         )
+        .order_by(Task.id)
         .first()
     )
     if open_task is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить клиента: есть незавершённые задачи",
+            detail=f"Нельзя удалить клиента: сначала закройте задачу «{open_task.title}»",
         )
-    from app.accounting.models import MoneyMovement
+    from app.accounting.models import Counterparty, MoneyMovement
 
     has_money_movements = (
         db.query(MoneyMovement.id).filter(MoneyMovement.client_id == client.id).first() is not None
@@ -661,8 +665,18 @@ def delete_client(db: Session, client: Client) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя удалить клиента: есть проводки по клиенту",
         )
+    # привязка контрагента к клиенту справочная; FK без ondelete уронил бы удаление
+    db.query(Counterparty).filter(Counterparty.client_id == client.id).update(
+        {Counterparty.client_id: None}, synchronize_session=False
+    )
+    for task in _open_stage_tasks(db, client.id):
+        task_service.force_close(db, task)
+    drop_cycle = cycle.status == CycleStatus.CLIENT and not cycle.productions and cycle.installation is None
     db.delete(client)
     db.flush()
+    if drop_cycle:
+        db.delete(cycle)
+        db.flush()
 
 
 _DOCUMENTS_REQUIRED = [
