@@ -21,6 +21,7 @@ from app.ai.router import app as ai_app
 from app.board.router import app as board_app
 from app.board.seed import ensure_seed
 from app.clients.router import app as clients_app
+from app.partners.router import app as partners_app
 from app.common.files import router as files_router
 from app.core import readiness
 from app.core.config import settings
@@ -139,6 +140,7 @@ app.include_router(files_router)
 
 app.mount("/api/auth", auth_app)
 app.mount("/api/clients", clients_app)
+app.mount("/api/partners", partners_app)
 app.mount("/api/production", production_app)
 app.mount("/api/installation", installation_app)
 app.mount("/api/cycles", cycle_app)
