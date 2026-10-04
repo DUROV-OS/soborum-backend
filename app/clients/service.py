@@ -34,6 +34,7 @@ from app.clients.schemas import (
 )
 from app.common.module_access import AccessLevel, Module
 from app.cycle.models import Cycle, CycleStatus
+from app.partners.models import Partner
 from app.tasks import service as task_service
 from app.tasks import sync as task_sync
 from app.tasks.models import Task, TaskLinkType, TaskReportKind, TaskStatus
@@ -99,9 +100,21 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     )
 
 
-def _clean_source(payload: ClientSourceUpdate) -> dict:
+def _clean_source(db: Session, payload: ClientSourceUpdate) -> dict:
     """Приводит источник клиента к одному из двух валидных состояний: «привело
-    агентство, известно какое» или «пришёл сам, полей агентства нет»."""
+    агентство, известно какое» или «пришёл сам, полей агентства нет». Плюс
+    рекомендатель из базы партнёров (0083-c) — он независим от галочки
+    агентства: у клиента может быть и то и другое, и ни того ни другого."""
+    referrer_id = payload.referrer_partner_id
+    if referrer_id is not None and db.get(Partner, referrer_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Партнёр, указанный как рекомендатель, не найден в базе партнёров",
+        )
+    return {**_clean_agency(payload), "referrer_partner_id": referrer_id}
+
+
+def _clean_agency(payload: ClientSourceUpdate) -> dict:
     name = (payload.agency_name or "").strip()
     contact = (payload.agency_contact or "").strip()
     if not payload.via_agency:
@@ -117,7 +130,7 @@ def _clean_source(payload: ClientSourceUpdate) -> dict:
 def update_source(db: Session, client: Client, payload: ClientSourceUpdate) -> Client:
     """Источник, в отличие от ФИО/телефона/почты, не замораживается после
     создания: то, что клиента привело агентство, нередко выясняется позже."""
-    for field, value in _clean_source(payload).items():
+    for field, value in _clean_source(db, payload).items():
         setattr(client, field, value)
     db.flush()
     return client
@@ -134,7 +147,7 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
         phone=payload.phone,
         email=payload.email,
         contacts=[c.model_dump() for c in payload.contacts],
-        **_clean_source(payload),
+        **_clean_source(db, payload),
     )
     db.add(client)
     db.flush()
