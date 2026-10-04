@@ -1,7 +1,7 @@
 """база партнёров и заметки по партнёрам (0083-a)
 
 Revision ID: a3f7c2e91b04
-Revises: d5e2a90c1b77
+Revises: c3e8a1f05b72
 Create Date: 2026-09-28 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'a3f7c2e91b04'
-down_revision: Union[str, None] = 'd5e2a90c1b77'
+down_revision: Union[str, None] = 'c3e8a1f05b72'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
