@@ -73,6 +73,46 @@ def _open_stage_tasks(db: Session, client_id: int) -> list[Task]:
     )
 
 
+# Что проверяет `transition_stage` при уходе с каждой ручной стадии — для
+# описания задачи «перевести на следующую». Держать в согласии с гейтами ниже.
+_STAGE_TASK_REQUIREMENTS: dict[ClientStage, list[str]] = {
+    ClientStage.APPROVAL: [
+        "заполнить в карточке «Проект», «Итоговая цена», «Адрес установки» и «Формат расчёта» "
+        "(для «аванс + оплата после получения» — ещё «Сумма аванса», меньше итоговой цены)",
+        "загрузить АР, КР, договор и приложение к договору и отметить, что договор и приложение проверены",
+        "для множественного заказа — указать количество домов (не меньше 2)",
+    ],
+    ClientStage.PAYMENT: [
+        "подтвердить в карточке поступление полной предоплаты или аванса — смотря по формату расчёта "
+        "(при «оплате после получения» подтверждать ничего не нужно)",
+    ],
+}
+
+
+def stage_task_title(client: Client) -> str:
+    return f"Клиент «{client.full_name}»: перевести со стадии «{stage_label(client.stage)}» на следующую"
+
+
+def stage_task_description(client: Client) -> str:
+    """Что сделать по задаче стадии: куда переводить, где кнопка и что
+    система потребует. Без этого задача читается как «реши что-то» (0094)."""
+    next_stage = _next_stage(client.stage)
+    next_label = stage_label(next_stage) if next_stage else ""
+    lines = [
+        f"Когда клиент прошёл стадию «{stage_label(client.stage)}», переведите его на «{next_label}»: "
+        f"откройте карточку клиента и нажмите «Перевести на «{next_label}»».",
+    ]
+    requirements = _STAGE_TASK_REQUIREMENTS.get(client.stage)
+    if requirements:
+        lines.append("Перед переводом система проверит:")
+        lines.extend(f"— {item};" for item in requirements)
+    else:
+        lines.append("Заполнять для перевода ничего не нужно — система его не проверяет.")
+    lines.append("Перевести не получится, пока у клиента открыта блокирующая задача.")
+    lines.append("Эта задача закроется сама после перевода клиента.")
+    return "\n".join(lines)
+
+
 def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     """Гарантирует одну открытую задачу «перевести клиента на следующую стадию».
 
@@ -92,7 +132,8 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     assignees = user_service.users_with_access(db, Module.CLIENTS)
     return task_service.create_link_task(
         db,
-        title=f"Клиент «{client.full_name}»: перевести со стадии «{stage_label(client.stage)}» на следующую",
+        title=stage_task_title(client),
+        description=stage_task_description(client),
         link_type=TaskLinkType.CLIENT_STAGE,
         link_id=client.id,
         assignees=assignees,
@@ -633,6 +674,16 @@ _DOCUMENTS_REQUIRED = [
     "ar_file_id",
     "kr_file_id",
 ]
+# Подписи как в карточке клиента (DocumentPanel) — для ошибки перехода (0094).
+_DOCUMENT_FIELD_LABELS = {
+    "order_type": "Проект",
+    "final_price": "Итоговая цена",
+    "installation_address": "Адрес установки",
+    "contract_file_id": "Договор",
+    "contract_appendix_file_id": "Приложение к договору",
+    "ar_file_id": "АР",
+    "kr_file_id": "КР",
+}
 # house_project_file_id сознательно не в списке — с 0061 необязателен: не у
 # каждого клиента он есть в системе.
 
@@ -661,11 +712,11 @@ def transition_stage(db: Session, client: Client) -> Client:
     # still exists in the pipeline, it just no longer gates anything.
 
     if client.stage == ClientStage.APPROVAL:
-        missing = [f for f in _DOCUMENTS_REQUIRED if getattr(client, f) is None]
+        missing = [_DOCUMENT_FIELD_LABELS[f] for f in _DOCUMENTS_REQUIRED if getattr(client, f) is None]
         if missing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Не заполнены документные поля: {', '.join(missing)}",
+                detail=f"Не заполнены поля в карточке клиента: {', '.join(missing)}",
             )
         contract_error = _contract_gate_error(client)
         if contract_error:
