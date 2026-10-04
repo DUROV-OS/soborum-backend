@@ -104,6 +104,12 @@ def ensure_supplier_exists(db: Session, supplier_id: int | None) -> None:
 
 def create_material(db: Session, payload: WarehouseMaterialCreate) -> WarehouseMaterial:
     ensure_supplier_exists(db, payload.supplier_id)
+    duplicate = db.query(WarehouseMaterial.id).filter_by(warehouse=payload.warehouse, code=payload.code).first()
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Материал с кодом «{payload.code}» уже есть на складе «{payload.warehouse.value}»",
+        )
     material = WarehouseMaterial(**payload.model_dump())
     db.add(material)
     db.flush()

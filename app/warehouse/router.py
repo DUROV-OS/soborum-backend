@@ -100,6 +100,17 @@ def create_material(
     return warehouse_service.to_out(db, material)
 
 
+@app.get("/materials/suggest-code")
+def suggest_material_code(
+    warehouse: Warehouse,
+    title: str = "",
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse_view),
+):
+    """Код по умолчанию для формы нового материала (0096)."""
+    return {"code": warehouse_service.suggest_material_code(db, warehouse, title)}
+
+
 @app.get("/materials/{material_id}", response_model=WarehouseMaterialOut)
 def get_material(material_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
     material = warehouse_service.get_material_or_404(db, material_id)
