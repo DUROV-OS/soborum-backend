@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -50,6 +51,33 @@ from app.warehouse.schemas import (
 # остаётся свободной строкой: в складе уже есть позиции с единицами вне этого
 # списка (импорт прайс-листов, записи до 0078) — их ломать нельзя.
 MATERIAL_UNITS = ["шт.", "рулон", "палета", "кв. м", "куб. м", "пог.м"]
+
+
+# Код материала по умолчанию (0096): «первое слово названия-номер позиции на
+# складе». Колонка `code` - String(64), уникальна в пределах склада.
+_CODE_MAX_LEN = 64
+_FIRST_WORD_EDGE = re.compile(r"^[^\w]+|[^\w]+$")
+
+
+def _material_code_word(title: str) -> str:
+    for token in title.split():
+        word = _FIRST_WORD_EDGE.sub("", token)
+        if word:
+            return word
+    return "MAT"
+
+
+def suggest_material_code(db: Session, warehouse: Warehouse, title: str) -> str:
+    """Предложить свободный код для нового материала на складе `warehouse`."""
+    word = _material_code_word(title)
+    taken = {code for (code,) in db.query(WarehouseMaterial.code).filter(WarehouseMaterial.warehouse == warehouse)}
+    number = len(taken) + 1
+    while True:
+        suffix = f"-{number}"
+        code = word[: _CODE_MAX_LEN - len(suffix)] + suffix
+        if code not in taken:
+            return code
+        number += 1
 
 
 def get_material_or_404(db: Session, material_id: int) -> WarehouseMaterial:
