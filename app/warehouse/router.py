@@ -1,4 +1,7 @@
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
+from datetime import datetime
+from typing import Literal
+
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -8,15 +11,27 @@ from app.db.session import get_db
 from app.production.schemas import MaterialRequestOut
 from app.users.models import User
 from app.warehouse import excel, price_import, service as warehouse_service
-from app.warehouse.models import MaterialCategory, StockMovementReason, Supply, Warehouse
+from app.warehouse.models import (
+    IssueDestinationKind,
+    MaterialCategory,
+    StockMovement,
+    StockMovementReason,
+    Supply,
+    Warehouse,
+    WarehouseOperation,
+    WarehouseOperationKind,
+)
 from app.warehouse.schemas import (
     AiFillCategoryResult,
     BackfillTaskRequest,
     BackfillTaskResult,
+    InventoryOperationCreate,
+    JournalEntryOut,
     LeadTimeQuestionDraft,
     LeadTimeQuestionSend,
     LeadTimeQuestionSent,
     LinkMaxChatIn,
+    OperationLineOut,
     PriceListImportResult,
     StockMovementOut,
     SupplierCreate,
@@ -30,6 +45,7 @@ from app.warehouse.schemas import (
     WarehouseMaterialCreate,
     WarehouseMaterialOut,
     WarehouseMaterialUpdate,
+    WarehouseOperationOut,
     WriteOffRequest,
 )
 
@@ -125,6 +141,127 @@ def history(
     reason: StockMovementReason | None = None,
 ):
     return warehouse_service.get_history(db, material_id=material_id, reason=reason)
+
+
+# --- Документы операций склада и журнал (0088) ---
+
+
+def _operation_out(operation: WarehouseOperation) -> WarehouseOperationOut:
+    return WarehouseOperationOut(
+        id=operation.id,
+        kind=operation.kind,
+        occurred_at=operation.occurred_at,
+        destination_kind=operation.destination_kind,
+        destination=operation.destination,
+        production_id=operation.production_id,
+        received_by=operation.received_by,
+        note=operation.note,
+        created_by_id=operation.created_by_id,
+        created_by_name=operation.created_by.full_name,
+        created_at=operation.created_at,
+        lines=[
+            OperationLineOut(
+                movement_id=m.id,
+                warehouse_material_id=m.warehouse_material_id,
+                material_title=m.warehouse_material.title,
+                material_code=m.warehouse_material.code,
+                unit=m.warehouse_material.unit,
+                delta=m.delta,
+                balance_after=m.balance_after,
+            )
+            for m in operation.movements
+        ],
+    )
+
+
+def _post_inventory_operation(
+    db: Session, kind: WarehouseOperationKind, payload: InventoryOperationCreate, user: User
+) -> WarehouseOperationOut:
+    operation = warehouse_service.create_inventory_operation(
+        db,
+        kind,
+        [(line.warehouse_material_id, line.quantity) for line in payload.lines],
+        payload.note,
+        user,
+        occurred_at=payload.occurred_at,
+    )
+    db.commit()
+    db.refresh(operation)
+    return _operation_out(operation)
+
+
+@app.post("/operations/receipt", response_model=WarehouseOperationOut)
+def create_receipt(
+    payload: InventoryOperationCreate, db: Session = Depends(get_db), user: User = Depends(require_warehouse_full)
+):
+    return _post_inventory_operation(db, WarehouseOperationKind.RECEIPT, payload, user)
+
+
+@app.post("/operations/write-off", response_model=WarehouseOperationOut)
+def create_write_off(
+    payload: InventoryOperationCreate, db: Session = Depends(get_db), user: User = Depends(require_warehouse_full)
+):
+    return _post_inventory_operation(db, WarehouseOperationKind.WRITE_OFF, payload, user)
+
+
+@app.get("/operations/{operation_id}", response_model=WarehouseOperationOut)
+def get_operation(operation_id: int, db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
+    return _operation_out(warehouse_service.get_operation_or_404(db, operation_id))
+
+
+def _journal_entry(movement: StockMovement, production) -> JournalEntryOut:
+    operation = movement.operation
+    destination_kind = operation.destination_kind if operation else None
+    destination = operation.destination if operation else None
+    if production is not None:
+        destination_kind = destination_kind or IssueDestinationKind.HOUSE
+        destination = destination or warehouse_service.house_label(production)
+    return JournalEntryOut(
+        movement_id=movement.id,
+        operation_id=movement.operation_id,
+        occurred_at=operation.occurred_at if operation else movement.created_at,
+        reason=movement.reason,
+        warehouse_material_id=movement.warehouse_material_id,
+        material_title=movement.warehouse_material.title,
+        material_code=movement.warehouse_material.code,
+        unit=movement.warehouse_material.unit,
+        delta=movement.delta,
+        balance_after=movement.balance_after,
+        destination_kind=destination_kind,
+        destination=destination,
+        production_id=production.id if production is not None else None,
+        received_by=operation.received_by if operation else None,
+        note=operation.note if operation else movement.note,
+        created_by_name=movement.created_by.full_name,
+    )
+
+
+@app.get("/journal", response_model=list[JournalEntryOut])
+def journal(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_warehouse_view),
+    direction: Literal["in", "out"] | None = None,
+    reason: StockMovementReason | None = None,
+    material_id: int | None = None,
+    production_id: int | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+):
+    movements = warehouse_service.get_journal(
+        db,
+        direction=direction,
+        reason=reason,
+        material_id=material_id,
+        production_id=production_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    productions = warehouse_service.productions_of_movements(db, movements)
+    return [_journal_entry(m, productions.get(m.id)) for m in movements]
 
 
 @app.get("/supplies/template")
