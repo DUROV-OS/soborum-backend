@@ -1,7 +1,8 @@
 """Тонкий клиент к мессенджеру MAX (oneme) по websocket.
 
 Протокол — простые JSON-кадры поверх wss: opcode 6 (HELLO) -> 19 (AUTH) ->
-49 (история чата) -> 88 (ссылка на вложение). Логика перенесена из
+49 (история чата) -> 88 (ссылка на вложение); 46/41 — поиск и
+добавление контакта по номеру (0093). Логика перенесена из
 исходного scraping-скрипта (Desktop/max_idi_nahuy/api.py); в основном
 read-only, БД не трогаем — кроме upload_file (0015), которая реально
 загружает файл в MAX перед отправкой вложения.
@@ -43,6 +44,15 @@ UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+
+class ContactError(RuntimeError):
+    """MAX отклонил поиск или добавление контакта. ``code`` — код ошибки MAX
+    (``not.found`` — номер не зарегистрирован в MAX)."""
+
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 class MediaError(RuntimeError):
@@ -219,6 +229,34 @@ class MaxSession:
             raise UploadError(f"MAX отклонил загрузку файла: {exc}") from exc
 
         return {"fileId": info["fileId"], "token": info.get("token")}
+
+    def _request(self, opcode: int, payload: dict) -> dict:
+        """Запрос с ответом на тот же seq. ``cmd=3`` — сервер отверг запрос:
+        бросаем ContactError с его человеческим текстом и кодом ошибки."""
+        seq = self._send(opcode, payload)
+        reply = self._wait(opcode, seq)
+        if reply.get("cmd") == 3:
+            p = reply.get("payload") or {}
+            raise ContactError(
+                p.get("localizedMessage") or p.get("message") or "MAX отклонил запрос",
+                code=p.get("error"),
+            )
+        return reply.get("payload") or {}
+
+    def contact_by_phone(self, phone: str) -> dict:
+        """Пользователь MAX по номеру (opcode 46, CONTACT_INFO_BY_PHONE).
+        ``phone`` — только цифры с кодом страны (``79001234567``). Нет такого
+        номера в MAX → ContactError с ``code="not.found"``."""
+        return self._request(46, {"phone": phone}).get("contact") or {}
+
+    def add_contact(self, phone: str, first_name: str, last_name: str | None = None) -> dict:
+        """Добавить в контакты аккаунта по номеру (opcode 41, как «Добавить
+        контакт» в web.max.ru): ``{contact, new}``. Имя — то, под которым
+        контакт будет виден в MAX и в списке чатов."""
+        payload = {"phone": phone, "firstName": first_name}
+        if last_name:
+            payload["lastName"] = last_name
+        return self._request(41, payload)
 
     def attach_url(self, file_id, chat_id, message_id) -> str:
         self._send(88, {"fileId": file_id, "chatId": chat_id, "messageId": message_id})
