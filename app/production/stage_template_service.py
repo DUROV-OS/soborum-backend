@@ -477,10 +477,10 @@ def fill_quantities_from_kr(db: Session, template: ProductionStageTemplate) -> d
     if not missing:
         return {"filled": 0, "remaining": 0}
 
-    if not settings.anthropic_api_key:
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Нужен ключ ИИ (ANTHROPIC_API_KEY) для заполнения нормативов из КР",
+            detail="Нужен ключ активного ИИ-провайдера (AI_PROVIDER) для заполнения нормативов из КР",
         )
     extraction = kr_extraction.get_kr_extraction(db, template.source_client_id)
     pages_payload = _kr_payload(extraction) if extraction is not None and extraction.pages else []
