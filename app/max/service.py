@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, status
 
+from app.max import realtime
 from app.max.client import MediaError, UploadError, session
 
 
@@ -203,6 +204,8 @@ def send_message(
             ) from exc
         vid = s.viewer_id()
         contacts = s.contacts_by_id()
+    # коллеги с этим чатом в соседних вкладках увидят ответ сразу (0092)
+    realtime.chat_updated(payload.get("chatId", chat_id))
     return {
         "chatId": payload.get("chatId", chat_id),
         "message": _fmt_msg(payload.get("message"), vid, contacts),
