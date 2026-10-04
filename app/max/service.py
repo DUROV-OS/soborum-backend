@@ -1,9 +1,6 @@
-"""Чаты, лента и отправка сообщений MAX через бота (0082).
+"""Приведение ответов MAX к простым JSON-структурам для фронта.
 
-Читаем из своей БД (max_bot_chats / max_bot_messages — их наполняют события,
-см. app/max/ingest.py), пишем через Bot API (app/max/bot_api.py). Ответы
-приводятся к прежней форме frontend/src/max/types.ts, чтобы лента и вложения
-на фронте работали без переписывания.
+Перенос функций-«шейперов» из Desktop/max_idi_nahuy/api.py. Всё read-only.
 """
 
 from __future__ import annotations
@@ -12,12 +9,8 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
 
-from app.max import bot_api
 from app.max.client import MediaError, UploadError, session
-from app.max.ingest import bot_user_id
-from app.max.models import MaxBotChat, MaxBotMessage
 
 
 def _sid(v: Any) -> str | None:
@@ -27,145 +20,158 @@ def _sid(v: Any) -> str | None:
     return None if v is None else str(v)
 
 
-def _bot_error(exc: Exception) -> HTTPException:
-    """Сбой Bot API → понятная HTTP-ошибка: нет токена — 503, отказ или
-    молчание MAX — 502 с причиной (``chat.denied`` = бот не админ группы
-    или пользователь остановил бота)."""
-    if isinstance(exc, bot_api.BotNotConfigured):
-        return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
-    if isinstance(exc, bot_api.BotApiError) and exc.code == "chat.denied":
-        return HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="MAX запретил боту писать в этот чат (chat.denied): бот не администратор "
-            "группы или пользователь остановил бота",
-        )
-    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-
-
-# Тип вложения Bot API → тип в форме фронта (frontend/src/max/types.ts).
-_ATTACH_TYPES = {"image": "PHOTO", "file": "FILE", "video": "VIDEO", "audio": "AUDIO", "share": "SHARE"}
-
-
-def _fmt_attach(a: dict, index: int) -> dict:
-    """Вложение Bot API → прежняя форма ``MaxAttach``. У Bot API нет
-    отдельных id файла/видео/аудио, которые можно вернуть в /attachment и
-    /media, поэтому ``fileId``/``videoId``/``audioId`` — индекс вложения в
-    сообщении: по нему ссылка берётся из сохранённого payload."""
-    kind = _ATTACH_TYPES.get(a.get("type"), "UNSUPPORTED")
-    payload = a.get("payload") or {}
-    idx = str(index)
-    d: dict[str, Any] = {"type": kind}
-    if kind == "PHOTO":
-        d["baseUrl"] = payload.get("url")
-        d["photoId"] = _sid(payload.get("photo_id"))
-    elif kind == "FILE":
-        d["name"] = a.get("filename")
-        d["size"] = a.get("size")
-        d["fileId"] = idx
-    elif kind == "VIDEO":
-        d["videoId"] = idx
-        d["thumbnail"] = (a.get("thumbnail") or {}).get("url")
-        # Bot API отдаёт длительность в секундах, фронт ждёт миллисекунды
-        d["duration"] = a["duration"] * 1000 if a.get("duration") else None
-    elif kind == "AUDIO":
-        d["audioId"] = idx
-    elif kind == "SHARE":
-        d["url"] = payload.get("url")
-        d["title"] = a.get("title")
+def _fmt_attach(a: dict) -> dict:
+    d = {
+        "type": a.get("_type"),
+        "name": a.get("name"),
+        "fileId": _sid(a.get("fileId")),
+        "photoId": _sid(a.get("photoId")),
+        "videoId": _sid(a.get("videoId")),
+        "audioId": _sid(a.get("audioId")),
+        "size": a.get("size"),
+        "baseUrl": a.get("baseUrl"),
+        "url": a.get("url"),
+        "title": a.get("title"),
+        # VIDEO: длительность (мс), кадр-постер (data:image/webp) и его URL;
+        # AUDIO (голосовое): длительность и картинка-волна (data:image/webp).
+        "duration": a.get("duration"),
+        "previewData": a.get("previewData"),
+        "thumbnail": a.get("thumbnail"),
+        "wave": a.get("wave"),
+    }
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _fmt_msg(row: MaxBotMessage | None) -> dict | None:
-    if row is None:
+# CONTROL-вложения MAX — служебные события чата (вступил / вышел / переименовал).
+# Показываем их отдельной строкой, а не как чьё-то сообщение.
+_CONTROL_EVENT_TEXT = {
+    "new": "чат создан",
+    "add": "добавил участника",
+    "remove": "удалил участника",
+    "leave": "вышел из чата",
+    "joinByLink": "присоединился по ссылке",
+    "title": "изменил название чата",
+    "pin": "закрепил сообщение",
+    "unpin": "открепил сообщение",
+    "photo": "изменил фото чата",
+}
+
+
+def _system_text(m: dict) -> str | None:
+    for a in m.get("attaches", []):
+        if a.get("_type") == "CONTROL":
+            ev = a.get("event")
+            if ev == "title" and a.get("title"):
+                return f"изменил название чата на «{a['title']}»"
+            return _CONTROL_EVENT_TEXT.get(ev, "служебное сообщение")
+    return None
+
+
+def _fmt_msg(
+    m: dict | None, viewer_id: str = "", contacts: dict | None = None
+) -> dict | None:
+    if not m:
         return None
+    contacts = contacts or {}
+    sender = m.get("sender")
+    sender_id = _sid(sender)
+    is_system = any(
+        a.get("_type") == "CONTROL" for a in m.get("attaches", [])
+    )
     return {
-        "id": row.mid,
-        "time": row.timestamp,
-        "senderId": _sid(row.sender_id),
-        "senderName": row.sender_name,
-        # исходящее = отправлено ботом (определяется при сохранении, см. ingest)
-        "isOutgoing": bool(row.is_outgoing),
-        # служебных CONTROL-сообщений у Bot API нет: вступление/выход приходят
-        # отдельными событиями и в ленту не попадают
-        "isSystem": False,
-        "systemText": None,
-        "text": row.text or "",
-        "elements": [],
-        "attaches": [_fmt_attach(a, i) for i, a in enumerate(row.attachments or [])],
+        "id": _sid(m.get("id")),
+        "time": m.get("time"),
+        # id участника MAX (стабильный, строкой) — по нему фронт группирует
+        # подряд идущие сообщения и подписывает автора в группах.
+        "senderId": sender_id,
+        "senderName": _contact_name(contacts.get(sender_id)) if sender_id else None,
+        # исходящее = автор совпал с текущим пользователем; тип чата ни при чём.
+        # служебное событие никогда не «исходящее».
+        "isOutgoing": (
+            not is_system and viewer_id != "" and str(sender) == str(viewer_id)
+        ),
+        "isSystem": is_system,
+        "systemText": _system_text(m) if is_system else None,
+        "type": m.get("type"),
+        "status": m.get("status"),
+        "text": m.get("text", ""),
+        "elements": m.get("elements", []),
+        "attaches": [_fmt_attach(a) for a in m.get("attaches", [])],
     }
 
 
-# Тип чата Bot API → тип в форме фронта.
-_CHAT_TYPES = {"dialog": "DIALOG", "chat": "CHAT", "channel": "CHANNEL"}
+def _contact_name(ct: dict | None) -> str | None:
+    if not ct:
+        return None
+    names = ct.get("names")
+    if isinstance(names, list) and names:
+        n = names[0]
+        cand = n.get("name") or " ".join(
+            x for x in (n.get("firstName"), n.get("lastName")) if x
+        )
+        if cand:
+            return cand
+    return ct.get("name") or ct.get("firstName") or ct.get("phone")
 
 
-def _chat_title(chat: MaxBotChat) -> str:
-    return chat.title or str(chat.chat_id)
+def _chat_title(c: dict | None, contacts: dict, viewer_id: str = "") -> str | None:
+    if not c:
+        return None
+    if c.get("title"):
+        return c["title"]
+    # диалог: имя собеседника
+    peers = [p for p in (c.get("participants") or {}) if str(p) != viewer_id]
+    for pid in (peers or list(c.get("participants") or {})):
+        name = _contact_name(contacts.get(str(pid)))
+        if name:
+            return name
+    return str(c.get("id"))
 
 
-def _last_message(db: Session, chat_id: int) -> MaxBotMessage | None:
-    return (
-        db.query(MaxBotMessage)
-        .filter(MaxBotMessage.chat_id == chat_id, MaxBotMessage.deleted.is_(False))
-        .order_by(MaxBotMessage.timestamp.desc())
-        .first()
-    )
+def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> dict:
+    cid = c.get("id")
+    msgs = last_map.get(str(cid)) or last_map.get(cid) or []
+    last = c.get("lastMessage") or (msgs[-1] if msgs else None)
+    return {
+        "id": cid,
+        "type": c.get("type"),
+        "title": _chat_title(c, contacts, viewer_id),
+        "unread": c.get("newMessages", c.get("unreadCount", 0)),
+        "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
+        "lastMessage": _fmt_msg(last, viewer_id, contacts),
+    }
 
 
-def list_chats(db: Session, limit: int | None = None) -> dict[str, Any]:
-    """Чаты, где бот сейчас состоит (из max_bot_chats — списка чатов у Bot
-    API нет), самые свежие сверху."""
-    q = (
-        db.query(MaxBotChat)
-        .filter(MaxBotChat.status == "active")
-        .order_by(MaxBotChat.last_event_time.desc().nullslast())
-    )
+def _is_group_chat(meta: dict | None) -> bool:
+    """Групповой чат MAX — всё, что не диалог 1:1 (тип ``DIALOG``)."""
+    return bool(meta) and meta.get("type") != "DIALOG"
+
+
+def list_chats(limit: int | None = None) -> dict[str, Any]:
+    with session() as s:
+        contacts = s.contacts_by_id()
+        last_map = s.last_messages()
+        vid = s.viewer_id()
+        items = [_fmt_chat(c, last_map, contacts, vid) for c in s.chats()]
+    items.sort(key=lambda x: x.get("lastEventTime") or 0, reverse=True)
     if limit:
-        q = q.limit(limit)
-    items = []
-    for chat in q:
-        last = _last_message(db, chat.chat_id)
-        items.append({
-            "id": chat.chat_id,
-            "type": _CHAT_TYPES.get(chat.type, chat.type.upper()),
-            "title": _chat_title(chat),
-            "unread": chat.unread or 0,
-            "lastEventTime": chat.last_event_time or (last.timestamp if last else None),
-            "lastMessage": _fmt_msg(last),
-        })
+        items = items[:limit]
     return {"count": len(items), "chats": items}
 
 
-def _known_chat(db: Session, chat_id: int) -> MaxBotChat:
-    chat = db.get(MaxBotChat, chat_id)
-    if chat is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Бот не состоит в этом чате")
-    return chat
-
-
-def get_chat(db: Session, chat_id: int, limit: int = 50, backward: int = 0) -> dict[str, Any]:
-    """Последние ``limit`` сообщений чата плюс ``backward`` более старых, по
-    возрастанию времени. Открытие чата сбрасывает непрочитанное."""
-    chat = _known_chat(db, chat_id)
-    rows = (
-        db.query(MaxBotMessage)
-        .filter(MaxBotMessage.chat_id == chat_id, MaxBotMessage.deleted.is_(False))
-        .order_by(MaxBotMessage.timestamp.desc())
-        .limit(max(limit, 0) + max(backward, 0))
-        .all()
-    )
-    rows.reverse()
-    if chat.unread:
-        chat.unread = 0
-        db.commit()
-    bot_id = bot_user_id()
+def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
+    with session() as s:
+        contacts = s.contacts_by_id()
+        vid = s.viewer_id()
+        meta = next((c for c in s.chats() if c.get("id") == chat_id), None)
+        msgs = s.history(chat_id, forward=limit, backward=backward)
     return {
         "chatId": chat_id,
-        "title": _chat_title(chat),
-        "viewerId": _sid(bot_id) or "",
-        "isGroup": chat.type != "dialog",
-        "count": len(rows),
-        "messages": [_fmt_msg(r) for r in rows],
+        "title": _chat_title(meta, contacts, vid),
+        "viewerId": vid,
+        "isGroup": _is_group_chat(meta),
+        "count": len(msgs),
+        "messages": [_fmt_msg(m, vid, contacts) for m in msgs],
     }
 
 
