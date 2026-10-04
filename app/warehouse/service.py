@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -52,6 +53,33 @@ from app.warehouse.schemas import (
 MATERIAL_UNITS = ["шт.", "рулон", "палета", "кв. м", "куб. м", "пог.м"]
 
 
+# Код материала по умолчанию (0096): «первое слово названия-номер позиции на
+# складе». Колонка `code` - String(64), уникальна в пределах склада.
+_CODE_MAX_LEN = 64
+_FIRST_WORD_EDGE = re.compile(r"^[^\w]+|[^\w]+$")
+
+
+def _material_code_word(title: str) -> str:
+    for token in title.split():
+        word = _FIRST_WORD_EDGE.sub("", token)
+        if word:
+            return word
+    return "MAT"
+
+
+def suggest_material_code(db: Session, warehouse: Warehouse, title: str) -> str:
+    """Предложить свободный код для нового материала на складе `warehouse`."""
+    word = _material_code_word(title)
+    taken = {code for (code,) in db.query(WarehouseMaterial.code).filter(WarehouseMaterial.warehouse == warehouse)}
+    number = len(taken) + 1
+    while True:
+        suffix = f"-{number}"
+        code = word[: _CODE_MAX_LEN - len(suffix)] + suffix
+        if code not in taken:
+            return code
+        number += 1
+
+
 def get_material_or_404(db: Session, material_id: int) -> WarehouseMaterial:
     material = db.get(WarehouseMaterial, material_id)
     if not material:
@@ -76,6 +104,12 @@ def ensure_supplier_exists(db: Session, supplier_id: int | None) -> None:
 
 def create_material(db: Session, payload: WarehouseMaterialCreate) -> WarehouseMaterial:
     ensure_supplier_exists(db, payload.supplier_id)
+    duplicate = db.query(WarehouseMaterial.id).filter_by(warehouse=payload.warehouse, code=payload.code).first()
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Материал с кодом «{payload.code}» уже есть на складе «{payload.warehouse.value}»",
+        )
     material = WarehouseMaterial(**payload.model_dump())
     db.add(material)
     db.flush()
