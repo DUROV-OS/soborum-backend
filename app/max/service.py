@@ -138,28 +138,6 @@ def list_chats(db: Session, limit: int | None = None) -> dict[str, Any]:
     return {"count": len(items), "chats": items}
 
 
-_bot_profile: dict[str, Any] | None = None
-
-
-def bot_profile() -> dict[str, Any]:
-    """Имя и ссылка на бота (``GET /me``, кэш на процесс) — фронт показывает
-    её в подсказке «напишите боту». Ссылка ``https://max.ru/<username>``
-    открывает бота в MAX."""
-    global _bot_profile
-    if _bot_profile is None:
-        try:
-            me = bot_api.get_me()
-        except (bot_api.BotApiError, bot_api.BotNotConfigured) as exc:
-            raise _bot_error(exc) from exc
-        username = me.get("username")
-        _bot_profile = {
-            "name": me.get("name") or me.get("first_name") or username,
-            "username": username,
-            "link": f"https://max.ru/{username}" if username else None,
-        }
-    return _bot_profile
-
-
 def _known_chat(db: Session, chat_id: int) -> MaxBotChat:
     chat = db.get(MaxBotChat, chat_id)
     if chat is None:

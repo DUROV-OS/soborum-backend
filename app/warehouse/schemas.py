@@ -203,9 +203,6 @@ class SupplierOut(BaseModel):
     status: SupplierStatus
     contacts: list[SupplierContact]
     max_chat_id: int | None
-    # False при привязанном чате — чат со старого аккаунта MAX (до 0082),
-    # бот его не видит
-    max_chat_bot_known: bool = False
     created_at: datetime
     price_items: list[SupplierPriceItemOut] = []
     price_items_count: int = 0
