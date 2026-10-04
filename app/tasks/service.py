@@ -571,9 +571,11 @@ def create_link_task(
     link_id: int,
     assignees: list[User],
     link_meta: dict | None = None,
+    description: str | None = None,
 ) -> Task:
     task = Task(
         title=title,
+        description=description,
         status=TaskStatus.READY,
         link_type=link_type,
         link_id=link_id,

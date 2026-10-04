@@ -1,4 +1,4 @@
-"""The Claude tool-use loop: sends a chat's history to the model, executes
+"""The LLM tool-use loop (Claude or ChatGPT - settings.ai_provider): sends a chat's history to the model, executes
 (or gates behind approval) whatever tools it calls, and keeps going until
 the model produces a final text answer or the turn pauses on PendingAction.
 """
@@ -9,7 +9,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import anthropic
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 from sqlalchemy import update
@@ -23,6 +22,7 @@ from app.ai.prompts import SYSTEM_PROMPTS, VOICE_LEAD_INSTRUCTION
 from app.ai.tools import DOMAIN_TOOLS, TOOLS
 from app.common.files import FileAsset
 from app.core.config import settings
+from app.core.llm import LLM_ERRORS, llm_client
 from app.db.session import SessionLocal
 from app.users.models import User, UserRole
 
@@ -45,10 +45,11 @@ MCP_READ_ONLY_TOOLS = ["read_index", "list_notes", "search_notes", "read_note", 
 # finish) or an admin hitting POST /api/ai/mcp/notes.
 MCP_WRITE_TOOLS = ["create_note", "edit_note", "append_note"]
 
-# Anthropic-hosted web tools. The _20260209 variants (dynamic filtering) need
-# no beta header and run on Sonnet 5. They execute on Anthropic's side, so
+# Provider-hosted web tools. The _20260209 variants (dynamic filtering) need
+# no beta header and run on Sonnet 5. They execute on the provider's side, so
 # there is no handler and no gateway hop - results come back inline as
-# web_search_tool_result / web_fetch_tool_result blocks.
+# web_search_tool_result / web_fetch_tool_result blocks. For OpenAI the
+# adapter in app.core.llm maps web_search to its own and drops web_fetch.
 def _server_tools() -> list[dict]:
     if not settings.web_tools_enabled:
         return []
@@ -65,23 +66,21 @@ class TurnResult:
     pending_actions: list[PendingAction] = field(default_factory=list)
 
 
-def _get_client() -> anthropic.Anthropic:
-    if not settings.anthropic_api_key:
+def _get_client():
+    if not settings.llm_configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Марина пока не подключена. Обратитесь к администратору.",
         )
-    from app.core.llm import anthropic_client
-
-    # The KZ egress to api.anthropic.com blips; the SDK backs off exponentially
+    # The KZ egress to the provider API blips; the SDK backs off exponentially
     # between retries, so a couple extra attempts keep a transient
     # APIConnectionError from surfacing as "Марина временно недоступна".
-    return anthropic_client(timeout=60.0, max_retries=4)
+    return llm_client(timeout=60.0, max_retries=4)
 
 
 def _describe_api_error(error: BaseException) -> str:
     """The user only ever sees «Марина временно недоступна»; this puts the real
-    cause (HTTP status + Anthropic's error body, or the transport error) in the
+    cause (HTTP status + the provider's error body, or the transport error) in the
     logs so an outage is diagnosable instead of a guessing game."""
     parts = [type(error).__name__]
     status_code = getattr(error, "status_code", None)
@@ -213,7 +212,7 @@ def _build_request(db: Session, system: str, messages: list[dict], tools: list[d
     (kwargs, mcp_servers) where mcp_servers is None unless the caller is an
     admin and the knowledge-base connector is configured."""
     kwargs: dict = {
-        "model": settings.ai_model,
+        "model": settings.llm_model,
         # Generous on purpose: a single turn can involve reading several full
         # knowledge-base documents inline (the MCP connector embeds their
         # content as mcp_tool_result blocks in this same response) before the
@@ -229,7 +228,7 @@ def _build_request(db: Session, system: str, messages: list[dict], tools: list[d
     effort = (settings.ai_effort or "").strip().lower()
     if effort in {"low", "medium", "high", "xhigh", "max"}:
         kwargs["output_config"] = {"effort": effort}
-    # Anthropic-hosted web tools are available to every assistant user; they run
+    # Provider-hosted web tools are available to every assistant user; they run
     # provider-side and never touch our data, so no role gate or approval hop.
     tools = list(tools) + _server_tools()
     if tools:
@@ -397,7 +396,7 @@ def _advance(db: Session, chat: Chat, user: User, *, voice_lead: bool = False) -
         tools = _available_tools(chat, user)
         try:
             response = _call_claude(db, system, history, tools, chat.mode, user)
-        except anthropic.APIError as error:
+        except LLM_ERRORS as error:
             logger.warning("AI provider call failed for chat %s: %s", chat.id, _describe_api_error(error))
             raise HTTPException(503, "Марина временно недоступна. Попробуйте позже.") from None
 
@@ -500,7 +499,7 @@ def stream_turn(chat_id: int, user_id: int, *, voice_lead: bool = False) -> Iter
             yield {"type": "error", "detail": "Чат недоступен."}
             return
         yield from _advance_stream(db, chat, user, voice_lead=voice_lead)
-    except anthropic.APIError as error:
+    except LLM_ERRORS as error:
         logger.warning("AI provider call failed mid-stream for chat %s: %s", chat_id, _describe_api_error(error))
         yield {"type": "error", "detail": "Марина временно недоступна. Попробуйте позже."}
     except Exception:

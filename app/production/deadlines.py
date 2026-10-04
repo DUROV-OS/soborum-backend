@@ -5,7 +5,7 @@
 Собирает кандидатов из тех же фактов, что и «Требует внимания» (0065-a) —
 просроченные задачи блоков, зависшие заявки на материалы, ещё не поданные
 заявки при недостаче — и просит Claude выбрать САМОЕ значимое узкое место
-(по образцу `dashboard/aktualnoe.ai_rate_cycles`). Без `ANTHROPIC_API_KEY`
+(по образцу `dashboard/aktualnoe.ai_rate_cycles`). Без ключа ИИ-провайдера
 или при сбое сети — детерминированный fallback по приоритету типа сигнала,
 без ИИ-текста, но и без выдумывания фактов сверх того, что реально в БД.
 """
@@ -209,10 +209,10 @@ TOOL_SCHEMA = {
 
 
 def _ai_pick_bottleneck(signals: list[DeadlineSignal]) -> dict | None:
-    if not settings.anthropic_api_key or not signals:
+    if not settings.llm_configured or not signals:
         return None
 
-    from app.core.llm import anthropic_client
+    from app.core.llm import llm_client
 
     payload = [
         {
@@ -225,8 +225,8 @@ def _ai_pick_bottleneck(signals: list[DeadlineSignal]) -> dict | None:
     ]
 
     try:
-        response = anthropic_client().messages.create(
-            model=settings.ai_model,
+        response = llm_client().messages.create(
+            model=settings.llm_model,
             max_tokens=512,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],

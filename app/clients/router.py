@@ -352,7 +352,8 @@ def delete_client(client_id: int, db: Session = Depends(get_db), _: User = Depen
 @app.post("/reconcile-stage-tasks")
 def reconcile_stage_tasks(db: Session = Depends(get_db), _: User = Depends(require_clients_full)):
     """Ручной прогон сверки задач смены стадии с реальностью (та же, что раз в
-    час фоном). Создаёт недостающие задачи, закрывает устаревшие и дубли."""
+    час фоном). Создаёт недостающие задачи, закрывает устаревшие и дубли,
+    обновляет заголовок и описание открытых задач до актуального текста."""
     report = client_reconcile.reconcile_client_stage_tasks(db)
     db.commit()
     return report
