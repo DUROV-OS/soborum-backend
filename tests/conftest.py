@@ -21,6 +21,8 @@ os.environ["DASHBOARD_MCP_URL"] = ""
 os.environ["DASHBOARD_MCP_CLIENT_ID"] = ""
 os.environ["DASHBOARD_MCP_CLIENT_SECRET"] = ""
 os.environ["MOYSKLAD_TOKEN"] = ""
+os.environ["MAX_TOKEN"] = ""
+os.environ["MAX_LIVE_UPDATES"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient

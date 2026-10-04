@@ -196,6 +196,10 @@ class Settings(BaseSettings):
     # с payload `{"info":[{"fileId":...,"url":...}]}` — opcode этого кадра
     # сюда.
     max_file_upload_opcode: int | None = None
+    # Фоновый слушатель аккаунта (app/max/listener.py, 0092): держит постоянную
+    # сессию MAX и пушит фронту новые сообщения по WebSocket. false — выключить
+    # (например на стейдже, если две постоянные сессии одного аккаунта мешают).
+    max_live_updates: bool = True
 
 
 settings = Settings()
