@@ -197,21 +197,6 @@ class Settings(BaseSettings):
     # сюда.
     max_file_upload_opcode: int | None = None
 
-    # --- MAX-бот, официальный Bot API (0082) ---
-    # Токен бота: business.max.ru → Чат-боты → Настройки. Уходит заголовком
-    # `Authorization: <token>` (без Bearer), в query больше не принимается.
-    max_bot_token: str = ""
-    # platform-api2.max.ru из доков требует сертификат Минцифры в доверенных —
-    # в образе его нет, поэтому по умолчанию старый домен (проверено 26.09.2026).
-    max_bot_api_url: str = "https://platform-api.max.ru"
-    # Секрет подписки webhook: MAX присылает его в заголовке X-Max-Bot-Api-Secret.
-    # Не задан — POST /api/max/webhook отклоняет всё.
-    max_webhook_secret: str = ""
-    # Long-polling GET /updates в фоновом потоке — только для локальной
-    # разработки. На проде события приходят webhook'ом; прод и стейдж на одном
-    # токене не должны одновременно забирать поток событий.
-    max_bot_polling: bool = False
-
     # --- Telegram-бот для переписки из карточек (0083-e) ---
     # Бот @SoborbumBot (BotFather). Тот же токен использует ветка `telegram`
     # (мост рабочей группы, не в main): Telegram отдаёт события одному
