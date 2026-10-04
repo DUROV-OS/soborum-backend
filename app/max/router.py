@@ -5,13 +5,17 @@
 авторизованный пользователь; данные MAX общие для организации.
 """
 
-from fastapi import Depends, FastAPI, Form, Response, UploadFile
+import asyncio
+
+from fastapi import Depends, FastAPI, Form, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.clients.models import Client, ClientChatLink
 from app.core.deps import get_current_user
+from app.core.security import decode_access_token
 from app.db.session import get_db
+from app.max import realtime
 from app.max import service as max_service
 from app.users.models import User
 
@@ -143,3 +147,83 @@ def get_media(
     Вложение недоступно/удалено → 422 с текстом причины (фронт показывает
     заглушку), таймаут/сбой MAX → 502."""
     return max_service.get_media_url(chat_id, message_id, media_id)
+
+
+# Сколько ждём первое сообщение {"type": "auth"} после открытия /ws, с.
+WS_AUTH_TIMEOUT = 10
+# Код закрытия «не авторизован» (диапазон 4000–4999 — для приложения).
+WS_UNAUTHORIZED = 4401
+
+
+def _ws_user(db: Session, token) -> User | None:
+    if not isinstance(token, str) or not token:
+        return None
+    subject = decode_access_token(token)
+    if subject is None:
+        return None
+    try:
+        user = db.get(User, int(subject))
+    except (TypeError, ValueError):
+        return None
+    return user if user is not None and user.is_active else None
+
+
+async def _ws_close(websocket: WebSocket, code: int) -> None:
+    try:
+        await websocket.close(code=code)
+    except RuntimeError:
+        pass  # клиент уже закрыл соединение сам
+
+
+@app.websocket("/ws")
+async def events_ws(websocket: WebSocket, db: Session = Depends(get_db)):
+    """События чатов MAX для фронта в реальном времени (0092).
+
+    Протокол: клиент открывает соединение и первым сообщением шлёт
+    ``{"type": "auth", "token": "<JWT>"}`` (не ``?token=`` — строка запроса
+    оседает в access-логах). В ответ ``{"type": "ready"}``, дальше сервер шлёт
+    ``{"type": "chat_updated", "chatId": <id>}`` — в чате появилось, изменилось
+    или удалилось сообщение; данные фронт перечитывает обычными GET. Нет
+    ``auth`` за 10 с, неверный токен или неактивный пользователь — закрытие
+    с кодом 4401."""
+    await websocket.accept()
+    try:
+        first = await asyncio.wait_for(websocket.receive_json(), timeout=WS_AUTH_TIMEOUT)
+    except WebSocketDisconnect:
+        return
+    except (asyncio.TimeoutError, ValueError):
+        await _ws_close(websocket, WS_UNAUTHORIZED)
+        return
+    user = _ws_user(db, first.get("token")) if isinstance(first, dict) and first.get("type") == "auth" else None
+    # Соединение живёт часами — не держим транзакцию/коннект к БД всё это время.
+    db.rollback()
+    if user is None:
+        await _ws_close(websocket, WS_UNAUTHORIZED)
+        return
+
+    sub = realtime.subscribe()
+    receiver = asyncio.create_task(_ws_wait_disconnect(websocket))
+    try:
+        await websocket.send_json({"type": "ready"})
+        while True:
+            getter = asyncio.create_task(sub.queue.get())
+            done, _ = await asyncio.wait({getter, receiver}, return_when=asyncio.FIRST_COMPLETED)
+            if receiver in done:
+                getter.cancel()
+                break
+            await websocket.send_json(getter.result())
+    except (WebSocketDisconnect, RuntimeError):
+        pass  # клиент ушёл посреди отправки
+    finally:
+        realtime.unsubscribe(sub)
+        receiver.cancel()
+
+
+async def _ws_wait_disconnect(websocket: WebSocket) -> None:
+    """Входящие после auth не нужны — читаем их только чтобы заметить, что
+    клиент отключился."""
+    try:
+        while True:
+            await websocket.receive_text()
+    except (WebSocketDisconnect, RuntimeError):
+        return
