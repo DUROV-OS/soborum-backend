@@ -3,15 +3,19 @@
 - нужен уровень `full` на раздел «Клиенты» (`DELETE /api/clients/{id}`) —
   либо явный грант `full`, либо роль `ADMIN` (у неё `full` всегда, без грантов);
   уровня `edit` недостаточно;
-- отказ 409, если цикл ещё не завершён, есть незавершённые задачи или проводки
-  по клиенту — ничего не удаляется;
+- до производства (цикл `client`) и после завершения цикла удалять можно;
+  отказ 409, пока дом в производстве/на монтаже, есть незакрытые задачи
+  менеджера/приёма остатка или проводки по клиенту — ничего не удаляется (0095);
+- автоматическая задача «перевести на следующую стадию» удаление не блокирует;
 - при отсутствии зависимостей клиент и его заметки удаляются.
 """
+
+from datetime import datetime, timedelta, timezone
 
 from app.accounting.models import MoneyDirection, MoneyMovement, MoneySourceKind, MoneySubkind
 from app.clients import service as client_service
 from app.clients.models import Client
-from app.clients.schemas import ClientCreate
+from app.clients.schemas import ClientCreate, ClientTaskCreate
 from app.common.module_access import AccessLevel, Module
 from app.cycle.models import CycleStatus
 from app.tasks.models import Task, TaskLinkType, TaskStatus
@@ -51,22 +55,32 @@ def test_delete_allowed_with_full_level_without_admin_role(api, make_user, db):
     assert db.get(Client, client_id) is None
 
 
-def test_delete_rejected_with_active_cycle(api, make_user, db):
+def test_delete_rejected_while_house_in_production(api, make_user, db):
     client = _make_client(db)
+    client.cycle.status = CycleStatus.PRODUCTION
     db.commit()
     admin = api(make_user(admin=True))
     resp = admin.delete(f"/api/clients/{client.id}")
     assert resp.status_code == 409
+    assert resp.json()["detail"] == "Нельзя удалить клиента: дом уже в производстве или на монтаже"
     assert db.get(Client, client.id) is not None
 
 
-def test_delete_rejected_with_open_tasks(api, make_user, db):
+def test_delete_rejected_with_open_followup_task(api, make_user, db):
     client = _make_client(db)
     client.cycle.status = CycleStatus.COMPLETED
+    _close_open_tasks(db, client.id)
+    client_service.create_followup_task(
+        db,
+        client,
+        ClientTaskCreate(title="Позвонить клиенту", deadline=datetime.now(timezone.utc) + timedelta(days=1)),
+        make_user(admin=True),
+    )
     db.commit()
     admin = api(make_user(admin=True))
     resp = admin.delete(f"/api/clients/{client.id}")
     assert resp.status_code == 409
+    assert resp.json()["detail"] == "Нельзя удалить клиента: сначала закройте задачу «Позвонить клиенту»"
     assert db.get(Client, client.id) is not None
 
 

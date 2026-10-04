@@ -596,25 +596,23 @@ def delete_client(db: Session, client: Client) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя удалить клиента: дом уже в производстве или на монтаже",
         )
+    # Задачу «перевести на следующую стадию» заводит сама система, она открыта
+    # у любого клиента до производства — удаление она не блокирует (0095).
+    # Блокируют задачи, которые ведут люди: задачи менеджера и приём остатка.
     open_task = (
         db.query(Task)
         .filter(
-            Task.link_type.in_(
-                [
-                    TaskLinkType.CLIENT_STAGE,
-                    TaskLinkType.CLIENT_BALANCE_PAYMENT,
-                    TaskLinkType.CLIENT_FOLLOWUP,
-                ]
-            ),
+            Task.link_type.in_([TaskLinkType.CLIENT_BALANCE_PAYMENT, TaskLinkType.CLIENT_FOLLOWUP]),
             Task.link_id == client.id,
             Task.status != TaskStatus.DONE,
         )
+        .order_by(Task.id)
         .first()
     )
     if open_task is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить клиента: есть незавершённые задачи",
+            detail=f"Нельзя удалить клиента: сначала закройте задачу «{open_task.title}»",
         )
     from app.accounting.models import Counterparty, MoneyMovement
 
@@ -630,6 +628,8 @@ def delete_client(db: Session, client: Client) -> None:
     db.query(Counterparty).filter(Counterparty.client_id == client.id).update(
         {Counterparty.client_id: None}, synchronize_session=False
     )
+    for task in _open_stage_tasks(db, client.id):
+        task_service.force_close(db, task)
     drop_cycle = cycle.status == CycleStatus.CLIENT and not cycle.productions and cycle.installation is None
     db.delete(client)
     db.flush()
