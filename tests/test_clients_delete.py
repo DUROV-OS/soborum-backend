@@ -12,12 +12,19 @@
 
 from datetime import datetime, timedelta, timezone
 
-from app.accounting.models import MoneyDirection, MoneyMovement, MoneySourceKind, MoneySubkind
+from app.accounting.models import (
+    Counterparty,
+    CounterpartyKind,
+    MoneyDirection,
+    MoneyMovement,
+    MoneySourceKind,
+    MoneySubkind,
+)
 from app.clients import service as client_service
 from app.clients.models import Client
 from app.clients.schemas import ClientCreate, ClientTaskCreate
 from app.common.module_access import AccessLevel, Module
-from app.cycle.models import CycleStatus
+from app.cycle.models import Cycle, CycleStatus
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 
 
@@ -118,3 +125,64 @@ def test_delete_succeeds_without_dependencies(api, make_user, db):
     resp = admin.delete(f"/api/clients/{client_id}")
     assert resp.status_code == 204
     assert db.get(Client, client_id) is None
+
+
+def test_delete_lead_client_closes_stage_task_and_drops_empty_cycle(api, make_user, db):
+    """Тестовый/ошибочный клиент на «Лиде» (0095): открытая автоматическая задача
+    стадии не мешает, задача закрывается, пустой цикл удаляется вместе с клиентом."""
+    client = _make_client(db, "Тестовый")
+    db.commit()
+    client_id, cycle_id = client.id, client.cycle_id
+    stage_task = db.query(Task).filter(Task.link_type == TaskLinkType.CLIENT_STAGE, Task.link_id == client_id).one()
+    assert stage_task.status != TaskStatus.DONE
+
+    resp = api(make_user(admin=True)).delete(f"/api/clients/{client_id}")
+
+    assert resp.status_code == 204
+    db.expire_all()
+    assert db.get(Client, client_id) is None
+    assert db.get(Cycle, cycle_id) is None
+    assert db.get(Task, stage_task.id).status == TaskStatus.DONE
+
+
+def test_delete_client_on_approval_stage(api, make_user, db):
+    client = _make_client(db, "Одобрение")
+    for _ in range(3):  # LEAD -> DISCUSSION -> SITE_VISIT -> APPROVAL
+        client_service.transition_stage(db, client)
+    db.commit()
+    client_id = client.id
+
+    resp = api(make_user(admin=True)).delete(f"/api/clients/{client_id}")
+
+    assert resp.status_code == 204
+    assert db.get(Client, client_id) is None
+
+
+def test_delete_completed_client_keeps_cycle(api, make_user, db):
+    client = _make_client(db, "Завершённый")
+    client.cycle.status = CycleStatus.COMPLETED
+    _close_open_tasks(db, client.id)
+    db.commit()
+    client_id, cycle_id = client.id, client.cycle_id
+
+    resp = api(make_user(admin=True)).delete(f"/api/clients/{client_id}")
+
+    assert resp.status_code == 204
+    db.expire_all()
+    assert db.get(Client, client_id) is None
+    assert db.get(Cycle, cycle_id) is not None
+
+
+def test_delete_unlinks_counterparty(api, make_user, db):
+    client = _make_client(db, "Контрагент")
+    counterparty = Counterparty(name="ИП Тестовый", kind=CounterpartyKind.CLIENT, client_id=client.id)
+    db.add(counterparty)
+    db.commit()
+    client_id = client.id
+
+    resp = api(make_user(admin=True)).delete(f"/api/clients/{client_id}")
+
+    assert resp.status_code == 204
+    db.expire_all()
+    assert db.get(Client, client_id) is None
+    assert db.get(Counterparty, counterparty.id).client_id is None
