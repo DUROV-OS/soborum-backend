@@ -38,6 +38,7 @@ from app.max.router import app as max_app
 from app.feedback.router import app as feedback_app
 from app.production.router import app as production_app
 from app.tasks.demo_seed import ensure_demo_workforce_seed
+from app.tasks.story_points_backfill import start_story_points_loop
 from app.tasks.router import app as tasks_app
 from app.users.router import app as auth_app
 from app.users.service import bootstrap_admin
@@ -106,6 +107,7 @@ def on_startup() -> None:
         db.close()
     start_shift_loop()
     start_stage_task_reconcile_loop()
+    start_story_points_loop()
     start_max_listener()
 
 

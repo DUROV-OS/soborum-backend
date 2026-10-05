@@ -143,6 +143,19 @@ def _initial_status(depends_on: list[Task]) -> TaskStatus:
     return TaskStatus.NOT_READY
 
 
+def _section_hint(block_id: int | None, link_type: TaskLinkType) -> str:
+    """Короткое текстовое описание раздела-источника задачи для промпта
+    оценки сторипоинтов (app.ai.story_points) - не хранится, не отдаётся.
+    Оценку делает фоновый поток app.tasks.story_points_backfill, не create_task:
+    разворачивание производства из КР создаёт десятки-сотни задач за один
+    запрос, и синхронный вызов ИИ на каждую растягивал бы его на минуты."""
+    if block_id is not None:
+        return "производство"
+    if link_type != TaskLinkType.NONE:
+        return link_type.value
+    return "ручная задача"
+
+
 def create_task(
     db: Session,
     *,
