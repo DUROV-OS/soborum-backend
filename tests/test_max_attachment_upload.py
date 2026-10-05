@@ -5,15 +5,16 @@ send_message. Websocket и HTTP-загрузка подменены — реал
 import pytest
 
 from app.core.config import settings
-from app.max.client import MAX_UPLOAD_SIZE, MaxSession, UploadError
+from app.max.client import MAX_UPLOAD_SIZE, NOTIF_ATTACH, MaxSession, UploadError
 
 
 class _FakeUploadSession(MaxSession):
     """Подменяет только _send/_wait (websocket-кадры) — upload_file вызывает
     их напрямую, остальной MaxSession не трогаем."""
 
-    def __init__(self, prepare_reply):
+    def __init__(self, prepare_reply, notifications=None):
         self.prepare_reply = prepare_reply
+        self.notifications = list(notifications or [])
         self.sent = []
 
     def _send(self, opcode, payload):
@@ -22,6 +23,11 @@ class _FakeUploadSession(MaxSession):
 
     def _wait(self, opcode, seq=None, tries=80):
         return self.prepare_reply
+
+    def _recv(self):
+        if not self.notifications:
+            raise TimeoutError("кадров больше нет")
+        return self.notifications.pop(0)
 
 
 def test_upload_opcode_defaults_to_file_upload():
@@ -45,7 +51,8 @@ def test_upload_file_rejects_server_refusal(monkeypatch):
 def test_upload_file_posts_bytes_with_content_range(monkeypatch):
     monkeypatch.setattr(settings, "max_file_upload_opcode", 87)
     s = _FakeUploadSession(
-        prepare_reply={"payload": {"info": [{"fileId": 42, "url": "https://upload.example/x", "token": "tok"}]}}
+        prepare_reply={"payload": {"info": [{"fileId": 42, "url": "https://upload.example/x", "token": "tok"}]}},
+        notifications=[{"opcode": NOTIF_ATTACH, "payload": {"fileId": 42}}],
     )
 
     captured = {}

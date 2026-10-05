@@ -31,6 +31,10 @@ from app.core.config import settings
 
 # Больше — отклоняем ещё до попытки загрузки (см. UploadError в service.py).
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
+# NOTIF_ATTACH: сервер обработал загруженный файл, его можно прикладывать.
+NOTIF_ATTACH = 136
+# Сколько ждать NOTIF_ATTACH после загрузки, секунд.
+ATTACH_READY_TIMEOUT = 30
 
 
 class UploadError(RuntimeError):
@@ -188,8 +192,12 @@ class MaxSession:
         """Загружает файл как вложение FILE: запрашивает у MAX одноразовый
         URL для загрузки (opcode `settings.max_file_upload_opcode`, 87),
         заливает байты, возвращает
-        `{"fileId": ..., "token": ...}` — этот словарь идёт в `attaches`
-        `send_message` как `{"_type": "FILE", "fileId": ..., "token": ...}`.
+        `{"fileId": ..., "token": ...}`; в `attaches` `send_message` идёт
+        `{"_type": "FILE", "fileId": ...}` (token MAX не нужен).
+
+        После загрузки ждём NOTIF_ATTACH (136) с этим fileId — так делает
+        web.max.ru (`wait_back_processing`): вложение, которое сервер ещё не
+        обработал, в сообщение прикладывать нельзя.
 
         HTTP-часть (заголовки, raw-байты без multipart) разобрана по
         клиентскому JS web.max.ru (`Desktop/max_idi_nahuy/archive`):
@@ -222,7 +230,19 @@ class MaxSession:
         except httpx.HTTPError as exc:
             raise UploadError(f"MAX отклонил загрузку файла: {exc}") from exc
 
+        self._wait_attach_ready(info["fileId"])
         return {"fileId": info["fileId"], "token": info.get("token")}
+
+    def _wait_attach_ready(self, file_id) -> None:
+        deadline = time.monotonic() + ATTACH_READY_TIMEOUT
+        while time.monotonic() < deadline:
+            try:
+                msg = self._recv()
+            except Exception as exc:  # noqa: BLE001 — таймаут/обрыв сокета
+                raise UploadError("MAX не подтвердил обработку файла") from exc
+            if msg.get("opcode") == NOTIF_ATTACH and (msg.get("payload") or {}).get("fileId") == file_id:
+                return
+        raise UploadError("MAX не подтвердил обработку файла")
 
     def _request(self, opcode: int, payload: dict) -> dict:
         """Запрос с ответом на тот же seq. ``cmd=3`` — сервер отверг запрос:

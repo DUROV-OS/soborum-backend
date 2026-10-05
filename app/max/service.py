@@ -214,7 +214,7 @@ def send_message(
                 uploaded = s.upload_file(data, filename, content_type)
             except UploadError as exc:
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-            attaches = [{"_type": "FILE", "fileId": uploaded["fileId"], "token": uploaded["token"]}]
+            attaches = [{"_type": "FILE", "fileId": uploaded["fileId"]}]
         try:
             payload = s.send_message(chat_id, text, notify=notify, attaches=attaches)
         except (TimeoutError, RuntimeError) as exc:
