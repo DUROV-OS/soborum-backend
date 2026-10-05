@@ -77,3 +77,33 @@ def test_upload_file_posts_bytes_with_content_range(monkeypatch):
     assert captured["headers"]["Content-Type"] == "text/plain"
     assert captured["headers"]["Content-Range"] == "0-10/11"
     assert "note.txt" in captured["headers"]["Content-Disposition"]
+
+
+def _upload_session(monkeypatch, notifications):
+    class _Ok:
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr("app.max.client.httpx.post", lambda *a, **kw: _Ok())
+    return _FakeUploadSession(
+        prepare_reply={"payload": {"info": [{"fileId": 42, "url": "https://upload.example/x", "token": "tok"}]}},
+        notifications=notifications,
+    )
+
+
+def test_upload_file_waits_for_own_attach_notification(monkeypatch):
+    """Чужие кадры и NOTIF_ATTACH другого файла пропускаются, ждём свой fileId."""
+    s = _upload_session(monkeypatch, [
+        {"opcode": 128, "payload": {"chatId": 1}},
+        {"opcode": NOTIF_ATTACH, "payload": {"fileId": 7}},
+        {"opcode": NOTIF_ATTACH, "payload": {"fileId": 42}},
+    ])
+    assert s.upload_file(b"data", "a.txt", "text/plain")["fileId"] == 42
+    assert s.notifications == []
+
+
+def test_upload_file_fails_without_attach_notification(monkeypatch):
+    """MAX не подтвердил обработку → UploadError, сообщение не отправляется."""
+    s = _upload_session(monkeypatch, [{"opcode": NOTIF_ATTACH, "payload": {"fileId": 7}}])
+    with pytest.raises(UploadError, match="не подтвердил"):
+        s.upload_file(b"data", "a.txt", "text/plain")
