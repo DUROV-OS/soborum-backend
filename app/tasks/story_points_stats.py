@@ -39,3 +39,17 @@ def open_points_by_user(db: Session) -> dict[int, int]:
         for user in task.assignees:
             result[user.id] = result.get(user.id, 0) + points
     return result
+
+
+def average_open_points(db: Session, *, exclude_user_id: int | None = None) -> float:
+    """Средняя текущая загрузка (открытые очки) по сотрудникам с хотя бы
+    одной открытой задачей - используется `0070-e` как приватный сигнал
+    «загруженность других» (только число, без имён и задач) в промпте плана
+    на день. `exclude_user_id` убирает самого сотрудника, для которого
+    строится план, чтобы сравнение было именно с «остальными»."""
+    points_by_user = open_points_by_user(db)
+    if exclude_user_id is not None:
+        points_by_user.pop(exclude_user_id, None)
+    if not points_by_user:
+        return 0.0
+    return sum(points_by_user.values()) / len(points_by_user)
