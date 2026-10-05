@@ -25,6 +25,19 @@ class SendMessageIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
     notify: bool = True
 
+class ForwardMessageIn(BaseModel):
+    from_chat_id: int = Field(..., description="Чат, где лежит пересылаемое сообщение.")
+    message_id: str = Field(..., pattern=r"^\d+$", description="ID сообщения (строкой — снежинка > 2^53).")
+    to_chat_id: int = Field(..., description="Куда переслать. 0 — «Избранное».")
+    notify: bool = True
+
+
+class EditMessageIn(BaseModel):
+    chat_id: int
+    message_id: str = Field(..., pattern=r"^\d+$")
+    text: str = Field("", max_length=4000)
+
+
 class StartDialogIn(BaseModel):
     phone: str = Field(..., min_length=1, max_length=32, description="Номер в любом виде: +7 900…, 8 900…, 900…")
     first_name: str = Field(..., min_length=1, max_length=64)
@@ -80,6 +93,23 @@ def send_message(payload: SendMessageIn, _: User = Depends(get_current_user)):
 
     ``chat_id=0`` — «Избранное» (заметки для себя)."""
     return max_service.send_message(payload.chat_id, payload.text, notify=payload.notify)
+
+
+@app.post("/messages/forward", status_code=201)
+def forward_message(payload: ForwardMessageIn, _: User = Depends(get_current_user)):
+    """Переслать сообщение в другой чат (0098). Ответ как у ``POST /messages``;
+    оригинал — в ``message.forwarded``. 502 — MAX отклонил пересылку."""
+    return max_service.forward_message(
+        payload.from_chat_id, payload.message_id, payload.to_chat_id, notify=payload.notify
+    )
+
+
+@app.patch("/messages")
+def edit_message(payload: EditMessageIn, _: User = Depends(get_current_user)):
+    """Изменить текст своего сообщения (0098). 404 — нет сообщения, 403 —
+    чужое, 409 — пересланное или с фото/видео (MAX удалил бы вложение), 422 —
+    пустой текст без файла, 502 — MAX отклонил правку."""
+    return max_service.edit_message(payload.chat_id, payload.message_id, payload.text)
 
 
 @app.post("/contacts", status_code=201)
