@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     stage_task_reconcile_autorun: bool = True
     stage_task_reconcile_interval_seconds: int = 3600
 
+    # Скрытые сторипоинты (0070-d): фоновая дооценка задач без очков —
+    # порциями, чтобы создание задачи никогда не ждало ИИ.
+    story_points_autorun: bool = True
+    story_points_interval_seconds: int = 300
+    story_points_batch_size: int = 50
+
     # --- AI assistant (app/ai) ---
     # Which provider every AI call goes through: "anthropic" (Claude) or
     # "openai" (ChatGPT). Keys for both may sit in .env at once; switching is

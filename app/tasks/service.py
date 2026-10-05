@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.ai import story_points as ai_story_points
 from app.common.files import FileAsset, FilePurpose, save_upload_file
 from app.common.module_access import Module
 from app.production import readiness
@@ -146,7 +145,10 @@ def _initial_status(depends_on: list[Task]) -> TaskStatus:
 
 def _section_hint(block_id: int | None, link_type: TaskLinkType) -> str:
     """Короткое текстовое описание раздела-источника задачи для промпта
-    оценки сторипоинтов (app.ai.story_points) - не хранится, не отдаётся."""
+    оценки сторипоинтов (app.ai.story_points) - не хранится, не отдаётся.
+    Оценку делает фоновый поток app.tasks.story_points_backfill, не create_task:
+    разворачивание производства из КР создаёт десятки-сотни задач за один
+    запрос, и синхронный вызов ИИ на каждую растягивал бы его на минуты."""
     if block_id is not None:
         return "производство"
     if link_type != TaskLinkType.NONE:
@@ -184,9 +186,6 @@ def create_task(
         link_id=link_id,
         link_meta=link_meta,
         status=_initial_status(depends_on),
-        story_points=ai_story_points.estimate_story_points(
-            title, description, _section_hint(block_id, link_type)
-        ),
     )
     task.assignees = _resolve_users(db, list(assignee_ids))
     task.reviewers = _resolve_users(db, list(reviewer_ids))
@@ -599,7 +598,6 @@ def create_link_task(
         link_type=link_type,
         link_id=link_id,
         link_meta=link_meta,
-        story_points=ai_story_points.estimate_story_points(title, None, _section_hint(None, link_type)),
     )
     task.assignees = assignees
     db.add(task)
