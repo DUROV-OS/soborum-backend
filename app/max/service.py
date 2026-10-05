@@ -99,6 +99,24 @@ def _fmt_msg(
         "text": m.get("text", ""),
         "elements": m.get("elements", []),
         "attaches": [_fmt_attach(a) for a in m.get("attaches", [])],
+        "forwarded": _fmt_forwarded(m, contacts),
+    }
+
+
+def _fmt_forwarded(m: dict, contacts: dict) -> dict | None:
+    """Пересланное сообщение (0098): у самого сообщения текст и вложения
+    пустые, оригинал — в ``link.message``, исходный чат — в ``link.chatId``."""
+    link = m.get("link") or {}
+    if link.get("type") != "FORWARD":
+        return None
+    orig = link.get("message") or {}
+    sender_id = _sid(orig.get("sender"))
+    return {
+        "senderId": sender_id,
+        "senderName": _contact_name(contacts.get(sender_id)) if sender_id else None,
+        "chatId": link.get("chatId"),
+        "text": orig.get("text", ""),
+        "attaches": [_fmt_attach(a) for a in orig.get("attaches", [])],
     }
 
 
@@ -229,6 +247,58 @@ def send_message(
         "chatId": payload.get("chatId", chat_id),
         "message": _fmt_msg(payload.get("message"), vid, contacts),
     }
+
+
+def forward_message(from_chat_id, message_id: str, to_chat_id, notify: bool = True) -> dict[str, Any]:
+    """Переслать сообщение ``message_id`` из ``from_chat_id`` в ``to_chat_id``."""
+    with session() as s:
+        try:
+            payload = s.forward_message(to_chat_id, from_chat_id, message_id, notify=notify)
+        except (TimeoutError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        vid = s.viewer_id()
+        contacts = s.contacts_by_id()
+    realtime.chat_updated(payload.get("chatId", to_chat_id))
+    return {
+        "chatId": payload.get("chatId", to_chat_id),
+        "message": _fmt_msg(payload.get("message"), vid, contacts),
+    }
+
+
+def edit_message(chat_id, message_id: str, text: str) -> dict[str, Any]:
+    """Изменить текст своего сообщения. MSG_EDIT заменяет вложения целиком,
+    поэтому FILE передаём заново, а сообщения с другими вложениями (фото,
+    видео, голосовые...) не правим: их сохранение при правке не проверено, и
+    MAX мог бы их удалить."""
+    text = (text or "").strip()
+    with session() as s:
+        try:
+            orig = s.get_message(chat_id, message_id)
+        except (TimeoutError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        if not orig:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Сообщение не найдено")
+        vid = s.viewer_id()
+        if str(orig.get("sender")) != str(vid):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Изменить можно только своё сообщение")
+        if (orig.get("link") or {}).get("type") == "FORWARD":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Пересланное сообщение изменить нельзя")
+        attaches = orig.get("attaches") or []
+        if any(a.get("_type") != "FILE" for a in attaches):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Сообщение с фото, видео или другим вложением изменить нельзя — MAX удалит вложение",
+            )
+        files = [{"_type": "FILE", "fileId": a["fileId"]} for a in attaches]
+        if not text and not files:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой текст")
+        try:
+            payload = s.edit_message(chat_id, message_id, text, files)
+        except (TimeoutError, RuntimeError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        contacts = s.contacts_by_id()
+    realtime.chat_updated(chat_id)
+    return {"chatId": chat_id, "message": _fmt_msg(payload.get("message"), vid, contacts)}
 
 
 def normalize_phone(raw: str) -> str:

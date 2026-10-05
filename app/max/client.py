@@ -65,6 +65,12 @@ class MediaError(RuntimeError):
     заглушку вместо плеера."""
 
 
+def _reason(reply: dict) -> str:
+    """Человеческий текст ошибки из кадра с cmd=3."""
+    p = reply.get("payload") or {}
+    return p.get("localizedMessage") or p.get("message") or str(p)
+
+
 class MaxSession:
     """Одно websocket-соединение; HELLO + AUTH выполняются в open()."""
 
@@ -186,6 +192,51 @@ class MaxSession:
         # cmd=3 -> сервер отверг запрос (см. max-api-docs/protocol/messaging.md)
         if reply.get("cmd") == 3:
             raise RuntimeError(f"MAX отклонил отправку: {reply.get('payload')}")
+        return reply.get("payload", {}) or {}
+
+    def forward_message(self, to_chat_id, from_chat_id, message_id, notify: bool = True) -> dict:
+        """Переслать сообщение (0098): MSG_SEND без текста со ссылкой
+        ``link: {type: FORWARD, messageId, chatId}``. Оригинал в ответе лежит
+        в ``message.link.message``. Возвращает payload ответа, как
+        send_message."""
+        seq = self._send(64, {
+            "chatId": to_chat_id,
+            "message": {
+                # отрицательный cid — как у web.max.ru и PyMax для пересылки
+                "cid": -int(time.time() * 1000),
+                "link": {"type": "FORWARD", "messageId": str(message_id), "chatId": from_chat_id},
+                "attaches": [],
+            },
+            "notify": notify,
+        })
+        reply = self._wait(64, seq)
+        if reply.get("cmd") == 3:
+            raise RuntimeError(f"MAX отклонил пересылку: {_reason(reply)}")
+        return reply.get("payload", {}) or {}
+
+    def get_message(self, chat_id, message_id) -> dict | None:
+        """MSG_GET (opcode 71): одно сообщение чата по id или None."""
+        seq = self._send(71, {"chatId": chat_id, "messageIds": [int(message_id)]})
+        reply = self._wait(71, seq)
+        if reply.get("cmd") == 3:
+            raise RuntimeError(f"MAX не отдал сообщение: {_reason(reply)}")
+        messages = (reply.get("payload") or {}).get("messages") or []
+        return messages[0] if messages else None
+
+    def edit_message(self, chat_id, message_id, text: str, attachments: list[dict]) -> dict:
+        """MSG_EDIT (opcode 67). ``attachments`` заменяют вложения сообщения
+        целиком: пустой список удаляет файлы (проверено вживую, 0098), поэтому
+        вызывающий передаёт уже имеющиеся FILE как ``{_type, fileId}``."""
+        seq = self._send(67, {
+            "chatId": chat_id,
+            "messageId": int(message_id),
+            "text": text,
+            "elements": [],
+            "attachments": attachments,
+        })
+        reply = self._wait(67, seq)
+        if reply.get("cmd") == 3:
+            raise RuntimeError(f"MAX отклонил правку: {_reason(reply)}")
         return reply.get("payload", {}) or {}
 
     def upload_file(self, data: bytes, filename: str, content_type: str) -> dict:
