@@ -103,9 +103,7 @@ async def send_message_with_attachment(
     """Отправить сообщение с файлом (0015): грузит вложение в MAX перед
     MSG_SEND, отдельный эндпоинт (не `/messages`) — тот принимает чистый
     JSON, здесь нужен multipart для файла. Текст необязателен, если есть
-    файл; без файла и текста — 422. Требует настроенный
-    `MAX_FILE_UPLOAD_OPCODE` (см. `Settings.max_file_upload_opcode`) — пока
-    не задан, отдаёт 503."""
+    файл; без файла и текста — 422; MAX отклонил загрузку — 502."""
     upload = None
     if file is not None:
         upload = (await file.read(), file.filename or "file", file.content_type or "application/octet-stream")

@@ -3,7 +3,6 @@ send_message. Websocket и HTTP-загрузка подменены — реал
 """
 
 import pytest
-from fastapi import HTTPException
 
 from app.core.config import settings
 from app.max.client import MAX_UPLOAD_SIZE, MaxSession, UploadError
@@ -25,13 +24,8 @@ class _FakeUploadSession(MaxSession):
         return self.prepare_reply
 
 
-def test_upload_file_requires_configured_opcode(monkeypatch):
-    monkeypatch.setattr(settings, "max_file_upload_opcode", None)
-    s = _FakeUploadSession(prepare_reply={})
-    with pytest.raises(HTTPException) as exc:
-        s.upload_file(b"data", "a.txt", "text/plain")
-    assert exc.value.status_code == 503
-    assert "не настроена" in exc.value.detail
+def test_upload_opcode_defaults_to_file_upload():
+    assert settings.max_file_upload_opcode == 87
 
 
 def test_upload_file_rejects_oversized_payload(monkeypatch):

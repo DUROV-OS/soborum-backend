@@ -186,8 +186,8 @@ class MaxSession:
 
     def upload_file(self, data: bytes, filename: str, content_type: str) -> dict:
         """Загружает файл как вложение FILE: запрашивает у MAX одноразовый
-        URL для загрузки (opcode `settings.max_file_upload_opcode`, см. его
-        докстринг про статус подтверждения), заливает байты, возвращает
+        URL для загрузки (opcode `settings.max_file_upload_opcode`, 87),
+        заливает байты, возвращает
         `{"fileId": ..., "token": ...}` — этот словарь идёт в `attaches`
         `send_message` как `{"_type": "FILE", "fileId": ..., "token": ...}`.
 
@@ -197,12 +197,6 @@ class MaxSession:
         0-<size-1>/<size>` — так же в оригинале грузятся FILE/VIDEO (в
         отличие от PHOTO, который уходит как multipart/form-data).
         """
-        if settings.max_file_upload_opcode is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Загрузка вложений в MAX не настроена — не задан MAX_FILE_UPLOAD_OPCODE "
-                "(см. докстринг Settings.max_file_upload_opcode)",
-            )
         if len(data) > MAX_UPLOAD_SIZE:
             raise UploadError(f"Файл больше {MAX_UPLOAD_SIZE // (1024 * 1024)} МБ — MAX его не примет")
 
