@@ -73,6 +73,46 @@ def _open_stage_tasks(db: Session, client_id: int) -> list[Task]:
     )
 
 
+# Что проверяет `transition_stage` при уходе с каждой ручной стадии — для
+# описания задачи «перевести на следующую». Держать в согласии с гейтами ниже.
+_STAGE_TASK_REQUIREMENTS: dict[ClientStage, list[str]] = {
+    ClientStage.APPROVAL: [
+        "заполнить в карточке «Проект», «Итоговая цена», «Адрес установки» и «Формат расчёта» "
+        "(для «аванс + оплата после получения» — ещё «Сумма аванса», меньше итоговой цены)",
+        "загрузить АР, КР, договор и приложение к договору и отметить, что договор и приложение проверены",
+        "для множественного заказа — указать количество домов (не меньше 2)",
+    ],
+    ClientStage.PAYMENT: [
+        "подтвердить в карточке поступление полной предоплаты или аванса — смотря по формату расчёта "
+        "(при «оплате после получения» подтверждать ничего не нужно)",
+    ],
+}
+
+
+def stage_task_title(client: Client) -> str:
+    return f"Клиент «{client.full_name}»: перевести со стадии «{stage_label(client.stage)}» на следующую"
+
+
+def stage_task_description(client: Client) -> str:
+    """Что сделать по задаче стадии: куда переводить, где кнопка и что
+    система потребует. Без этого задача читается как «реши что-то» (0094)."""
+    next_stage = _next_stage(client.stage)
+    next_label = stage_label(next_stage) if next_stage else ""
+    lines = [
+        f"Когда клиент прошёл стадию «{stage_label(client.stage)}», переведите его на «{next_label}»: "
+        f"откройте карточку клиента и нажмите «Перевести на «{next_label}»».",
+    ]
+    requirements = _STAGE_TASK_REQUIREMENTS.get(client.stage)
+    if requirements:
+        lines.append("Перед переводом система проверит:")
+        lines.extend(f"— {item};" for item in requirements)
+    else:
+        lines.append("Заполнять для перевода ничего не нужно — система его не проверяет.")
+    lines.append("Перевести не получится, пока у клиента открыта блокирующая задача.")
+    lines.append("Эта задача закроется сама после перевода клиента.")
+    return "\n".join(lines)
+
+
 def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     """Гарантирует одну открытую задачу «перевести клиента на следующую стадию».
 
@@ -92,7 +132,8 @@ def ensure_stage_transition_task(db: Session, client: Client) -> Task | None:
     assignees = user_service.users_with_access(db, Module.CLIENTS)
     return task_service.create_link_task(
         db,
-        title=f"Клиент «{client.full_name}»: перевести со стадии «{stage_label(client.stage)}» на следующую",
+        title=stage_task_title(client),
+        description=stage_task_description(client),
         link_type=TaskLinkType.CLIENT_STAGE,
         link_id=client.id,
         assignees=assignees,
@@ -580,37 +621,41 @@ def delete_note(db: Session, note: ClientNote) -> None:
 
 
 def delete_client(db: Session, client: Client) -> None:
-    """Удалить клиента и его заметки (каскад на уровне БД). Отказ 409, если
-    цикл ещё не завершён, есть незакрытые задачи по клиенту или проводки,
-    ссылающиеся на него — по умолчанию запрет, а не тихий каскад (см. спеку
-    0030-a). Ни цикл, ни производство/монтаж под ним не трогаем — они остаются
-    как историческая запись."""
-    if client.cycle.status != CycleStatus.COMPLETED:
+    """Удалить клиента и его заметки (каскад на уровне БД).
+
+    Можно до производства (цикл `client` — в т.ч. тестового или ошибочно
+    заведённого клиента, 0095) и после завершения цикла. Отказ 409, пока дом в
+    производстве или на монтаже, есть незакрытые задачи по клиенту или проводки
+    — по умолчанию запрет, а не тихий каскад (0030-a).
+
+    Цикл до производства пустой — удаляется вместе с клиентом, чтобы в «Циклах»
+    не висел цикл без клиента. Завершённый цикл с производством/монтажом
+    остаётся исторической записью."""
+    cycle = client.cycle
+    if cycle.status in (CycleStatus.PRODUCTION, CycleStatus.INSTALLATION):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить клиента: цикл ещё не завершён",
+            detail="Нельзя удалить клиента: дом уже в производстве или на монтаже",
         )
+    # Задачу «перевести на следующую стадию» заводит сама система, она открыта
+    # у любого клиента до производства — удаление она не блокирует (0095).
+    # Блокируют задачи, которые ведут люди: задачи менеджера и приём остатка.
     open_task = (
         db.query(Task)
         .filter(
-            Task.link_type.in_(
-                [
-                    TaskLinkType.CLIENT_STAGE,
-                    TaskLinkType.CLIENT_BALANCE_PAYMENT,
-                    TaskLinkType.CLIENT_FOLLOWUP,
-                ]
-            ),
+            Task.link_type.in_([TaskLinkType.CLIENT_BALANCE_PAYMENT, TaskLinkType.CLIENT_FOLLOWUP]),
             Task.link_id == client.id,
             Task.status != TaskStatus.DONE,
         )
+        .order_by(Task.id)
         .first()
     )
     if open_task is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Нельзя удалить клиента: есть незавершённые задачи",
+            detail=f"Нельзя удалить клиента: сначала закройте задачу «{open_task.title}»",
         )
-    from app.accounting.models import MoneyMovement
+    from app.accounting.models import Counterparty, MoneyMovement
 
     has_money_movements = (
         db.query(MoneyMovement.id).filter(MoneyMovement.client_id == client.id).first() is not None
@@ -620,8 +665,18 @@ def delete_client(db: Session, client: Client) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя удалить клиента: есть проводки по клиенту",
         )
+    # привязка контрагента к клиенту справочная; FK без ondelete уронил бы удаление
+    db.query(Counterparty).filter(Counterparty.client_id == client.id).update(
+        {Counterparty.client_id: None}, synchronize_session=False
+    )
+    for task in _open_stage_tasks(db, client.id):
+        task_service.force_close(db, task)
+    drop_cycle = cycle.status == CycleStatus.CLIENT and not cycle.productions and cycle.installation is None
     db.delete(client)
     db.flush()
+    if drop_cycle:
+        db.delete(cycle)
+        db.flush()
 
 
 _DOCUMENTS_REQUIRED = [
@@ -633,6 +688,16 @@ _DOCUMENTS_REQUIRED = [
     "ar_file_id",
     "kr_file_id",
 ]
+# Подписи как в карточке клиента (DocumentPanel) — для ошибки перехода (0094).
+_DOCUMENT_FIELD_LABELS = {
+    "order_type": "Проект",
+    "final_price": "Итоговая цена",
+    "installation_address": "Адрес установки",
+    "contract_file_id": "Договор",
+    "contract_appendix_file_id": "Приложение к договору",
+    "ar_file_id": "АР",
+    "kr_file_id": "КР",
+}
 # house_project_file_id сознательно не в списке — с 0061 необязателен: не у
 # каждого клиента он есть в системе.
 
@@ -661,11 +726,11 @@ def transition_stage(db: Session, client: Client) -> Client:
     # still exists in the pipeline, it just no longer gates anything.
 
     if client.stage == ClientStage.APPROVAL:
-        missing = [f for f in _DOCUMENTS_REQUIRED if getattr(client, f) is None]
+        missing = [_DOCUMENT_FIELD_LABELS[f] for f in _DOCUMENTS_REQUIRED if getattr(client, f) is None]
         if missing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Не заполнены документные поля: {', '.join(missing)}",
+                detail=f"Не заполнены поля в карточке клиента: {', '.join(missing)}",
             )
         contract_error = _contract_gate_error(client)
         if contract_error:

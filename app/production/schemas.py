@@ -276,6 +276,7 @@ class TemplateBlockMaterialOut(BaseModel):
     warehouse_material_id: int | None
     warehouse_material_title: str | None = None
     confidence: str | None = None
+    quantity: float | None = None
 
 
 class TemplateBlockOut(BaseModel):
@@ -305,6 +306,14 @@ class ProductionStageTemplateOut(BaseModel):
     blocks: list[TemplateBlockOut] = []
 
 
+class FillQuantitiesOut(BaseModel):
+    """Итог «Заполнить нормативы из КР» (0088-e)."""
+
+    filled: int
+    remaining: int
+    template: ProductionStageTemplateOut
+
+
 class TemplateBlockPatch(BaseModel):
     name: str | None = None
     description: str | None = None
@@ -320,3 +329,5 @@ class TemplateBlockMaterialPatch(BaseModel):
     name: str | None = None
     unit: str | None = None
     warehouse_material_id: int | None = None
+    # null — «в КР не найдено», очищает норматив.
+    quantity: float | None = Field(default=None, ge=0)

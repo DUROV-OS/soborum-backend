@@ -26,6 +26,37 @@ class StockMovementReason(str, enum.Enum):
     REQUEST_REJECTED_RETURN = "request_rejected_return"
     MANUAL_ADJUST = "manual_adjust"
     WRITE_OFF = "write_off"
+    # Документы операций склада (0088): оприходование излишков и два вида отпуска.
+    RECEIPT = "receipt"
+    ISSUED_TECHCARD = "issued_techcard"
+    ISSUED_MANUAL = "issued_manual"
+
+
+# Причины, которые реально меняют остаток склада, — только они попадают в
+# журнал операций. REQUIRED_ADJUSTED_UP (рост потребности производства) и
+# REQUEST_REJECTED_RETURN (delta 0) пишутся в stock_movements, но остаток не
+# трогают. MANUAL_ADJUST не используется нигде.
+STOCK_IN_REASONS = (StockMovementReason.SUPPLY, StockMovementReason.RECEIPT)
+STOCK_OUT_REASONS = (
+    StockMovementReason.ISSUED,
+    StockMovementReason.WRITE_OFF,
+    StockMovementReason.ISSUED_TECHCARD,
+    StockMovementReason.ISSUED_MANUAL,
+)
+
+
+class WarehouseOperationKind(str, enum.Enum):
+    RECEIPT = "receipt"
+    WRITE_OFF = "write_off"
+    ISSUE_TECHCARD = "issue_techcard"
+    ISSUE_MANUAL = "issue_manual"
+
+
+class IssueDestinationKind(str, enum.Enum):
+    HOUSE = "house"
+    OBJECT = "object"
+    WORKSHOP = "workshop"
+    REWORK = "rework"
 
 
 class Warehouse(str, enum.Enum):
@@ -127,6 +158,41 @@ class SupplyLine(Base):
     warehouse_material: Mapped["WarehouseMaterial"] = relationship()
 
 
+class WarehouseOperation(Base):
+    """Документ операции склада (0088): шапка — тип, когда, куда, кто получил,
+    причина; строки — StockMovement с operation_id. Проводится целиком или не
+    проводится вовсе. Не редактируется — ошибка исправляется встречной операцией."""
+
+    __tablename__ = "warehouse_operations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[WarehouseOperationKind] = mapped_column(
+        Enum(WarehouseOperationKind, name="warehouse_operation_kind"), nullable=False
+    )
+    # Дата/время самой операции (вводит пользователь), в отличие от created_at —
+    # момента оформления в системе.
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # «Куда» — только для отпусков (0088-b); для оприходования/списания NULL.
+    destination_kind: Mapped[IssueDestinationKind | None] = mapped_column(
+        Enum(IssueDestinationKind, name="issue_destination_kind"), nullable=True
+    )
+    destination: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Дом при отпуске по техкарте или «в дом»; SET NULL — удаление производства
+    # не должно ломать журнал, текст «куда» остаётся.
+    production_id: Mapped[int | None] = mapped_column(
+        ForeignKey("productions.id", ondelete="SET NULL"), nullable=True
+    )
+    received_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    created_by: Mapped["User"] = relationship()  # noqa: F821
+    movements: Mapped[list["StockMovement"]] = relationship(
+        back_populates="operation", order_by="StockMovement.id"
+    )
+
+
 class StockMovement(Base):
     __tablename__ = "stock_movements"
 
@@ -141,11 +207,20 @@ class StockMovement(Base):
     # например «брак», «недостача при инвентаризации». NULL для остальных
     # причин движения — у них есть свой строгий смысл через reason/reference_id.
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Документ операции (0088); NULL у поставок, заявок производства и у всех
+    # движений до 0088.
+    operation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouse_operations.id", ondelete="RESTRICT"), nullable=True
+    )
+    # Остаток материала сразу после движения — фиксируется при проведении и не
+    # пересчитывается. NULL у движений до 0088.
+    balance_after: Mapped[float | None] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     warehouse_material: Mapped["WarehouseMaterial"] = relationship()
     created_by: Mapped["User"] = relationship()  # noqa: F821
+    operation: Mapped["WarehouseOperation | None"] = relationship(back_populates="movements")
 
 
 class SupplierStatus(str, enum.Enum):

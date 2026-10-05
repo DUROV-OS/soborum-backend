@@ -58,7 +58,7 @@ def test_backfills_missing_task_for_stage_set_out_of_band(db):
 
     # второй прогон ничего не делает
     assert reconcile_client_stage_tasks(db) == {
-        "checked": 1, "created": 0, "closed_stale": 0, "closed_final": 0, "deduped": 0
+        "checked": 1, "created": 0, "closed_stale": 0, "closed_final": 0, "deduped": 0, "retexted": 0
     }
 
 
@@ -109,4 +109,4 @@ def test_reconcile_endpoint_requires_full_level(api, make_user):
     for user in (full_worker, admin):
         res = api(user).post("/api/clients/reconcile-stage-tasks")
         assert res.status_code == 200
-        assert set(res.json()) == {"checked", "created", "closed_stale", "closed_final", "deduped"}
+        assert set(res.json()) == {"checked", "created", "closed_stale", "closed_final", "deduped", "retexted"}
