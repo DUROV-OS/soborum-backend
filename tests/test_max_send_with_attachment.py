@@ -7,7 +7,6 @@ import contextlib
 import pytest
 
 from app.common.module_access import Module
-from app.core.config import settings
 from app.max import service as max_service
 
 
@@ -34,7 +33,6 @@ class _FakeSession:
 @pytest.fixture
 def fake_session(monkeypatch):
     fake = _FakeSession()
-    monkeypatch.setattr(settings, "max_file_upload_opcode", 87)
 
     @contextlib.contextmanager
     def _session():
@@ -53,7 +51,7 @@ def test_send_message_with_file_uploads_then_sends_attach(fake_session, api, mak
     )
     assert resp.status_code == 201, resp.text
     assert fake_session.uploaded == [(b"fake-xlsx-bytes", "price.xlsx", "application/vnd.ms-excel")]
-    assert fake_session.sent_attaches == [{"_type": "FILE", "fileId": 42, "token": "tok"}]
+    assert fake_session.sent_attaches == [{"_type": "FILE", "fileId": 42}]
 
 
 def test_send_message_with_file_and_empty_text_is_allowed(fake_session, api, make_user):
@@ -78,3 +76,20 @@ def test_text_only_send_still_works_without_attachment_endpoint(fake_session, ap
     resp = worker.post("/api/max/messages", json={"chat_id": 0, "text": "просто текст"})
     assert resp.status_code == 201, resp.text
     assert fake_session.sent_attaches == []
+
+
+def test_upload_failure_returns_502_and_sends_nothing(fake_session, api, make_user, monkeypatch):
+    from app.max.client import UploadError
+
+    def _fail(*_a):
+        raise UploadError("MAX не подтвердил обработку файла")
+
+    monkeypatch.setattr(fake_session, "upload_file", _fail)
+    worker = api(make_user(Module.WAREHOUSE))
+    resp = worker.post(
+        "/api/max/messages/attachment",
+        data={"chat_id": "0", "text": "файл"},
+        files={"file": ("a.pdf", b"%PDF", "application/pdf")},
+    )
+    assert resp.status_code == 502
+    assert fake_session.sent_attaches is None
