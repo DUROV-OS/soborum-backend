@@ -190,6 +190,8 @@ def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> d
         "unread": c.get("newMessages", c.get("unreadCount", 0)),
         "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
         "lastMessage": _fmt_msg(last, viewer_id, contacts),
+        # номер собеседника — для поиска по номеру в списке (0099)
+        "phone": None if _is_group_chat(c) else (_dialog_peer(cid, viewer_id, contacts) or {}).get("phone"),
     }
 
 
