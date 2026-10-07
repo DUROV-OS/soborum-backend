@@ -83,7 +83,9 @@ def get_chat(
     _: User = Depends(get_current_user),
 ):
     """Сообщения одного чата. ``limit`` — сколько последних сообщений,
-    ``backward`` — сколько дополнительно подгрузить назад."""
+    ``backward`` — сколько дополнительно подгрузить назад. У личного диалога
+    ``peer: {contactId, name, phone}`` — ``phone`` ``null``, если собеседника
+    нет в контактах аккаунта (MAX его не раскрывает); у группы ``peer: null``."""
     return max_service.get_chat(chat_id, limit=limit, backward=backward)
 
 

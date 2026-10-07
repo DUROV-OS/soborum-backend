@@ -147,6 +147,24 @@ def _dialog_peer_id(chat_id, viewer_id: str) -> str | None:
     return str(cid ^ vid)
 
 
+def _contact_phone(ct: dict | None) -> str | None:
+    """Номер контакта как ``+79001234567``. MAX отдаёт ``phone`` только у
+    контактов аккаунта; у остальных собеседников (написали сами, в контакты
+    не сохранены) его нет даже в CONTACT_INFO — сверено вживую (0099)."""
+    digits = re.sub(r"\D", "", str((ct or {}).get("phone") or ""))
+    return f"+{digits}" if digits else None
+
+
+def _dialog_peer(chat_id, viewer_id: str, contacts: dict) -> dict | None:
+    """Собеседник личного диалога: ``{contactId, name, phone}``. ``None`` у
+    групп и «Избранного» (id чата не положительный)."""
+    peer_id = _dialog_peer_id(chat_id, viewer_id)
+    if peer_id is None:
+        return None
+    ct = contacts.get(peer_id)
+    return {"contactId": peer_id, "name": _contact_name(ct), "phone": _contact_phone(ct)}
+
+
 def _chat_title(c: dict | None, contacts: dict, viewer_id: str = "") -> str | None:
     if not c:
         return None
@@ -208,6 +226,8 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
         "title": title,
         "viewerId": vid,
         "isGroup": _is_group_chat(meta),
+        # номер для карточки клиента (0099); у групп собеседника нет
+        "peer": None if _is_group_chat(meta) else _dialog_peer(chat_id, vid, contacts),
         "count": len(msgs),
         "messages": [_fmt_msg(m, vid, contacts) for m in msgs],
     }
