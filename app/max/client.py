@@ -2,7 +2,8 @@
 
 Протокол — простые JSON-кадры поверх wss: opcode 6 (HELLO) -> 19 (AUTH) ->
 49 (история чата) -> 88 (ссылка на вложение); 46/41 — поиск и
-добавление контакта по номеру (0093). Логика перенесена из
+добавление контакта по номеру (0093); 32 — профили собеседников не из
+контактов (0099). Логика перенесена из
 исходного scraping-скрипта (Desktop/max_idi_nahuy/api.py); в основном
 read-only, БД не трогаем — кроме upload_file (0015), которая реально
 загружает файл в MAX перед отправкой вложения.
@@ -307,6 +308,21 @@ class MaxSession:
                 code=p.get("error"),
             )
         return reply.get("payload") or {}
+
+    def contacts_info(self, contact_ids: list[int]) -> list[dict]:
+        """Профили пользователей MAX по id (opcode 32, CONTACT_INFO). Тех, кого
+        нет в контактах аккаунта, MAX отдаёт без ``phone`` — только имя и
+        аватар (сверено вживую, 0099). Отказ или таймаут — пустой список."""
+        if not contact_ids:
+            return []
+        seq = self._send(32, {"contactIds": contact_ids})
+        try:
+            reply = self._wait(32, seq)
+        except TimeoutError:
+            return []
+        if reply.get("cmd") == 3:
+            return []
+        return (reply.get("payload") or {}).get("contacts") or []
 
     def contact_by_phone(self, phone: str) -> dict:
         """Пользователь MAX по номеру (opcode 46, CONTACT_INFO_BY_PHONE).

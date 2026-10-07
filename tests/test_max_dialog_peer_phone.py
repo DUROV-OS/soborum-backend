@@ -29,6 +29,16 @@ class _FakeSession:
         {"id": GROUP_ID, "type": "CHAT", "title": "Проект BARN64"},
     ]
 
+    # CONTACT_INFO отдаёт собеседника не из контактов без номера — только имя
+    STRANGER_INFO = {"id": STRANGER, "names": [{"name": "Мария"}]}
+
+    def __init__(self):
+        self.info_requests = []
+
+    def contacts_info(self, contact_ids):
+        self.info_requests.append(list(contact_ids))
+        return [self.STRANGER_INFO] if STRANGER in contact_ids else []
+
     def contacts_by_id(self):
         return {str(c["id"]): c for c in self.CONTACTS}
 
@@ -63,7 +73,9 @@ def test_dialog_with_account_contact_has_phone(fake_session):
 def test_dialog_with_stranger_has_no_phone(fake_session):
     res = service.get_chat(STRANGER ^ VIEWER)
 
-    assert res["peer"] == {"contactId": str(STRANGER), "name": None, "phone": None}
+    assert res["peer"] == {"contactId": str(STRANGER), "name": "Мария", "phone": None}
+    # без имени из CONTACT_INFO диалог назывался бы своим id
+    assert res["title"] == "Мария"
 
 
 def test_group_chat_and_favorites_have_no_peer(fake_session):
@@ -77,3 +89,19 @@ def test_chat_list_phone_only_for_known_dialog(fake_session):
     assert chats[KNOWN ^ VIEWER]["phone"] == "+79001234567"
     assert chats[STRANGER ^ VIEWER]["phone"] is None
     assert chats[GROUP_ID]["phone"] is None
+    assert chats[STRANGER ^ VIEWER]["title"] == "Мария"
+
+
+def test_contact_info_requested_once_only_for_unknown_peers(monkeypatch):
+    fake = _FakeSession()
+
+    @contextlib.contextmanager
+    def _session():
+        yield fake
+
+    monkeypatch.setattr(service, "session", _session)
+    service.list_chats()
+    service.get_chat(KNOWN ^ VIEWER)
+
+    # один запрос на весь список и ни одного — для контакта аккаунта
+    assert fake.info_requests == [[STRANGER]]

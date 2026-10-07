@@ -165,6 +165,20 @@ def _dialog_peer(chat_id, viewer_id: str, contacts: dict) -> dict | None:
     return {"contactId": peer_id, "name": _contact_name(ct), "phone": _contact_phone(ct)}
 
 
+def _with_dialog_peers(s, contacts: dict, chat_ids, viewer_id: str) -> dict:
+    """Справочник контактов, дополненный собеседниками личных диалогов, которых
+    нет в контактах аккаунта (написали сами). Без этого такой диалог
+    называется числом — его id. Один запрос CONTACT_INFO на всех; номеров в
+    ответе нет, только имена."""
+    missing = {
+        pid for pid in (_dialog_peer_id(cid, viewer_id) for cid in chat_ids) if pid and pid not in contacts
+    }
+    if not missing:
+        return contacts
+    extra = {str(ct.get("id")): ct for ct in s.contacts_info(sorted(int(p) for p in missing))}
+    return {**extra, **contacts}
+
+
 def _chat_title(c: dict | None, contacts: dict, viewer_id: str = "") -> str | None:
     if not c:
         return None
@@ -202,10 +216,12 @@ def _is_group_chat(meta: dict | None) -> bool:
 
 def list_chats(limit: int | None = None) -> dict[str, Any]:
     with session() as s:
-        contacts = s.contacts_by_id()
-        last_map = s.last_messages()
         vid = s.viewer_id()
-        items = [_fmt_chat(c, last_map, contacts, vid) for c in s.chats()]
+        chats = s.chats()
+        dialog_ids = [c.get("id") for c in chats if not _is_group_chat(c)]
+        contacts = _with_dialog_peers(s, s.contacts_by_id(), dialog_ids, vid)
+        last_map = s.last_messages()
+        items = [_fmt_chat(c, last_map, contacts, vid) for c in chats]
     items.sort(key=lambda x: x.get("lastEventTime") or 0, reverse=True)
     if limit:
         items = items[:limit]
@@ -214,9 +230,11 @@ def list_chats(limit: int | None = None) -> dict[str, Any]:
 
 def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
     with session() as s:
-        contacts = s.contacts_by_id()
         vid = s.viewer_id()
         meta = next((c for c in s.chats() if c.get("id") == chat_id), None)
+        contacts = s.contacts_by_id()
+        if not _is_group_chat(meta):
+            contacts = _with_dialog_peers(s, contacts, [chat_id], vid)
         msgs = s.history(chat_id, forward=limit, backward=backward)
     title = _chat_title(meta, contacts, vid)
     if meta is None:
