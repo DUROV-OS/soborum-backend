@@ -60,7 +60,9 @@ def list_chats(
     """Список чатов с последним сообщением в каждом. ``limit`` — сколько
     самых свежих вернуть (по умолчанию все). Каждый чат дополнительно
     аннотирован ``linkedClientId``/``linkedClientName``, если он привязан к
-    клиенту (app.clients) — для обратной привязки «из MAX к клиенту»."""
+    клиенту (app.clients) — для обратной привязки «из MAX к клиенту».
+    ``phone`` — номер собеседника личного диалога из контактов аккаунта или
+    ``null`` (группа или собеседник не в контактах)."""
     result = max_service.list_chats(limit)
     linked = {
         max_chat_id: (client_id, client_name)
@@ -83,7 +85,9 @@ def get_chat(
     _: User = Depends(get_current_user),
 ):
     """Сообщения одного чата. ``limit`` — сколько последних сообщений,
-    ``backward`` — сколько дополнительно подгрузить назад."""
+    ``backward`` — сколько дополнительно подгрузить назад. У личного диалога
+    ``peer: {contactId, name, phone}`` — ``phone`` ``null``, если собеседника
+    нет в контактах аккаунта (MAX его не раскрывает); у группы ``peer: null``."""
     return max_service.get_chat(chat_id, limit=limit, backward=backward)
 
 
