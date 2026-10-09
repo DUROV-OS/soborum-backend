@@ -9,7 +9,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, Text, func
+from sqlalchemy import BigInteger, JSON, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -49,6 +49,9 @@ class Partner(Base):
     notes: Mapped[list["PartnerNote"]] = relationship(
         back_populates="partner", cascade="all, delete-orphan", order_by="PartnerNote.id.desc()"
     )
+    chat_links: Mapped[list["PartnerChatLink"]] = relationship(
+        back_populates="partner", cascade="all, delete-orphan", order_by="PartnerChatLink.id.desc()"
+    )
 
 
 class PartnerNote(Base):
@@ -63,3 +66,23 @@ class PartnerNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     partner: Mapped["Partner"] = relationship(back_populates="notes")
+
+
+class PartnerChatLink(Base):
+    """Привязка партнёра к чату MAX (0105) — по образцу `ClientChatLink`
+    (0053), но без `state`: это понятие «архив/работа» чата нужно только
+    клиентскому циклу, партнёру — нет. `max_chat_id` уникален глобально среди
+    привязок партнёров; перекрёстную уникальность с `client_chat_links`
+    проверяет сервисный слой (чат не может быть привязан и к клиенту, и к
+    партнёру одновременно)."""
+
+    __tablename__ = "partner_chat_links"
+    __table_args__ = (UniqueConstraint("max_chat_id", name="uq_partner_chat_links_max_chat_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    partner_id: Mapped[int] = mapped_column(ForeignKey("partners.id", ondelete="CASCADE"), nullable=False)
+    max_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    partner: Mapped["Partner"] = relationship(back_populates="chat_links")

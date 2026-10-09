@@ -77,6 +77,25 @@ class PartnerNoteOut(BaseModel):
     created_at: datetime
 
 
+class PartnerChatLinkCreate(BaseModel):
+    """Новая привязка партнёра к чату MAX (0105). `max_chat_id` уникален
+    глобально среди привязок партнёров и не должен совпадать с уже занятым
+    клиентом чатом — см. `partner_service.create_chat_link`. `0` — «Избранное»."""
+
+    max_chat_id: int
+    label: str
+
+
+class PartnerChatLinkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    partner_id: int
+    max_chat_id: int
+    label: str
+    created_at: datetime
+
+
 class PartnerBriefOut(BaseModel):
     """Партнёр в чужой выдаче — например, «кто рекомендовал» у клиента (0083-c)."""
 
@@ -116,3 +135,4 @@ class PartnerOut(BaseModel):
     created_at: datetime
     updated_at: datetime | None
     notes: list[PartnerNoteOut] = []
+    chat_links: list[PartnerChatLinkOut] = []
