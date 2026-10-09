@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     stage_task_reconcile_autorun: bool = True
     stage_task_reconcile_interval_seconds: int = 3600
 
+    # Плановая проверка сроков задач (0080-c): TASK_DUE/TASK_OVERDUE, не чаще
+    # раза в сутки — тот же паттерн, что у фоновых циклов выше.
+    task_deadline_check_autorun: bool = True
+    task_deadline_check_interval_seconds: int = 86400
+
     # --- AI assistant (app/ai) ---
     # Which provider every AI call goes through: "anthropic" (Claude) or
     # "openai" (ChatGPT). Keys for both may sit in .env at once; switching is
