@@ -8,7 +8,9 @@ push-кадры сервера:
 - opcode 1 (``cmd 0``) — пинг сервера; отвечаем ``cmd 1`` с тем же seq;
 - opcode 128 (``cmd 0``) — новое сообщение, ``payload.chatId`` и
   ``payload.message.id``; подтверждаем доставку и рассылаем фронту
-  ``chat_updated`` (app/max/realtime.py).
+  ``chat_updated`` (app/max/realtime.py);
+- opcode 130 (``cmd 0``) — кто-то прочитал чат (0101), ``payload.chatId``;
+  без ответа, только ``chat_updated``, чтобы обновились галочки прочтения.
 
 Так же делает web.max.ru (обработчик входящих кадров в его клиентском JS,
 таблица opcode: LS=1, BS=128). Кадр с seq не больше уже обработанного
@@ -39,6 +41,10 @@ log = logging.getLogger("app.max.listener")
 
 OP_PING = 1
 OP_NOTIF_MESSAGE = 128
+# NOTIF_MARK — кто-то прочитал чат (0101): {chatId, userId, mark, setAsUnread}.
+# Формат по открытому клиенту PyMax, вживую не пойман; ответа не шлём (PyMax
+# тоже не отвечает), только обновляем ленту — так меняются галочки прочтения.
+OP_NOTIF_MARK = 130
 
 # Свой пинг — заметно чаще минуты, после которой MAX закрывает молчащую сессию.
 PING_INTERVAL = 25
@@ -80,11 +86,18 @@ class FrameHandler:
                 "ver": 11, "cmd": 1, "seq": seq, "opcode": OP_NOTIF_MESSAGE,
                 "payload": {"chatId": chat_id, "messageId": message_id},
             })
-            if chat_id is not None:
-                try:
-                    realtime.chat_updated(int(chat_id))
-                except (TypeError, ValueError):
-                    log.warning("MAX listener: непонятный chatId в кадре 128: %r", chat_id)
+            _notify_chat(chat_id, opcode)
+        elif opcode == OP_NOTIF_MARK:
+            _notify_chat(payload.get("chatId"), opcode)
+
+
+def _notify_chat(chat_id, opcode: int) -> None:
+    if chat_id is None:
+        return
+    try:
+        realtime.chat_updated(int(chat_id))
+    except (TypeError, ValueError):
+        log.warning("MAX listener: непонятный chatId в кадре %s: %r", opcode, chat_id)
 
 
 def start_max_listener() -> None:
