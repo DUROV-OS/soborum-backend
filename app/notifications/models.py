@@ -54,6 +54,28 @@ class Notification(Base):
     user: Mapped["User"] = relationship()  # noqa: F821
 
 
+class PushSubscription(Base):
+    """Браузерная push-подписка (0080-e): одна строка на пару
+    браузер/устройство. Несколько подписок на одного пользователя — это
+    нормально (разные браузеры/устройства), ключ уникальности — `endpoint`
+    (его отдаёт сам браузер, он один на связку browser+origin), а не
+    `user_id` — иначе повторная подписка того же пользователя с другого
+    устройства затирала бы первую."""
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # Ключи шифрования payload (Web Push: ECDH p256dh + auth secret),
+    # ровно то, что отдаёт `PushSubscription.toJSON().keys` в браузере.
+    p256dh: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped["User"] = relationship()  # noqa: F821
+
+
 class NotificationMute(Base):
     """Настройка «не уведомлять»: весь раздел (`object_id is NULL`) или
     конкретный объект в разделе. `module` — тот же `Module`, что в матрице
