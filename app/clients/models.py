@@ -177,6 +177,13 @@ class Client(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # --- Ответственный менеджер (0080-a) ---
+    # Nullable: клиент может быть без назначенного менеджера — тогда просто
+    # нет адресата уведомлений по нему (0080-c для обновлений по клиенту,
+    # ClientChatLink — для сообщений в чатах MAX клиента). Смена менеджера не
+    # трогает историю прошлых уведомлений — это текущее значение на объекте.
+    manager_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+
     # --- Base info: required at creation, immutable forever after ---
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -320,6 +327,7 @@ class Client(Base):
     # doesn't own or manage that data, just points at it.
     house_model: Mapped["HouseModelCard | None"] = relationship(viewonly=True)  # noqa: F821
     referrer: Mapped["Partner | None"] = relationship()  # noqa: F821
+    manager: Mapped["User | None"] = relationship(foreign_keys=[manager_id])  # noqa: F821
 
 
 # Срок остатка — дата без времени; «сегодня» для неё — по Москве, где работает
