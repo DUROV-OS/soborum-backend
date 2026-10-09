@@ -12,7 +12,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
-from app.notifications.models import Notification, NotificationKind, NotificationMute
+from app.notifications.models import Notification, NotificationKind, NotificationMute, PushSubscription
+from app.notifications.push import PushSubscriptionGone, send_web_push
 
 
 def is_muted(db: Session, user_id: int, module: Module, object_id: int | None) -> bool:
@@ -72,7 +73,60 @@ def notify(
     db.add(notification)
     db.commit()
     db.refresh(notification)
+    _push_to_subscriptions(db, notification)
     return notification
+
+
+def _push_to_subscriptions(db: Session, notification: Notification) -> None:
+    """Рассылает push во все подписки получателя (0080-e). Невалидные
+    (404/410 от push-сервиса) удаляются сразу — следующий `notify()` на
+    них уже не наткнётся."""
+    subscriptions = (
+        db.query(PushSubscription).filter(PushSubscription.user_id == notification.user_id).all()
+    )
+    if not subscriptions:
+        return
+    payload = {"title": notification.title, "body": notification.body or ""}
+    for subscription in subscriptions:
+        subscription_info = {
+            "endpoint": subscription.endpoint,
+            "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth},
+        }
+        try:
+            send_web_push(subscription_info, payload)
+        except PushSubscriptionGone:
+            db.delete(subscription)
+            db.commit()
+
+
+def save_push_subscription(db: Session, user_id: int, endpoint: str, p256dh: str, auth: str) -> PushSubscription:
+    """Сохраняет подписку или обновляет её ключи, если браузер уже был
+    подписан с этим `endpoint` (ключ уникальности — `endpoint`, не
+    `user_id`: endpoint один на связку браузер+origin, а не на пользователя,
+    но в редком случае смены пользователя на том же браузере ключи могут
+    обновиться — пересохраняем их на новую подписку)."""
+    existing = db.query(PushSubscription).filter(PushSubscription.endpoint == endpoint).first()
+    if existing is not None:
+        existing.user_id = user_id
+        existing.p256dh = p256dh
+        existing.auth = auth
+        db.commit()
+        db.refresh(existing)
+        return existing
+    subscription = PushSubscription(user_id=user_id, endpoint=endpoint, p256dh=p256dh, auth=auth)
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+    return subscription
+
+
+def delete_push_subscription(db: Session, user_id: int, endpoint: str) -> None:
+    """Отписка. Молча ничего не делает, если такой подписки у пользователя
+    нет (повторный вызов, отписка на другом устройстве и т.п.)."""
+    db.query(PushSubscription).filter(
+        PushSubscription.user_id == user_id, PushSubscription.endpoint == endpoint
+    ).delete()
+    db.commit()
 
 
 def list_notifications(

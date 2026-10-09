@@ -14,13 +14,17 @@ from app.notifications.schemas import (
     NotificationMuteOut,
     NotificationMuteUpdate,
     NotificationOut,
+    PushSubscriptionDelete,
+    PushSubscriptionIn,
     UnreadCountOut,
 )
 from app.notifications.service import (
+    delete_push_subscription,
     list_mutes,
     list_notifications,
     mark_all_read,
     mark_read,
+    save_push_subscription,
     set_mute,
     unread_count,
 )
@@ -76,3 +80,21 @@ def put_mute(
 ):
     set_mute(db, user.id, payload.module, payload.object_id, payload.muted)
     return list_mutes(db, user.id)
+
+
+@app.post("/push-subscriptions", status_code=status.HTTP_204_NO_CONTENT)
+def create_push_subscription(
+    payload: PushSubscriptionIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    """Сохраняет/обновляет подписку браузера текущего пользователя на
+    push (0080-e). Несколько подписок на пользователя — норма (разные
+    браузеры/устройства), вызывается при каждой успешной
+    `pushManager.subscribe` на фронте."""
+    save_push_subscription(db, user.id, payload.endpoint, payload.keys.p256dh, payload.keys.auth)
+
+
+@app.delete("/push-subscriptions", status_code=status.HTTP_204_NO_CONTENT)
+def remove_push_subscription(
+    payload: PushSubscriptionDelete, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    delete_push_subscription(db, user.id, payload.endpoint)
