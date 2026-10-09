@@ -209,6 +209,30 @@ def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> d
     }
 
 
+def _peer_read_marks(chat: dict | None, viewer_id: str) -> list[int] | None:
+    """Отметки прочтения остальных участников чата (0101): ``participants`` —
+    ``{userId: mark}``, mark — время (мс) последнего прочтения, 0 — ничего не
+    читал. None — данных о чате нет, статус прочтения неизвестен."""
+    if chat is None:
+        return None
+    return [
+        int(mark or 0)
+        for uid, mark in (chat.get("participants") or {}).items()
+        if str(uid) != str(viewer_id)
+    ]
+
+
+def _chat_read_marks(s, chat_id, meta: dict | None, viewer_id: str) -> list[int] | None:
+    """Отметки из чата в ответе AUTH, иначе — CHAT_INFO. Сбой MAX не ломает
+    ленту: статус прочтения просто неизвестен."""
+    if meta is None:
+        try:
+            meta = next(iter(s.chat_info([chat_id])), None)
+        except Exception:  # noqa: BLE001 — таймаут/отказ MAX
+            return None
+    return _peer_read_marks(meta, viewer_id)
+
+
 def _is_group_chat(meta: dict | None) -> bool:
     """Групповой чат MAX — всё, что не диалог 1:1 (тип ``DIALOG``)."""
     return bool(meta) and meta.get("type") != "DIALOG"
