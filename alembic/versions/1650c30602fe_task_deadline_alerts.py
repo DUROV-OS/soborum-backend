@@ -1,8 +1,14 @@
 """task deadline alerts (0080-c)
 
 Revision ID: 1650c30602fe
-Revises: 9f56791baca5
+Revises: c1a9f8e2b4d6, 52826825a4c1
 Create Date: 2026-10-09 00:00:00.000000
+
+Merge-ревизия: на стейдже 0080-a (client_manager) и 0080-b (notifications)
+легли как две отдельные головы от 205d05997209 (cherry-pick коммитов, не
+merge веток) — в dev-worktree был отдельный merge-коммит с ревизией
+9f56791baca5, которой на стейдже нет; здесь down_revision указывает прямо
+на обе головы.
 
 """
 from typing import Sequence, Union
@@ -14,7 +20,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '1650c30602fe'
-down_revision: Union[str, None] = '9f56791baca5'
+down_revision: Union[str, tuple[str, ...], None] = ('c1a9f8e2b4d6', '52826825a4c1')
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
