@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from app.common.files import FileAsset
 from app.common.module_access import Module as AccessModule
 from app.marketing.models import CONTENT_STAGE_ORDER, ContentItem, ContentStage, PostLink
+from app.notifications.models import NotificationKind
+from app.notifications.service import notify
 from app.marketing.schemas import (
     ContentAnalysisUpdate,
     ContentFinalUpdate,
@@ -124,6 +126,35 @@ def get_calendar(db: Session, date_from: date | None, date_to: date | None) -> l
     return query.order_by(ContentItem.planned_release_date).all()
 
 
+# Только для текста уведомления (0080-c) — своего словаря подписей у стадий
+# контента в этом разделе нет.
+_CONTENT_STAGE_LABELS: dict[ContentStage, str] = {
+    ContentStage.GATHERING: "сбор материала",
+    ContentStage.EDITING: "монтаж",
+    ContentStage.RELEASE: "публикация",
+    ContentStage.ANALYSIS: "анализ",
+}
+
+
+def _notify_content_stage_change(db: Session, content: ContentItem) -> None:
+    """Смена стадии поста/контента (0080-c) — уведомление всем `assignees`
+    материала (M2M, `content_assignees`) — в отличие от задач с одним
+    `responsible_id`, у материала несколько исполнителей сразу."""
+    if not content.assignees:
+        return
+    label = _CONTENT_STAGE_LABELS.get(content.stage, content.stage.value)
+    for assignee in content.assignees:
+        notify(
+            db,
+            assignee.id,
+            kind=NotificationKind.CONTENT_UPDATE,
+            module=AccessModule.MARKETING,
+            title=f"Материал «{content.title}» перешёл на стадию «{label}»",
+            object_type="content_item",
+            object_id=content.id,
+        )
+
+
 def transition_stage(db: Session, content: ContentItem) -> ContentItem:
     next_stage = _next_stage(content.stage)
     if next_stage is None:
@@ -149,6 +180,7 @@ def transition_stage(db: Session, content: ContentItem) -> ContentItem:
 
     content.stage = next_stage
     db.flush()
+    _notify_content_stage_change(db, content)
 
     task_service.close_open_link_task(db, TaskLinkType.CONTENT_STAGE, content.id)
     _create_transition_task(db, content)
