@@ -424,9 +424,17 @@ def submit_report(
             detail="Напишите комментарий о выполненной задаче",
         )
     if task.status != TaskStatus.IN_PROGRESS:
+        if task.status in (TaskStatus.IN_REVIEW, TaskStatus.DONE):
+            # Статус успел уйти вперёд — скорее всего задачу уже сдал другой
+            # исполнитель (у задачи может быть несколько, см. 0103). Отдаём
+            # current_status, чтобы фронт синхронизировал карточку без
+            # лишнего GET-запроса.
+            detail = "Задачу уже сдал другой исполнитель — обновите карточку"
+        else:
+            detail = "Сдать можно только задачу в работе"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Сдать можно только задачу в работе",
+            detail={"detail": detail, "current_status": task.status.value},
         )
     if actor not in task.assignees:
         raise HTTPException(
