@@ -218,5 +218,22 @@ class Settings(BaseSettings):
     # getUpdates не отдаёт (409), на проде — webhook.
     telegram_bot_polling: bool = False
 
+    # --- Браузерный push (app/notifications, 0080-e) ---
+    # VAPID-пара для Web Push (RFC 8292). Генерируется один раз на
+    # окружение, например `vapid --gen` (py-vapid, тянется транзитивно с
+    # pywebpush) или `openssl ecparam -genkey -name prime256v1`. Публичный
+    # ключ не секрет — та же строка отдаётся фронту (VITE_VAPID_PUBLIC_KEY)
+    # для `pushManager.subscribe`. Пусто = push отключён, `notify()` просто
+    # не пытается отправлять (чтобы не ронять создание уведомления в
+    # окружении без настроенных ключей, например в тестах).
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    # contact ("mailto:" или "https://") — обязателен по RFC для claims `sub`.
+    vapid_subject: str = "mailto:admin@soborbum.local"
+
+    @property
+    def push_configured(self) -> bool:
+        return bool(self.vapid_public_key.strip() and self.vapid_private_key.strip())
+
 
 settings = Settings()
