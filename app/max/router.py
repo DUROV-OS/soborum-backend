@@ -7,7 +7,7 @@
 
 import asyncio
 
-from fastapi import Depends, FastAPI, Form, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Form, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.max import realtime
 from app.max import service as max_service
+from app.max.models import MaxChatTitle
 from app.users.models import User
 
 
@@ -44,6 +45,10 @@ class StartDialogIn(BaseModel):
     last_name: str | None = Field(None, max_length=64)
 
 
+class SetChatTitleIn(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+
+
 app = FastAPI(
     title="Soborbum — MAX",
     description="Чтение сообщений из мессенджера MAX (oneme) по websocket.",
@@ -62,7 +67,8 @@ def list_chats(
     аннотирован ``linkedClientId``/``linkedClientName``, если он привязан к
     клиенту (app.clients) — для обратной привязки «из MAX к клиенту».
     ``phone`` — номер собеседника личного диалога из контактов аккаунта или
-    ``null`` (группа или собеседник не в контактах)."""
+    ``null`` (группа или собеседник не в контактах). ``title`` — своё
+    название чата (0106), если задано, иначе — имя/название из MAX."""
     result = max_service.list_chats(limit)
     linked = {
         max_chat_id: (client_id, client_name)
@@ -70,10 +76,13 @@ def list_chats(
             ClientChatLink.max_chat_id, Client.id, Client.full_name
         ).join(Client, Client.id == ClientChatLink.client_id)
     }
+    titles = dict(db.query(MaxChatTitle.max_chat_id, MaxChatTitle.title))
     for chat in result["chats"]:
         client_id, client_name = linked.get(chat["id"], (None, None))
         chat["linkedClientId"] = client_id
         chat["linkedClientName"] = client_name
+        if chat["id"] in titles:
+            chat["title"] = titles[chat["id"]]
     return result
 
 
@@ -82,13 +91,52 @@ def get_chat(
     chat_id: int,
     limit: int = 50,
     backward: int = 0,
+    db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """Сообщения одного чата. ``limit`` — сколько последних сообщений,
     ``backward`` — сколько дополнительно подгрузить назад. У личного диалога
     ``peer: {contactId, name, phone}`` — ``phone`` ``null``, если собеседника
-    нет в контактах аккаунта (MAX его не раскрывает); у группы ``peer: null``."""
-    return max_service.get_chat(chat_id, limit=limit, backward=backward)
+    нет в контактах аккаунта (MAX его не раскрывает); у группы ``peer: null``.
+    ``title`` — своё название чата (0106), если задано, иначе из MAX."""
+    result = max_service.get_chat(chat_id, limit=limit, backward=backward)
+    override = db.query(MaxChatTitle.title).filter(MaxChatTitle.max_chat_id == chat_id).scalar()
+    if override:
+        result["title"] = override
+    return result
+
+
+@app.put("/chats/{chat_id}/title")
+def set_chat_title(
+    chat_id: int,
+    payload: SetChatTitleIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Задать своё название чата в нашей системе (0106) — не меняет имя или
+    название группы в самом MAX, только то, что показываем у нас."""
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название не может быть пустым")
+    row = db.query(MaxChatTitle).filter(MaxChatTitle.max_chat_id == chat_id).first()
+    if row:
+        row.title = title
+    else:
+        row = MaxChatTitle(max_chat_id=chat_id, title=title)
+        db.add(row)
+    db.commit()
+    return {"chatId": chat_id, "title": title}
+
+
+@app.delete("/chats/{chat_id}/title", status_code=status.HTTP_204_NO_CONTENT)
+def clear_chat_title(
+    chat_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Снять своё название — отображение вернётся к тому, что отдаёт MAX."""
+    db.query(MaxChatTitle).filter(MaxChatTitle.max_chat_id == chat_id).delete()
+    db.commit()
 
 
 @app.post("/messages", status_code=201)
