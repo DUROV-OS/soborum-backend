@@ -33,9 +33,11 @@ from app.db.session import engine, get_db, SessionLocal
 from app.house_models.import_kb import ensure_house_models_seed
 from app.house_models.router import app as house_models_app
 from app.installation.router import app as installation_app
+from app.jobs.deadlines import start_task_deadline_loop
 from app.marketing.router import app as marketing_app
 from app.max.router import app as max_app
 from app.feedback.router import app as feedback_app
+from app.notifications.router import app as notifications_app
 from app.production.router import app as production_app
 from app.tasks.demo_seed import ensure_demo_workforce_seed
 from app.tasks.story_points_backfill import start_story_points_loop
@@ -108,6 +110,7 @@ def on_startup() -> None:
     start_shift_loop()
     start_stage_task_reconcile_loop()
     start_story_points_loop()
+    start_task_deadline_loop()
     start_max_listener()
 
 
@@ -157,3 +160,4 @@ app.mount("/api/board", board_app)
 app.mount("/api/agents", agents_app)
 app.mount("/api/accounting", accounting_app)
 app.mount("/api/feedback", feedback_app)
+app.mount("/api/notifications", notifications_app)

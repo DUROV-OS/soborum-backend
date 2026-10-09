@@ -4,6 +4,7 @@ from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
 from app.common.files import FilePurpose, save_text_file, save_upload_file
+from app.common.module_access import Module
 from app.feedback.models import (
     FeedbackAttachment,
     FeedbackAttachmentKind,
@@ -12,6 +13,8 @@ from app.feedback.models import (
     FeedbackRequest,
     FeedbackStatus,
 )
+from app.notifications.models import NotificationKind
+from app.notifications.service import notify
 from app.users.models import User, UserRole
 
 MAX_SCREENSHOTS = 5
@@ -98,6 +101,14 @@ def list_requests(db: Session, user: User, *, mine: bool = False) -> list[Feedba
     return query.order_by(FeedbackRequest.id.desc()).all()
 
 
+_FEEDBACK_STATUS_LABELS: dict[FeedbackStatus, str] = {
+    FeedbackStatus.NEW: "новая",
+    FeedbackStatus.IN_PROGRESS: "в работе",
+    FeedbackStatus.DONE: "выполнена",
+    FeedbackStatus.REJECTED: "отклонена",
+}
+
+
 def set_status(db: Session, request: FeedbackRequest, status: FeedbackStatus, actor: User) -> FeedbackRequest:
     """Меняет статус и пишет смену в ленту заявки (0090). Повторная установка
     того же статуса в ленте не отражается."""
@@ -112,6 +123,22 @@ def set_status(db: Session, request: FeedbackRequest, status: FeedbackStatus, ac
             )
         )
         request.status = status
+        # Уведомление автору заявки (0080-c). У раздела «Пожелания» нет
+        # своего Module в матрице доступа (см. докстрока модели — подача
+        # доступна всем, разбор только админам, грант тут нечего выдавать) —
+        # для мьюта используем Module.TASKS как наиболее близкий по смыслу
+        # (заявка — это тикет для разбора, а не раздел с данными); отдельный
+        # Module под один тип уведомления заводить не стали.
+        if request.author_id != actor.id:
+            notify(
+                db,
+                request.author_id,
+                kind=NotificationKind.FEEDBACK_UPDATE,
+                module=Module.TASKS,
+                title=f"Статус вашей заявки изменён на «{_FEEDBACK_STATUS_LABELS.get(status, status.value)}»",
+                object_type="feedback_request",
+                object_id=request.id,
+            )
     db.commit()
     db.refresh(request)
     return request
