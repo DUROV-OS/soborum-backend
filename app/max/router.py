@@ -17,6 +17,7 @@ from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.max import realtime
 from app.max import service as max_service
+from app.partners.models import Partner, PartnerChatLink
 from app.users.models import User
 
 
@@ -60,20 +61,32 @@ def list_chats(
     """Список чатов с последним сообщением в каждом. ``limit`` — сколько
     самых свежих вернуть (по умолчанию все). Каждый чат дополнительно
     аннотирован ``linkedClientId``/``linkedClientName``, если он привязан к
-    клиенту (app.clients) — для обратной привязки «из MAX к клиенту».
+    клиенту (app.clients), или ``linkedPartnerId``/``linkedPartnerName``, если
+    к партнёру (app.partners, 0105) — для обратной привязки «из MAX к
+    карточке». Чат не может быть привязан и к клиенту, и к партнёру
+    одновременно, так что заполнена не больше одной из двух пар.
     ``phone`` — номер собеседника личного диалога из контактов аккаунта или
     ``null`` (группа или собеседник не в контактах)."""
     result = max_service.list_chats(limit)
-    linked = {
+    linked_clients = {
         max_chat_id: (client_id, client_name)
         for max_chat_id, client_id, client_name in db.query(
             ClientChatLink.max_chat_id, Client.id, Client.full_name
         ).join(Client, Client.id == ClientChatLink.client_id)
     }
+    linked_partners = {
+        max_chat_id: (partner_id, partner_name)
+        for max_chat_id, partner_id, partner_name in db.query(
+            PartnerChatLink.max_chat_id, Partner.id, Partner.name
+        ).join(Partner, Partner.id == PartnerChatLink.partner_id)
+    }
     for chat in result["chats"]:
-        client_id, client_name = linked.get(chat["id"], (None, None))
+        client_id, client_name = linked_clients.get(chat["id"], (None, None))
         chat["linkedClientId"] = client_id
         chat["linkedClientName"] = client_name
+        partner_id, partner_name = linked_partners.get(chat["id"], (None, None))
+        chat["linkedPartnerId"] = partner_id
+        chat["linkedPartnerName"] = partner_name
     return result
 
 
