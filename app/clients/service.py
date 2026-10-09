@@ -26,6 +26,7 @@ from app.clients.schemas import (
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
+    ClientManagerUpdate,
     ClientPaymentUpdate,
     ClientSourceUpdate,
     ClientTaskClose,
@@ -255,6 +256,19 @@ def update_documents(db: Session, client: Client, payload: ClientDocumentsUpdate
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Аванс должен быть положительным")
     for field, value in data.items():
         setattr(client, field, value)
+    db.flush()
+    return client
+
+
+def update_manager(db: Session, client: Client, payload: ClientManagerUpdate) -> Client:
+    """Назначить/сменить/снять ответственного менеджера клиента (0080-a).
+
+    Та же роль, что меняет стадию клиента (require_clients_edit). `None` —
+    снять менеджера, запрос не падает. Смена не трогает историю прошлых
+    уведомлений — это просто текущее значение на объекте."""
+    if payload.manager_id is not None and db.get(User, payload.manager_id) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Пользователь не найден")
+    client.manager_id = payload.manager_id
     db.flush()
     return client
 
