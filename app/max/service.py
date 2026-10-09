@@ -70,7 +70,10 @@ def _system_text(m: dict) -> str | None:
 
 
 def _fmt_msg(
-    m: dict | None, viewer_id: str = "", contacts: dict | None = None
+    m: dict | None,
+    viewer_id: str = "",
+    contacts: dict | None = None,
+    read_marks: list[int] | None = None,
 ) -> dict | None:
     if not m:
         return None
@@ -100,7 +103,18 @@ def _fmt_msg(
         "elements": m.get("elements", []),
         "attaches": [_fmt_attach(a) for a in m.get("attaches", [])],
         "forwarded": _fmt_forwarded(m, contacts),
+        "readStatus": _read_status(m, viewer_id, is_system, read_marks),
     }
+
+
+def _read_status(m: dict, viewer_id: str, is_system: bool, read_marks: list[int] | None) -> str | None:
+    """Исходящее сообщение прочитано, если хоть один другой участник отметил
+    прочтение не раньше его времени (0101). Входящие, служебные, «Избранное»
+    (других участников нет) и чаты без данных об отметках — None."""
+    outgoing = not is_system and viewer_id != "" and str(m.get("sender")) == str(viewer_id)
+    if not outgoing or not read_marks:
+        return None
+    return "read" if max(read_marks) >= (m.get("time") or 0) else "sent"
 
 
 def _fmt_forwarded(m: dict, contacts: dict) -> dict | None:
@@ -203,7 +217,7 @@ def _fmt_chat(c: dict, last_map: dict, contacts: dict, viewer_id: str = "") -> d
         "title": _chat_title(c, contacts, viewer_id),
         "unread": c.get("newMessages", c.get("unreadCount", 0)),
         "lastEventTime": c.get("lastEventTime") or c.get("lastFireTime") or (last or {}).get("time"),
-        "lastMessage": _fmt_msg(last, viewer_id, contacts),
+        "lastMessage": _fmt_msg(last, viewer_id, contacts, _peer_read_marks(c, viewer_id)),
         # номер собеседника — для поиска по номеру в списке (0099)
         "phone": None if _is_group_chat(c) else (_dialog_peer(cid, viewer_id, contacts) or {}).get("phone"),
     }
@@ -260,6 +274,7 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
         if not _is_group_chat(meta):
             contacts = _with_dialog_peers(s, contacts, [chat_id], vid)
         msgs = s.history(chat_id, forward=limit, backward=backward)
+        marks = _chat_read_marks(s, chat_id, meta, vid)
     title = _chat_title(meta, contacts, vid)
     if meta is None:
         # диалога нет среди последних чатов аккаунта — например, только что
@@ -273,7 +288,7 @@ def get_chat(chat_id, limit: int = 50, backward: int = 0) -> dict[str, Any]:
         # номер для карточки клиента (0099); у групп собеседника нет
         "peer": None if _is_group_chat(meta) else _dialog_peer(chat_id, vid, contacts),
         "count": len(msgs),
-        "messages": [_fmt_msg(m, vid, contacts) for m in msgs],
+        "messages": [_fmt_msg(m, vid, contacts, marks) for m in msgs],
     }
 
 
