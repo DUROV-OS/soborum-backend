@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     story_points_interval_seconds: int = 300
     story_points_batch_size: int = 50
 
+    # Плановая проверка сроков задач (0080-c): TASK_DUE/TASK_OVERDUE, не чаще
+    # раза в сутки — тот же паттерн фонового цикла, что story_points выше.
+    task_deadline_check_autorun: bool = True
+    task_deadline_check_interval_seconds: int = 86400
+
     # --- AI assistant (app/ai) ---
     # Which provider every AI call goes through: "anthropic" (Claude) or
     # "openai" (ChatGPT). Keys for both may sit in .env at once; switching is
