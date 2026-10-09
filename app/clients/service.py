@@ -34,7 +34,7 @@ from app.clients.schemas import (
 )
 from app.common.module_access import AccessLevel, Module
 from app.cycle.models import Cycle, CycleStatus
-from app.partners.models import Partner
+from app.partners.models import Partner, PartnerChatLink
 from app.tasks import service as task_service
 from app.tasks import sync as task_sync
 from app.tasks.models import Task, TaskLinkType, TaskReportKind, TaskStatus
@@ -560,6 +560,17 @@ def create_chat_link(db: Session, client: Client, payload: ClientChatLinkCreate)
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название привязки обязательно")
+
+    taken_partner_link = (
+        db.query(PartnerChatLink).filter(PartnerChatLink.max_chat_id == payload.max_chat_id).first()
+    )
+    if taken_partner_link:
+        taken_partner = db.get(Partner, taken_partner_link.partner_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Чат уже привязан к партнёру «{taken_partner.name}» — сначала открепите его там",
+        )
+
     taken = db.query(ClientChatLink).filter(ClientChatLink.max_chat_id == payload.max_chat_id).first()
     if taken:
         if taken.client_id == client.id:
