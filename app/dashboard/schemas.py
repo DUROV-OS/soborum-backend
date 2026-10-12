@@ -69,3 +69,33 @@ class AktualnoeOut(BaseModel):
     ai_configured: bool = False
     # true — блок собран без ИИ (топ по свежести, проценты детерминированные)
     degraded: bool = False
+
+
+class PeriodMetric(BaseModel):
+    key: str
+    label: str
+    # count — штуки, rub — рубли (форматирует фронт)
+    unit: Literal["count", "rub"] = "count"
+    value: float
+    previous: float
+    # рост показателя — плохой знак (просрочки, списания): фронт красит наоборот
+    growth_is_bad: bool = False
+
+
+class PeriodSection(BaseModel):
+    section: str
+    title: str
+    metrics: list[PeriodMetric]
+
+
+class PeriodSummaryOut(BaseModel):
+    """«Итоги дня»/«Итоги недели» (0027): метрики по доступным разделам за
+    текущий период и за предыдущий такой же длины (для сравнения)."""
+
+    period: Literal["day", "week"]
+    label: str
+    compare_label: str
+    start: datetime
+    end: datetime
+    generated_at: datetime
+    sections: list[PeriodSection] = Field(default_factory=list)
