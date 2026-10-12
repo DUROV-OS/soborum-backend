@@ -26,6 +26,7 @@ from app.clients.schemas import (
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
+    ClientManagerUpdate,
     ClientPaymentUpdate,
     ClientSourceUpdate,
     ClientTaskClose,
@@ -34,6 +35,8 @@ from app.clients.schemas import (
 )
 from app.common.module_access import AccessLevel, Module
 from app.cycle.models import Cycle, CycleStatus
+from app.notifications.models import NotificationKind
+from app.notifications.service import notify
 from app.partners.models import Partner
 from app.tasks import service as task_service
 from app.tasks import sync as task_sync
@@ -42,6 +45,50 @@ from app.users import service as user_service
 from app.users.models import User
 
 logger = logging.getLogger(__name__)
+
+
+def _notify_stage_change(db: Session, client: Client) -> None:
+    """Смена стадии клиента (ручная transition_stage или автоматическая
+    advance_stage_automatically) — уведомление ответственному менеджеру
+    (0080-c). Без менеджера просто не уведомляем, это не ошибка."""
+    if client.manager_id is None:
+        return
+    notify(
+        db,
+        client.manager_id,
+        kind=NotificationKind.CLIENT_UPDATE,
+        module=Module.CLIENTS,
+        title=f"Клиент «{client.full_name}» перешёл на стадию «{stage_label(client.stage)}»",
+        object_type="client",
+        object_id=client.id,
+    )
+
+
+def notify_chat_message(
+    db: Session, *, chat_id: int, sender_id: str | None, viewer_id: str | None
+) -> None:
+    """Входящее сообщение в чате MAX, привязанном к клиенту (0080-c) —
+    уведомление ответственному менеджеру клиента, если он не сам отправитель.
+
+    У MAX-чата нет понятия «ответственный сотрудник» внутри самого MAX —
+    аккаунт один на компанию. «Сам отправитель» здесь означает «сообщение
+    отправлено с этого аккаунта» (`sender_id == viewer_id`, как `isOutgoing`
+    в app.max.service._fmt_msg) — тогда это наш исходящий ответ, а не
+    входящее сообщение клиента, уведомлять не о чём."""
+    link = db.query(ClientChatLink).filter(ClientChatLink.max_chat_id == chat_id).first()
+    if link is None or link.client is None or link.client.manager_id is None:
+        return
+    if sender_id is not None and viewer_id is not None and str(sender_id) == str(viewer_id):
+        return
+    notify(
+        db,
+        link.client.manager_id,
+        kind=NotificationKind.MAX_MESSAGE,
+        module=Module.CLIENTS,
+        title=f"Новое сообщение в чате «{link.label}» ({link.client.full_name})",
+        object_type="client",
+        object_id=link.client_id,
+    )
 
 
 def _next_stage(stage: ClientStage) -> ClientStage | None:
@@ -255,6 +302,19 @@ def update_documents(db: Session, client: Client, payload: ClientDocumentsUpdate
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Аванс должен быть положительным")
     for field, value in data.items():
         setattr(client, field, value)
+    db.flush()
+    return client
+
+
+def update_manager(db: Session, client: Client, payload: ClientManagerUpdate) -> Client:
+    """Назначить/сменить/снять ответственного менеджера клиента (0080-a).
+
+    Та же роль, что меняет стадию клиента (require_clients_edit). `None` —
+    снять менеджера, запрос не падает. Смена не трогает историю прошлых
+    уведомлений — это просто текущее значение на объекте."""
+    if payload.manager_id is not None and db.get(User, payload.manager_id) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Пользователь не найден")
+    client.manager_id = payload.manager_id
     db.flush()
     return client
 
@@ -778,6 +838,7 @@ def transition_stage(db: Session, client: Client) -> Client:
 
     client.stage = next_stage
     db.flush()
+    _notify_stage_change(db, client)
 
     if next_stage == ClientStage.POSTPAYMENT:
         from app.production.models import Production
@@ -836,6 +897,7 @@ def advance_stage_automatically(db: Session, client: Client | None, target: Clie
         return client
     client.stage = target
     db.flush()
+    _notify_stage_change(db, client)
     _reset_stage_tasks(db, client)
     return client
 

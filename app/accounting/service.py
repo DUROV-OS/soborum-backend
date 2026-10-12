@@ -57,6 +57,8 @@ from app.clients.models import Client
 from app.common.files import FileAsset
 from app.common.module_access import Module as AccessModule
 from app.core.config import settings
+from app.notifications.models import NotificationKind
+from app.notifications.service import notify
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus, TaskWorkDuration, task_assignees
 from app.users import service as user_service
@@ -1025,6 +1027,42 @@ def _adjust_supplier_paid(db: Session, mm: MoneyMovement, delta: float) -> None:
     order.supplier.total_paid = float(order.supplier.total_paid or 0) + delta
 
 
+_MONEY_MOVEMENT_STATUS_LABELS: dict[MoneyMovementStatus, str] = {
+    MoneyMovementStatus.DRAFT: "черновик",
+    MoneyMovementStatus.APPROVED: "согласовано",
+    MoneyMovementStatus.POSTED: "проведено",
+    MoneyMovementStatus.CANCELLED: "отменено",
+}
+
+
+def _notify_money_movement_status(db: Session, mm: MoneyMovement) -> None:
+    """Смена статуса проводки (0080-c) — уведомление согласующему: тому, кто
+    отвечает за задачу «Согласовать проводку» (`TaskLinkType.
+    MONEY_MOVEMENT_APPROVAL`, `link_id == mm.id`). `create_link_task` сама
+    не назначает `responsible_id` (только `assignees` — всех с доступом к
+    разделу), его при необходимости выставляют вручную на задаче — без него
+    просто не уведомляем, это не ошибка."""
+    task = (
+        db.query(Task)
+        .filter(Task.link_type == TaskLinkType.MONEY_MOVEMENT_APPROVAL, Task.link_id == mm.id)
+        .order_by(Task.id.desc())
+        .first()
+    )
+    if task is None or task.responsible_id is None:
+        return
+    label = MONEY_SUBKIND_LABELS.get(mm.subkind, mm.subkind.value)
+    status_label = _MONEY_MOVEMENT_STATUS_LABELS.get(mm.status, mm.status.value)
+    notify(
+        db,
+        task.responsible_id,
+        kind=NotificationKind.MONEY_MOVEMENT_UPDATE,
+        module=AccessModule.ACCOUNTING,
+        title=f"Проводка «{label}» на {mm.amount:,.0f} ₽ — статус «{status_label}»".replace(",", " "),
+        object_type="money_movement",
+        object_id=mm.id,
+    )
+
+
 def change_status(
     db: Session,
     mm: MoneyMovement,
@@ -1058,6 +1096,8 @@ def change_status(
     mm.status = to
     db.commit()
     db.refresh(mm)
+
+    _notify_money_movement_status(db, mm)
 
     # Задача на согласование (0011-f) закрывается, как только проводка
     # покидает «черновик» — независимо от того, куда именно она перешла.
