@@ -14,6 +14,7 @@ from app.ai import meeting_ask as ai_meeting_ask
 from app.ai import meeting_notes as ai_meeting_notes
 from app.ai import meetings as ai_meetings
 from app.ai import daily_plan as ai_daily_plan
+from app.ai import error_humanizer as ai_error_humanizer
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
 from app.ai import topic as ai_topic
@@ -40,6 +41,8 @@ from app.ai.schemas import (
     ChatTitleUpdate,
     ConsultAskResponse,
     DailyPlanOut,
+    HumanizeErrorIn,
+    HumanizeErrorOut,
     GrowthProposalOut,
     GrowthProposalPrepareTaskOut,
     McpNoteCreate,
@@ -302,6 +305,13 @@ def clear_consult(chat_id: int | None = None, db: Session = Depends(get_db), use
     chat = db.get(Chat, chat_id)
     if chat is not None and chat.owner_id == user.id:
         ai_service.wipe_chat(db, chat)
+
+
+@app.post("/humanize-error", response_model=HumanizeErrorOut)
+def humanize_error(payload: HumanizeErrorIn, user: User = Depends(get_current_user)):
+    """Текст технической ошибки -> фраза до 10 слов (0049). Без нового права:
+    любому вошедшему, как и сама ошибка. Не бросает — при сбое `text: null`."""
+    return HumanizeErrorOut(text=ai_error_humanizer.humanize(payload.text, payload.status, user.id))
 
 
 @app.post("/tts/speak")

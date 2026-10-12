@@ -259,3 +259,15 @@ class McpNoteCreate(BaseModel):
 
 class McpNoteOut(BaseModel):
     path: str
+
+
+class HumanizeErrorIn(BaseModel):
+    """Техническая ошибка, которую фронт хочет показать человеку (0049)."""
+
+    text: str = Field(min_length=1, max_length=1000)
+    status: int | None = None
+
+
+class HumanizeErrorOut(BaseModel):
+    # None — перевода нет (ИИ выключен, лимит, сбой): фронт показывает свою фразу
+    text: str | None = None

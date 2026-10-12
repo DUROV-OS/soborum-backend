@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     # Empty = the official https://api.openai.com/v1.
     openai_base_url: str = ""
     openai_model: str = "gpt-5"
+    # Дешёвая модель OpenAI для перевода технического текста ошибки в
+    # человеческую фразу (app/ai/error_humanizer.py, 0049). Всегда OpenAI, вне
+    # зависимости от AI_PROVIDER; без OPENAI_API_KEY перевод просто выключен.
+    error_humanizer_model: str = "gpt-5-nano"
 
     # Reasoning depth / overall token spend per assistant turn: low | medium |
     # high | xhigh | max. "medium" is the main latency lever - it noticeably
