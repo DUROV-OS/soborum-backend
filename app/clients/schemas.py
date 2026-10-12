@@ -77,6 +77,14 @@ class ClientHousesCountUpdate(BaseModel):
     houses_count: int
 
 
+class ClientManagerUpdate(BaseModel):
+    """Назначить/сменить/снять ответственного менеджера клиента (0080-a).
+    `None` — снять менеджера, у клиента просто не остаётся адресата
+    уведомлений по нему."""
+
+    manager_id: int | None = None
+
+
 class ClientPaymentUpdate(BaseModel):
     is_paid: bool
 
@@ -222,6 +230,16 @@ class ContractVerifierOut(BaseModel):
     full_name: str
 
 
+class ClientManagerOut(BaseModel):
+    """Ответственный менеджер клиента (0080-a) — имя для карточки, id для
+    выбора в селекторе на фронте."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+
+
 class ClientOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -229,6 +247,10 @@ class ClientOut(BaseModel):
     cycle_id: int
     stage: ClientStage
     created_at: datetime
+
+    # Ответственный менеджер (0080-a) — адресат уведомлений по клиенту.
+    manager_id: int | None = None
+    manager: ClientManagerOut | None = None
 
     full_name: str
     phone: str

@@ -77,6 +77,32 @@ def test_only_assignee_in_progress_can_report(db, make_user, api):
     assert db.query(TaskReport).count() == 1
 
 
+def test_second_assignee_report_after_submission_tells_current_status(db, make_user, api):
+    # Фидбек 0103: у задачи два исполнителя, один уже сдал отчёт — второй,
+    # опоздавший на карточке со старым статусом, должен получить понятную
+    # причину отказа и current_status, а не голое «сдать можно только задачу
+    # в работе».
+    first, second = make_user(Module.TASKS), make_user(Module.TASKS)
+    reviewer = make_user(Module.TASKS)
+    task = task_service.create_task(
+        db, title="Повесить карниз", assignee_ids=[first.id, second.id], reviewer_ids=[reviewer.id]
+    )
+    db.flush()
+    task_service.set_status(db, task, TaskStatus.IN_PROGRESS, first)
+    db.commit()
+
+    api(first).post(f"/api/tasks/{task.id}/report", data={"comment": "Сделал"})
+
+    late = api(second).post(f"/api/tasks/{task.id}/report", data={"comment": "Тоже сделал"})
+
+    assert late.status_code == 400
+    detail = late.json()["detail"]
+    assert detail["current_status"] == "in_review"
+    assert "другой исполнитель" in detail["detail"]
+    db.expire_all()
+    assert db.query(TaskReport).count() == 1
+
+
 def test_status_endpoint_no_longer_accepts_in_review(db, make_user, api):
     worker = make_user(Module.TASKS)
     reviewer = make_user(Module.TASKS)

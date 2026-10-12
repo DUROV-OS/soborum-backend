@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.accounting.models import SupplierOrder
 from app.common.module_access import Module as AccessModule
+from app.notifications.models import NotificationKind
+from app.notifications.service import notify
 from app.production import readiness
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.tasks import service as task_service
@@ -761,6 +763,28 @@ def productions_of_movements(db: Session, movements: list[StockMovement]) -> dic
     return result
 
 
+def _notify_material_request(db: Session, request: MaterialRequest, title: str) -> None:
+    """Смена статуса заявки на материал (0080-c) — уведомление ответственному
+    за задачу производства, из которой заявка выросла (`MaterialRequest.task_id`
+    → `Task.responsible_id`). Без привязанной задачи или без ответственного на
+    ней просто не уведомляем — заявки на старые блоки могли завестись до
+    появления этой связи."""
+    if not request.task_id:
+        return
+    task = db.get(Task, request.task_id)
+    if task is None or task.responsible_id is None:
+        return
+    notify(
+        db,
+        task.responsible_id,
+        kind=NotificationKind.MATERIAL_REQUEST_UPDATE,
+        module=AccessModule.PRODUCTION,
+        title=title,
+        object_type="material_request",
+        object_id=request.id,
+    )
+
+
 def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> MaterialRequest:
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
@@ -779,6 +803,8 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> 
     readiness.invalidate_production_caches(db, module_material.block.production_id)
 
     log_movement(db, warehouse_material, -float(request.quantity), StockMovementReason.ISSUED, decided_by, request.id)
+
+    _notify_material_request(db, request, "Заявка на материал одобрена")
 
     if request.task_id:
         task = db.get(Task, request.task_id)
@@ -806,6 +832,8 @@ def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> M
     readiness.invalidate_production_caches(db, module_material.block.production_id)
 
     log_movement(db, warehouse_material, 0, StockMovementReason.REQUEST_REJECTED_RETURN, decided_by, request.id)
+
+    _notify_material_request(db, request, "Заявка на материал отклонена")
 
     if request.task_id:
         task = db.get(Task, request.task_id)

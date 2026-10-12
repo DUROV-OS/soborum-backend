@@ -14,6 +14,7 @@ from app.clients.schemas import (
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
+    ClientManagerUpdate,
     ClientNoteCreate,
     ClientNoteOut,
     ClientNoteUpdate,
@@ -99,6 +100,22 @@ def update_documents(
 ):
     client = client_service.get_client_or_404(db, client_id)
     client = client_service.update_documents(db, client, payload)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.patch("/{client_id}/manager", response_model=ClientOut)
+def update_manager(
+    client_id: int,
+    payload: ClientManagerUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_clients_edit),
+):
+    """Назначить/сменить/снять ответственного менеджера (0080-a) — те же
+    права, что на смену стадии клиента."""
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.update_manager(db, client, payload)
     db.commit()
     db.refresh(client)
     return client

@@ -8,7 +8,9 @@ push-кадры сервера:
 - opcode 1 (``cmd 0``) — пинг сервера; отвечаем ``cmd 1`` с тем же seq;
 - opcode 128 (``cmd 0``) — новое сообщение, ``payload.chatId`` и
   ``payload.message.id``; подтверждаем доставку и рассылаем фронту
-  ``chat_updated`` (app/max/realtime.py).
+  ``chat_updated`` (app/max/realtime.py);
+- opcode 130 (``cmd 0``) — кто-то прочитал чат (0101), ``payload.chatId``;
+  без ответа, только ``chat_updated``, чтобы обновились галочки прочтения.
 
 Так же делает web.max.ru (обработчик входящих кадров в его клиентском JS,
 таблица opcode: LS=1, BS=128). Кадр с seq не больше уже обработанного
@@ -31,7 +33,9 @@ import threading
 import time
 import uuid
 
+from app.clients import service as client_service
 from app.core.config import settings
+from app.db.session import SessionLocal
 from app.max import client as max_client
 from app.max import realtime
 
@@ -39,6 +43,10 @@ log = logging.getLogger("app.max.listener")
 
 OP_PING = 1
 OP_NOTIF_MESSAGE = 128
+# NOTIF_MARK — кто-то прочитал чат (0101): {chatId, userId, mark, setAsUnread}.
+# Формат по открытому клиенту PyMax, вживую не пойман; ответа не шлём (PyMax
+# тоже не отвечает), только обновляем ленту — так меняются галочки прочтения.
+OP_NOTIF_MARK = 130
 
 # Свой пинг — заметно чаще минуты, после которой MAX закрывает молчащую сессию.
 PING_INTERVAL = 25
@@ -55,11 +63,46 @@ _device_id = str(uuid.uuid4())
 
 class FrameHandler:
     """Разбор входящих кадров одной сессии. ``reply(frame)`` — отправка
-    ответного кадра в сокет (в тестах — список)."""
+    ответного кадра в сокет (в тестах — список).
 
-    def __init__(self, reply):
+    ``session`` — опционально, та же ``MaxSession``, что слушает кадры:
+    нужна, чтобы по новому сообщению (opcode 128) узнать отправителя
+    (``get_message``) и свой id (``viewer_id``) — в самом кадре 128 этого
+    нет, см. docstring модуля. Без ``session`` (как в части старых тестов
+    этого модуля) уведомление менеджеру клиента просто не создаётся — это не
+    ошибка, только отсутствие побочного эффекта."""
+
+    def __init__(self, reply, session=None):
         self.reply = reply
+        self.session = session
         self.last_seq: int | None = None
+
+    def _notify_new_message(self, chat_id: int, message_id) -> None:
+        """Уведомление менеджеру клиента о новом сообщении в привязанном
+        MAX-чате (0080-c). Любой сбой (сессия недоступна, сообщение уже
+        не найдено, БД недоступна) — только лог, слушатель не должен падать
+        из-за уведомления."""
+        if self.session is None or message_id is None:
+            return
+        try:
+            message = self.session.get_message(chat_id, message_id)
+            if message is None:
+                return
+            sender_id = message.get("sender")
+            viewer_id = self.session.viewer_id()
+            db = SessionLocal()
+            try:
+                client_service.notify_chat_message(
+                    db,
+                    chat_id=chat_id,
+                    sender_id=str(sender_id) if sender_id is not None else None,
+                    viewer_id=viewer_id,
+                )
+                db.commit()
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 — уведомление не должно рвать сессию
+            log.exception("MAX listener: не удалось уведомить о сообщении в чате %r", chat_id)
 
     def handle(self, frame: dict) -> None:
         if frame.get("cmd") != 0:
@@ -80,11 +123,23 @@ class FrameHandler:
                 "ver": 11, "cmd": 1, "seq": seq, "opcode": OP_NOTIF_MESSAGE,
                 "payload": {"chatId": chat_id, "messageId": message_id},
             })
+            _notify_chat(chat_id, opcode)
             if chat_id is not None:
                 try:
-                    realtime.chat_updated(int(chat_id))
+                    self._notify_new_message(int(chat_id), message_id)
                 except (TypeError, ValueError):
-                    log.warning("MAX listener: непонятный chatId в кадре 128: %r", chat_id)
+                    pass  # непонятный chatId уже залогирован в _notify_chat
+        elif opcode == OP_NOTIF_MARK:
+            _notify_chat(payload.get("chatId"), opcode)
+
+
+def _notify_chat(chat_id, opcode: int) -> None:
+    if chat_id is None:
+        return
+    try:
+        realtime.chat_updated(int(chat_id))
+    except (TypeError, ValueError):
+        log.warning("MAX listener: непонятный chatId в кадре %s: %r", opcode, chat_id)
 
 
 def start_max_listener() -> None:
@@ -108,7 +163,7 @@ def _open_session() -> max_client.MaxSession:
 
 
 def _listen(session: max_client.MaxSession) -> None:
-    handler = FrameHandler(lambda frame: session.ws.send(json.dumps(frame)))
+    handler = FrameHandler(lambda frame: session.ws.send(json.dumps(frame)), session=session)
     last_ping = last_frame = time.monotonic()
     while True:
         now = time.monotonic()
