@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.notifications.models import NotificationKind
+
 WidgetTone = Literal["neutral", "brand", "success", "warning", "danger", "info"]
 
 
@@ -99,3 +101,25 @@ class PeriodSummaryOut(BaseModel):
     end: datetime
     generated_at: datetime
     sections: list[PeriodSection] = Field(default_factory=list)
+
+
+class MissedItem(BaseModel):
+    """Непрочитанное уведомление в блоке «Вы могли пропустить» (0027) — поля
+    уведомления плюс короткое пояснение ИИ, почему оно важно."""
+
+    id: int
+    kind: NotificationKind
+    title: str
+    body: str | None = None
+    object_type: str | None = None
+    object_id: int | None = None
+    created_at: datetime
+    reason: str = ""
+
+
+class MissedOut(BaseModel):
+    generated_at: datetime
+    items: list[MissedItem] = Field(default_factory=list)
+    ai_configured: bool = False
+    # true — отбор без ИИ (по приоритету повода и свежести)
+    degraded: bool = False

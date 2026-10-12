@@ -5,10 +5,11 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.dashboard import aktualnoe as aktualnoe_service
+from app.dashboard import missed as missed_service
 from app.dashboard import overview as overview_service
 from app.dashboard import period_summary as period_summary_service
 from app.dashboard import service as dashboard_service
-from app.dashboard.schemas import AktualnoeOut, PeriodSummaryOut, SectionSignalOut, TodayDashboardOut
+from app.dashboard.schemas import AktualnoeOut, MissedOut, PeriodSummaryOut, SectionSignalOut, TodayDashboardOut
 from app.db.session import get_db
 from app.users.models import User
 
@@ -46,3 +47,10 @@ def get_aktualnoe(reload: bool = False, db: Session = Depends(get_db), user: Use
     """Три цикла клиента, над которыми активнее всего работали в последнее
     время. Кеш обновляется раз в 12 часов; `reload=true` пересчитывает сразу."""
     return aktualnoe_service.generate_aktualnoe(db, user, force=reload)
+
+
+@app.get("/missed", response_model=MissedOut)
+def get_missed(reload: bool = False, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Блок «Вы могли пропустить»: 2–3 самых важных непрочитанных уведомления
+    по оценке ИИ. Кеш на час на пользователя; `reload=true` пересчитывает сразу."""
+    return missed_service.generate_missed(db, user, force=reload)
