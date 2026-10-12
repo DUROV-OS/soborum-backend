@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     story_points_interval_seconds: int = 300
     story_points_batch_size: int = 50
 
+    # Плановая проверка сроков задач (0080-c): TASK_DUE/TASK_OVERDUE, не чаще
+    # раза в сутки — тот же паттерн фонового цикла, что story_points выше.
+    task_deadline_check_autorun: bool = True
+    task_deadline_check_interval_seconds: int = 86400
+
     # --- AI assistant (app/ai) ---
     # Which provider every AI call goes through: "anthropic" (Claude) or
     # "openai" (ChatGPT). Keys for both may sit in .env at once; switching is
@@ -190,6 +195,9 @@ class Settings(BaseSettings):
     # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
     # web.max.ru. Без него раздел /api/max отдаёт 503.
     max_token: str = ""
+    # Сервисный токен read-only экспорта заявок «Пожелания» для агента (0109).
+    # Пуст — экспорт выключен, маршруты /api/feedback/export/* отвечают 404.
+    feedback_export_token: str = ""
     # Opcode запроса URL для загрузки файла (FILE_UPLOAD) перед отправкой
     # FILE-вложения. 87 подтверждён живой загрузкой 05.10.2026 (0097) и
     # совпадает с открытым клиентом PyMax, где FILE_DOWNLOAD = 88 — тот же,
@@ -200,6 +208,23 @@ class Settings(BaseSettings):
     # сессию MAX и пушит фронту новые сообщения по WebSocket. false — выключить
     # (например на стейдже, если две постоянные сессии одного аккаунта мешают).
     max_live_updates: bool = True
+
+    # --- Браузерный push (app/notifications, 0080-e) ---
+    # VAPID-пара для Web Push (RFC 8292). Генерируется один раз на
+    # окружение, например `vapid --gen` (py-vapid, тянется транзитивно с
+    # pywebpush) или `openssl ecparam -genkey -name prime256v1`. Публичный
+    # ключ не секрет — та же строка отдаётся фронту (VITE_VAPID_PUBLIC_KEY)
+    # для `pushManager.subscribe`. Пусто = push отключён, `notify()` просто
+    # не пытается отправлять (чтобы не ронять создание уведомления в
+    # окружении без настроенных ключей, например в тестах).
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    # contact ("mailto:" или "https://") — обязателен по RFC для claims `sub`.
+    vapid_subject: str = "mailto:admin@soborbum.local"
+
+    @property
+    def push_configured(self) -> bool:
+        return bool(self.vapid_public_key.strip() and self.vapid_private_key.strip())
 
 
 settings = Settings()

@@ -3,9 +3,42 @@ from sqlalchemy.orm import Session
 
 from app.clients import service as client_service
 from app.clients.models import ClientStage, PaymentPlan
+from app.common.module_access import Module
 from app.cycle.models import Cycle, CycleStatus
 from app.installation.models import INSTALLATION_STAGE_ORDER, Installation, InstallationStage
 from app.installation.schemas import InstallationUpdate
+from app.notifications.models import NotificationKind
+from app.notifications.service import notify
+
+
+# Только для текста уведомления (0080-c) — на фронте своих подписей для
+# стадий монтажа нет, значений enum достаточно внутри раздела.
+_INSTALLATION_STAGE_LABELS: dict[InstallationStage, str] = {
+    InstallationStage.DELIVERY: "Доставка",
+    InstallationStage.INSTALLATION: "Монтаж",
+    InstallationStage.FOLLOWUP: "Проработка",
+}
+
+
+def _notify_installation_stage_change(db: Session, installation: Installation) -> None:
+    """Смена стадии монтажа (0080-c). У `Installation` нет собственной задачи
+    с `responsible_id` (в коде не нашлось ни одной точки, где монтажу
+    назначают ответственного через Task — в отличие от заявок на материал,
+    где `MaterialRequest.task_id` даёт прямую связь) — получателя берём из
+    `Client.manager_id` клиента этого цикла, как и для CLIENT_UPDATE."""
+    client = installation.cycle.client if installation.cycle else None
+    if client is None or client.manager_id is None:
+        return
+    label = _INSTALLATION_STAGE_LABELS.get(installation.stage, installation.stage.value)
+    notify(
+        db,
+        client.manager_id,
+        kind=NotificationKind.INSTALLATION_UPDATE,
+        module=Module.INSTALLATION,
+        title=f"Монтаж клиента «{client.full_name}» перешёл на стадию «{label}»",
+        object_type="installation",
+        object_id=installation.id,
+    )
 
 
 def get_installation_or_404(db: Session, installation_id: int) -> Installation:
@@ -49,6 +82,7 @@ def transition_stage(db: Session, installation: Installation) -> Installation:
     next_stage = INSTALLATION_STAGE_ORDER[idx + 1]
     installation.stage = next_stage
     db.flush()
+    _notify_installation_stage_change(db, installation)
 
     if next_stage == InstallationStage.FOLLOWUP:
         # Последняя стадия монтажа: дом у клиента, идёт приёмка. Карточка

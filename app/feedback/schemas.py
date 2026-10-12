@@ -98,3 +98,68 @@ class FeedbackEventCreate(BaseModel):
 
     kind: Literal[FeedbackEventKind.COMMENT, FeedbackEventKind.CHANGE]
     text: str = Field(min_length=1)
+
+
+# --- Экспорт для агента (0109): без почты и телефона автора. ---
+
+
+class ExportAuthorOut(BaseModel):
+    full_name: str
+    role: str
+
+
+class ExportEventOut(BaseModel):
+    kind: FeedbackEventKind
+    text: str | None
+    old_status: FeedbackStatus | None
+    new_status: FeedbackStatus | None
+    author: ExportAuthorOut
+    created_at: datetime
+
+
+class ExportRequestOut(BaseModel):
+    id: int
+    section: str
+    text: str
+    status: FeedbackStatus
+    created_at: datetime
+    updated_at: datetime
+    author: ExportAuthorOut
+    attachments: list[FeedbackAttachmentOut]
+    events: list[ExportEventOut]
+
+    @staticmethod
+    def from_model(request) -> "ExportRequestOut":
+        def author(user) -> ExportAuthorOut:
+            return ExportAuthorOut(full_name=user.full_name, role=user.role.value)
+
+        return ExportRequestOut(
+            id=request.id,
+            section=request.section,
+            text=request.text,
+            status=request.status,
+            created_at=request.created_at,
+            updated_at=request.updated_at,
+            author=author(request.author),
+            attachments=[
+                FeedbackAttachmentOut(
+                    id=a.id,
+                    file_id=a.file_asset_id,
+                    filename=a.file_asset.filename,
+                    content_type=a.file_asset.content_type,
+                    kind=a.kind,
+                )
+                for a in request.attachments
+            ],
+            events=[
+                ExportEventOut(
+                    kind=e.kind,
+                    text=e.text,
+                    old_status=e.old_status,
+                    new_status=e.new_status,
+                    author=author(e.author),
+                    created_at=e.created_at,
+                )
+                for e in request.events
+            ],
+        )
