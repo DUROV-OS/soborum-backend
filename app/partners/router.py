@@ -1,10 +1,13 @@
-from fastapi import Depends, FastAPI, HTTPException, status
+from datetime import date
+
+from fastapi import Depends, FastAPI, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module
 from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
 from app.partners import service as partner_service
+from app.partners.excel import build_partners_xlsx
 from app.partners.models import PartnerCategory, PartnerNote
 from app.partners.schemas import (
     PartnerCreate,
@@ -41,6 +44,28 @@ def list_partners(
     """`city` — точное совпадение без учёта регистра; `search` — по имени,
     организации и цифрам телефона."""
     return partner_service.list_partners(db, category=category, city=city, search=search)
+
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@app.get("/export.xlsx")
+def export_partners(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_partners_view),
+    category: PartnerCategory | None = None,
+    city: str | None = None,
+    search: str | None = None,
+):
+    """Excel с партнёрами; фильтры те же, что у `GET /` (0110). Объявлена до
+    `/{partner_id}`, иначе «export.xlsx» разбирался бы как id."""
+    partners = partner_service.list_partners(db, category=category, city=city, search=search)
+    filename = f"partners-{date.today().isoformat()}.xlsx"
+    return Response(
+        content=build_partners_xlsx(partners),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/cities", response_model=list[str])
