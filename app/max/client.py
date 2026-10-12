@@ -215,6 +215,16 @@ class MaxSession:
             raise RuntimeError(f"MAX отклонил пересылку: {_reason(reply)}")
         return reply.get("payload", {}) or {}
 
+    def chat_info(self, chat_ids: list) -> list[dict]:
+        """CHAT_INFO (opcode 48): полные данные чатов по id, в том числе
+        ``participants`` — отметки прочтения участников (0101). Нужен для
+        чатов, которых нет среди первых 40 из ответа AUTH."""
+        seq = self._send(48, {"chatIds": list(chat_ids)})
+        reply = self._wait(48, seq)
+        if reply.get("cmd") == 3:
+            raise RuntimeError(f"MAX не отдал данные чата: {_reason(reply)}")
+        return (reply.get("payload") or {}).get("chats") or []
+
     def get_message(self, chat_id, message_id) -> dict | None:
         """MSG_GET (opcode 71): одно сообщение чата по id или None."""
         seq = self._send(71, {"chatId": chat_id, "messageIds": [int(message_id)]})
