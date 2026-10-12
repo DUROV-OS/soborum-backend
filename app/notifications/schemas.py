@@ -39,3 +39,25 @@ class NotificationMuteUpdate(BaseModel):
     module: Module
     object_id: int | None = None
     muted: bool
+
+
+class PushSubscriptionKeys(BaseModel):
+    """Ровно то, что отдаёт `PushSubscription.toJSON().keys` в браузере."""
+
+    p256dh: str
+    auth: str
+
+
+class PushSubscriptionIn(BaseModel):
+    """Тело `POST /push-subscriptions` — результат `pushManager.subscribe`
+    на фронте, сериализованный через `PushSubscription.toJSON()`."""
+
+    endpoint: str
+    keys: PushSubscriptionKeys
+
+
+class PushSubscriptionDelete(BaseModel):
+    """Тело `DELETE /push-subscriptions`: endpoint может быть длинным URL,
+    поэтому передаётся в теле, а не в query-строке."""
+
+    endpoint: str
