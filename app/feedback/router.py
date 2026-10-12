@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_admin
 from app.db.session import get_db
+from app.feedback.export_auth import require_export_token
 from app.feedback.models import FeedbackAttachment, FeedbackRequest
-from app.feedback.schemas import FeedbackEventCreate, FeedbackRequestOut, FeedbackStatusUpdate
+from app.feedback.schemas import ExportRequestOut, FeedbackEventCreate, FeedbackRequestOut, FeedbackStatusUpdate
 from app.feedback.service import (
     add_event,
     can_add_event,
@@ -138,6 +139,58 @@ def download_feedback_file(
         db.query(FeedbackAttachment)
         .filter(
             FeedbackAttachment.feedback_id == request.id,
+            FeedbackAttachment.file_asset_id == file_id,
+        )
+        .first()
+    )
+    if not attachment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл заявки не найден")
+    asset = attachment.file_asset
+    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
+
+
+@app.get(
+    "/export/requests",
+    response_model=list[ExportRequestOut],
+    dependencies=[Depends(require_export_token)],
+)
+def export_requests(
+    after_id: int = Query(default=0, ge=0, description="Отдать заявки с id больше этого"),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Read-only выгрузка для агента (0109): по сервисному токену, по возрастанию id."""
+    rows = (
+        db.query(FeedbackRequest)
+        .filter(FeedbackRequest.id > after_id)
+        .order_by(FeedbackRequest.id)
+        .limit(limit)
+        .all()
+    )
+    return [ExportRequestOut.from_model(r) for r in rows]
+
+
+@app.get(
+    "/export/requests/{request_id}",
+    response_model=ExportRequestOut,
+    dependencies=[Depends(require_export_token)],
+)
+def export_request(request_id: int, db: Session = Depends(get_db)):
+    request = db.get(FeedbackRequest, request_id)
+    if not request:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
+    return ExportRequestOut.from_model(request)
+
+
+@app.get(
+    "/export/requests/{request_id}/files/{file_id}",
+    dependencies=[Depends(require_export_token)],
+)
+def export_request_file(request_id: int, file_id: int, db: Session = Depends(get_db)):
+    attachment = (
+        db.query(FeedbackAttachment)
+        .filter(
+            FeedbackAttachment.feedback_id == request_id,
             FeedbackAttachment.file_asset_id == file_id,
         )
         .first()

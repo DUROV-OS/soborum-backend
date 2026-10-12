@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
     # web.max.ru. Без него раздел /api/max отдаёт 503.
     max_token: str = ""
+    # Сервисный токен read-only экспорта заявок «Пожелания» для агента (0109).
+    # Пуст — экспорт выключен, маршруты /api/feedback/export/* отвечают 404.
+    feedback_export_token: str = ""
     # Opcode запроса URL для загрузки файла (FILE_UPLOAD) перед отправкой
     # FILE-вложения. 87 подтверждён живой загрузкой 05.10.2026 (0097) и
     # совпадает с открытым клиентом PyMax, где FILE_DOWNLOAD = 88 — тот же,
