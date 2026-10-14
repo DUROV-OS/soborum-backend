@@ -204,6 +204,12 @@ class Settings(BaseSettings):
     # Сервисный токен read-only экспорта заявок «Пожелания» для агента (0109).
     # Пуст — экспорт выключен, маршруты /api/feedback/export/* отвечают 404.
     feedback_export_token: str = ""
+    # Общий секрет вебхука заявок с сайта (0111-a): сайт шлёт его в заголовке
+    # X-Intake-Token. Пуст — приём выключен, POST /api/clients/intake отвечает 503.
+    lead_intake_token: str = ""
+    # Лимит приёма заявок на один адрес за окно, секунд (защита от спама).
+    lead_intake_rate_limit: int = 20
+    lead_intake_rate_window_seconds: int = 60
     # Opcode запроса URL для загрузки файла (FILE_UPLOAD) перед отправкой
     # FILE-вложения. 87 подтверждён живой загрузкой 05.10.2026 (0097) и
     # совпадает с открытым клиентом PyMax, где FILE_DOWNLOAD = 88 — тот же,
