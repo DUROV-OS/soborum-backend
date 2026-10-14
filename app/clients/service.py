@@ -9,6 +9,7 @@ from app.clients.models import (
     MANUAL_TRANSITION_STAGES,
     Client,
     ClientChatLink,
+    ClientLeadRequest,
     ClientNote,
     ClientStage,
     ContractSource,
@@ -32,6 +33,7 @@ from app.clients.schemas import (
     ClientTaskClose,
     ClientTaskCreate,
     ClientTaskDeadlineUpdate,
+    LeadIntakePayload,
 )
 from app.common.module_access import AccessLevel, Module
 from app.cycle.models import Cycle, CycleStatus
@@ -242,6 +244,56 @@ def create_client(db: Session, payload: ClientCreate) -> Client:
 
     ensure_stage_transition_task(db, client)
     return client
+
+
+def _email_key(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _phone_key(value: str | None) -> str:
+    return _phone_tail("".join(ch for ch in (value or "") if ch.isdigit()))
+
+
+def find_client_by_contact(db: Session, phone: str, email: str) -> Client | None:
+    """Клиент с тем же телефоном (по цифрам, без ведущей 8/7) или почтой (без
+    учёта регистра). Пустой телефон/почта ни с чем не совпадают: так лиды,
+    у которых одного из контактов нет, не склеиваются в одного человека."""
+    phone_key = _phone_key(phone)
+    email_key = _email_key(email)
+    if not phone_key and not email_key:
+        return None
+    for client in db.query(Client).order_by(Client.id).all():
+        if phone_key and _phone_key(client.phone) == phone_key:
+            return client
+        if email_key and _email_key(client.email) == email_key:
+            return client
+    return None
+
+
+def intake_lead(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool]:
+    """Заявка с сайта (0111-a): новый лид или повторное обращение существующего
+    клиента. Возвращает (клиент, создан_ли_новый). Недостающий контакт (нет почты
+    или телефона) хранится пустой строкой — колонки обязательные, тип не меняли."""
+    existing = find_client_by_contact(db, payload.phone, payload.email)
+    if existing is not None:
+        client, created = existing, False
+    else:
+        client = create_client(
+            db, ClientCreate(full_name=payload.name, phone=payload.phone, email=payload.email)
+        )
+        client.lead_source = payload.source
+        created = True
+    db.add(
+        ClientLeadRequest(
+            client_id=client.id,
+            source=payload.source,
+            message=payload.message,
+            utm=payload.utm or None,
+            is_repeat=not created,
+        )
+    )
+    db.flush()
+    return client, created
 
 
 def search_clients(clients: list[Client], search: str | None) -> list[Client]:
