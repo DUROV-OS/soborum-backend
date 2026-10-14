@@ -211,6 +211,12 @@ class Settings(BaseSettings):
     # Кому агент предлагает сообщения в MAX (0112). 0 — сценарий выключен.
     agent_max_chat_id: int = 27580426
     agent_max_recipient: str = "Арсений Щекин"
+    # Общий секрет вебхука заявок с сайта (0111-a): сайт шлёт его в заголовке
+    # X-Intake-Token. Пуст — приём выключен, POST /api/clients/intake отвечает 503.
+    lead_intake_token: str = ""
+    # Лимит приёма заявок на один адрес за окно, секунд (защита от спама).
+    lead_intake_rate_limit: int = 20
+    lead_intake_rate_window_seconds: int = 60
     # Фоновый слушатель аккаунта (app/max/listener.py, 0092): держит постоянную
     # сессию MAX и пушит фронту новые сообщения по WebSocket. false — выключить
     # (например на стейдже, если две постоянные сессии одного аккаунта мешают).
