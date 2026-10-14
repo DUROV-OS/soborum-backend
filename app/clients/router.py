@@ -1,6 +1,10 @@
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
+from urllib.parse import parse_qsl
+
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.clients import intake_auth
 from app.clients import reconcile as client_reconcile
 from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
@@ -12,6 +16,8 @@ from app.clients.schemas import (
     ClientChatLinkUpdate,
     ClientContractVerify,
     ClientCreate,
+    LeadIntakeOut,
+    LeadIntakePayload,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
     ClientManagerUpdate,
@@ -69,6 +75,76 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User 
     db.commit()
     db.refresh(client)
     return client
+
+
+@app.post("/intake", response_model=LeadIntakeOut)
+async def intake_lead(request: Request, db: Session = Depends(get_db)):
+    """Заявка с сайта (0111-a) — единственная ручка раздела без JWT.
+
+    Токен — заголовок `X-Intake-Token` (или `?token=` / поле `token` формы: вебхук
+    Tilda не умеет свои заголовки). Тело — JSON или обычная форма
+    (`application/x-www-form-urlencoded`), имена полей без учёта регистра:
+    `name`, `phone`, `email`, `message`, `source`, остальные `utm_*` попадают в
+    `utm`. 200 `created` — заведён новый лид, 200 `duplicate` — телефон/почта уже
+    есть у клиента, к нему добавлено повторное обращение."""
+    intake_auth.check_token_configured()
+    intake_auth.check_rate_limit(intake_auth.client_address(request))
+    fields = await _intake_fields(request)
+    intake_auth.check_token(
+        request.headers.get("x-intake-token") or request.query_params.get("token") or fields.pop("token", None)
+    )
+    try:
+        payload = LeadIntakePayload.model_validate(_intake_payload(fields))
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()],
+        )
+    client, created = client_service.intake_lead(db, payload)
+    db.commit()
+    return LeadIntakeOut(status="created" if created else "duplicate", client_id=client.id)
+
+
+async def _intake_fields(request: Request) -> dict:
+    """Плоский словарь полей из JSON или формы; ключи — в нижнем регистре."""
+    try:
+        if "json" in request.headers.get("content-type", ""):
+            raw = await request.json()
+            if not isinstance(raw, dict):
+                raise ValueError
+        elif "multipart" in request.headers.get("content-type", ""):
+            raw = dict((await request.form()).items())
+        else:
+            # urlencoded разбираем сами как UTF-8: штатный разбор Starlette читает
+            # непроцентованные байты как latin-1 и ломает кириллицу.
+            raw = dict(parse_qsl((await request.body()).decode("utf-8", errors="replace"), keep_blank_values=True))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не удалось прочитать тело заявки")
+    return {str(k).strip().lower(): v for k, v in raw.items()}
+
+
+def _intake_payload(fields: dict) -> dict:
+    def text(key: str) -> str | None:
+        value = fields.get(key)
+        return value if isinstance(value, str) else None
+
+    utm = {k: v[:255] for k, v in fields.items() if k.startswith("utm_") and isinstance(v, str) and v.strip()}
+    if isinstance(fields.get("utm"), dict):
+        utm.update({str(k): str(v)[:255] for k, v in fields["utm"].items()})
+    data = {key: text(key) for key in ("name", "phone", "email", "message", "source")}
+    data = {k: v for k, v in data.items() if v is not None}
+    return {**data, "utm": utm or None}
+
+
+@app.get("/assignees", response_model=list[ClientManagerOut])
+def list_assignees(db: Session = Depends(get_db), _: User = Depends(require_clients_edit)):
+    """Сотрудники, которым можно поставить задачу по клиенту (0111-c): активные
+    пользователи с доступом к разделу «Клиенты». Полный список пользователей
+    (`GET /api/auth/users`) отдаётся только админу, а ставить задачи на коллег
+    должны и обычные сотрудники с правом редактирования клиентов. Объявлена до
+    `/{client_id}`."""
+    users = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name, User.id).all()
+    return [user for user in users if user.has_access(Module.CLIENTS)]
 
 
 @app.get("/{client_id}", response_model=ClientOut)
