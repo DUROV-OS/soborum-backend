@@ -1,10 +1,10 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.clients.models import Client
+from app.clients.models import Client, ClientChatLink
 from app.clients.service import _phone_tail
-from app.partners.models import Partner, PartnerCategory, PartnerNote
-from app.partners.schemas import PartnerCreate, PartnerUpdate
+from app.partners.models import Partner, PartnerCategory, PartnerChatLink, PartnerNote
+from app.partners.schemas import PartnerChatLinkCreate, PartnerCreate, PartnerUpdate
 
 
 def get_partner_or_404(db: Session, partner_id: int) -> Partner:
@@ -40,6 +40,40 @@ def referred_clients(db: Session, partner: Partner) -> list[Client]:
         .order_by(Client.id.desc())
         .all()
     )
+
+
+def create_chat_link(db: Session, partner: Partner, payload: PartnerChatLinkCreate) -> PartnerChatLink:
+    """Привязать чат MAX к партнёру (0105) — по образцу
+    `client_service.create_chat_link`. Чат не может быть привязан и к
+    партнёру, и к клиенту одновременно, поэтому проверяем обе таблицы."""
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название привязки обязательно")
+
+    taken_client_link = db.query(ClientChatLink).filter(ClientChatLink.max_chat_id == payload.max_chat_id).first()
+    if taken_client_link:
+        taken_client = db.get(Client, taken_client_link.client_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Чат уже привязан к клиенту «{taken_client.full_name}» — сначала открепите его там",
+        )
+
+    taken = db.query(PartnerChatLink).filter(PartnerChatLink.max_chat_id == payload.max_chat_id).first()
+    if taken:
+        if taken.partner_id == partner.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Этот чат уже привязан к этому партнёру"
+            )
+        taken_partner = db.get(Partner, taken.partner_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Чат уже привязан к партнёру «{taken_partner.name}» — сначала открепите его там",
+        )
+
+    link = PartnerChatLink(partner_id=partner.id, max_chat_id=payload.max_chat_id, label=label)
+    db.add(link)
+    db.flush()
+    return link
 
 
 def delete_partner(db: Session, partner: Partner) -> None:

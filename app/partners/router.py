@@ -10,6 +10,8 @@ from app.partners import service as partner_service
 from app.partners.excel import build_partners_xlsx
 from app.partners.models import PartnerCategory, PartnerNote
 from app.partners.schemas import (
+    PartnerChatLinkCreate,
+    PartnerChatLinkOut,
     PartnerCreate,
     PartnerNoteCreate,
     PartnerNoteOut,
@@ -126,6 +128,22 @@ def add_note(
     db.commit()
     db.refresh(note)
     return note
+
+
+@app.post("/{partner_id}/chat-links", response_model=PartnerChatLinkOut, status_code=status.HTTP_201_CREATED)
+def create_chat_link(
+    partner_id: int,
+    payload: PartnerChatLinkCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_partners_edit),
+):
+    """Привязать чат MAX к партнёру (0105) — та же механика, что
+    `POST /api/clients/{id}/chat-links` (0053), но без состояния чата."""
+    partner = partner_service.get_partner_or_404(db, partner_id)
+    link = partner_service.create_chat_link(db, partner, payload)
+    db.commit()
+    db.refresh(link)
+    return link
 
 
 @app.delete("/{partner_id}/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
