@@ -11,6 +11,7 @@ from app.clients.schemas import (
     ClientChatLinkOut,
     ClientChatLinkUpdate,
     ClientContractVerify,
+    ClientManagerOut,
     ClientCreate,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
@@ -69,6 +70,17 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User 
     db.commit()
     db.refresh(client)
     return client
+
+
+@app.get("/assignees", response_model=list[ClientManagerOut])
+def list_assignees(db: Session = Depends(get_db), _: User = Depends(require_clients_edit)):
+    """Сотрудники, которым можно поставить задачу по клиенту (0111-c): активные
+    пользователи с доступом к разделу «Клиенты». Полный список пользователей
+    (`GET /api/auth/users`) отдаётся только админу, а ставить задачи на коллег
+    должны и обычные сотрудники с правом редактирования клиентов. Объявлена до
+    `/{client_id}`."""
+    users = db.query(User).filter(User.is_active.is_(True)).order_by(User.full_name, User.id).all()
+    return [user for user in users if user.has_access(Module.CLIENTS)]
 
 
 @app.get("/{client_id}", response_model=ClientOut)
