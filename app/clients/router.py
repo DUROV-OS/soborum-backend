@@ -16,6 +16,7 @@ from app.clients.schemas import (
     ClientChatLinkUpdate,
     ClientContractVerify,
     ClientCreate,
+    ClientManagerOut,
     LeadIntakeOut,
     LeadIntakePayload,
     ClientDocumentsUpdate,

@@ -1,7 +1,7 @@
 """client_lead_requests и clients.lead_source: приём заявок с сайта (0111-a)
 
 Revision ID: c7d2a8f4e19b
-Revises: b6c3e9a41f08
+Revises: a0112e5c7b31
 Create Date: 2026-10-14 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'c7d2a8f4e19b'
-down_revision: Union[str, None] = 'b6c3e9a41f08'
+down_revision: Union[str, None] = 'a0112e5c7b31'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
