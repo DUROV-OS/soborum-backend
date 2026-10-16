@@ -8,6 +8,7 @@
   no_supplies       №6   нет поставок на склад N дней
   client_completed  №13  клиент дошёл до «Завершён»
   idle_wide_access  №18  неактивный сотрудник с широким доступом
+  max_digest        —    сводка для Арсения Щекина в MAX (только предложение, отправка после согласования)
   cycle_stuck       №9*  цикл клиента завис 14+ дней (упрощённо, без привязки к цели совета)
 """
 
@@ -22,8 +23,9 @@ from sqlalchemy.orm import Session
 from app.agents.autonomy.workspace import aware, utcnow
 from app.clients.models import Client, ClientStage
 from app.common.module_access import AccessLevel, Module
+from app.core.config import settings
 from app.cycle.models import Cycle, CycleStatus
-from app.tasks.models import Task, TaskStageEvent, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskStageEvent, TaskStatus
 from app.users.models import User, UserRole
 from app.warehouse.models import Supply, WarehouseMaterial
 
@@ -42,6 +44,7 @@ SCENARIO_SECTION = {
     "client_completed": "clients",
     "idle_wide_access": "users",
     "cycle_stuck": "cycle",
+    "max_digest": "tasks",
 }
 
 
@@ -63,6 +66,8 @@ class Finding:
     external: bool = False
     # Данные противоречивы — вместо действия карточка с вопросом.
     uncertain: bool = False
+    # Для внешнего сообщения в MAX: {"chat_id", "recipient", "text"}. Только предложение.
+    max_message: dict | None = None
 
 
 def _admin_ids(db: Session) -> list[int]:
@@ -221,8 +226,42 @@ def cycle_stuck(db: Session) -> list[Finding]:
     return out
 
 
+def max_digest(db: Session) -> list[Finding]:
+    """Раз в сутки предлагает короткую сводку для получателя в MAX. Не отправляет:
+    это карточка «на согласование», уйдёт только после решения администратора."""
+    if not settings.agent_max_chat_id:
+        return []
+    now = utcnow()
+    stalled = db.query(Task).filter(
+        Task.status == TaskStatus.READY, Task.created_at < now - STALLED_AFTER,
+        Task.link_type != TaskLinkType.AGENT_PROPOSAL,
+    ).count()
+    proposals = sum(
+        1 for t in db.query(Task).filter(
+            Task.link_type == TaskLinkType.AGENT_PROPOSAL, Task.status == TaskStatus.IN_REVIEW
+        )
+        if (t.link_meta or {}).get("scenario") != "max_send"  # сами сообщения в сводку не считаем
+    )
+    if not stalled and not proposals:
+        return []
+    lines = []
+    if stalled:
+        lines.append(f"• задач не взято в работу дольше {STALLED_AFTER.days} дн.: {stalled}")
+    if proposals:
+        lines.append(f"• предложений агента ждут решения: {proposals}")
+    recipient = settings.agent_max_recipient
+    text = f"{recipient}, сводка Durov OS на {now.strftime('%d.%m.%Y')}:\n" + "\n".join(lines)
+    return [Finding(
+        scenario="max_digest", key=f"max_digest:{now.strftime('%Y-%m-%d')}", section="tasks", level="B",
+        title=f"Сводка в MAX: {recipient}",
+        text=f"Предлагаю отправить сводку в MAX. {text}",
+        recipients=_admin_ids(db), href="/tasks", module=Module.TASKS, external=True,
+        max_message={"chat_id": settings.agent_max_chat_id, "recipient": recipient, "text": text},
+    )]
+
+
 DETECTORS = {
-    "tasks": [task_stalled],
+    "tasks": [task_stalled, max_digest],
     "warehouse": [no_supplies],
     "clients": [client_completed],
     "users": [idle_wide_access],

@@ -53,6 +53,15 @@ def publish_level_b(db: Session, finding: Finding, *, reason: str = "") -> dict:
     existing = find_open_proposal(db, finding.key)
     if existing is not None:
         return {"result": "карточка уже ждёт решения", "task_id": existing.id}
+    if finding.max_message:
+        from app.agents.autonomy import outbox  # отложенный импорт: outbox берёт AI_MARK отсюда
+
+        mm = finding.max_message
+        task = outbox.propose_message(
+            db, chat_id=mm["chat_id"], text=mm["text"], recipient=mm["recipient"],
+            recipient_ids=list(finding.recipients), reason=reason, key=finding.key,
+        )
+        return {"result": "сообщение в MAX ждёт согласования", "task_id": task.id}
     body = f"{AI_MARK}. Это не сообщение сотрудника: можно принять, отредактировать или отклонить.\n\n{finding.text}"
     if reason:
         body += f"\n\nПочему на согласование: {reason}."

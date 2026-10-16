@@ -29,7 +29,7 @@ def _is_max_card(task: Task) -> bool:
 
 
 def propose_message(
-    db: Session, *, chat_id: int, text: str, recipient: str, recipient_ids: list[int], reason: str = ""
+    db: Session, *, chat_id: int, text: str, recipient: str, recipient_ids: list[int], reason: str = "", key: str | None = None
 ) -> Task:
     """Создаёт карточку «На согласование · Сообщение в MAX». Ничего не отправляет."""
     text = (text or "").strip()
@@ -52,7 +52,7 @@ def propose_message(
         link_type=TaskLinkType.AGENT_PROPOSAL,
         link_meta={
             "scenario": SCENARIO,
-            "key": f"{SCENARIO}:{chat_id}:{hashlib.sha1(text.encode()).hexdigest()[:10]}",
+            "key": key or f"{SCENARIO}:{chat_id}:{hashlib.sha1(text.encode()).hexdigest()[:10]}",
             "section": "agents",
             "max": {"chat_id": chat_id, "text": text, "recipient": recipient},
         },
