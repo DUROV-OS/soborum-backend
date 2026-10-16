@@ -247,3 +247,32 @@ def test_resolve_watch_by_admin_resets_counter(db, make_user, api):
     assert resp.status_code == 200 and resp.json()["status"] == "resolved"
     assert db.get(AgentActionCounter, "task_stalled").repeats == 0
     assert api(admin).post("/api/agents/autonomy/watchlist/9999/resolve").status_code == 404
+
+
+def test_pulse_attention_queue_shows_agent_proposals(db, make_user):
+    from app.dashboard.overview import generate_today
+
+    worker = make_user(Module.TASKS)
+    admin = make_user(admin=True)
+    for i in range(playbook.OVERLOAD_OPEN_TASKS + 1):
+        task_service.create_task(db, title=f"Занят {i}", assignee_ids=[worker.id])
+    db.commit()
+    _stalled_task(db, worker, title="Старая")
+    assert not [a for a in generate_today(db, admin).actions if a.id == "agent:proposals"]
+    runner.run_once(db)
+    row = [a for a in generate_today(db, admin).actions if a.id == "agent:proposals"]
+    assert row and row[0].count >= 1 and row[0].title.startswith("Инициатива ИИ")
+    # исполнитель карточки не назначен -> строки у него нет
+    assert not [a for a in generate_today(db, worker).actions if a.id == "agent:proposals"]
+
+
+def test_section_signal_carries_agent_note(db, make_user):
+    from app.dashboard.overview import generate_section_signal
+
+    worker = make_user(Module.TASKS)
+    admin = make_user(admin=True)
+    _stalled_task(db, worker)
+    assert generate_section_signal(db, admin, "tasks").agent_note is None
+    runner.run_once(db)
+    note = generate_section_signal(db, admin, "tasks").agent_note
+    assert note and note.startswith("Инициатива ИИ за сутки") and "Собрать каркас" in note
