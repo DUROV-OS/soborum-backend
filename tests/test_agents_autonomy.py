@@ -294,3 +294,34 @@ def test_worsening_from_a_to_b_creates_card(db, make_user):
     assert len(_proposals(db)) == 1
     runner.run_once(db)
     assert len(_proposals(db)) == 1
+
+
+def test_actions_land_in_marina_activity_feed(db, make_user):
+    from app.ai.models import AgentActivity
+
+    worker = make_user(Module.TASKS)
+    admin = make_user(admin=True)
+    _stalled_task(db, assignee=worker, title="Собрать каркас", days=5)
+    db.commit()
+
+    runner.run_once(db)
+
+    rows = db.query(AgentActivity).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.autonomous is True
+    assert row.title.startswith("Инициатива ИИ")
+    assert row.related_section == "tasks"
+
+    runner.run_once(db)
+    rows = db.query(AgentActivity).all()
+    assert len(rows) == 1
+
+    for i in range(playbook.OVERLOAD_OPEN_TASKS + 1):
+        task_service.create_task(db, title=f"Занят {i}", assignee_ids=[worker.id])
+    db.commit()
+
+    runner.run_once(db)
+
+    rows = db.query(AgentActivity).order_by(AgentActivity.id).all()
+    assert [r.autonomous for r in rows] == [True, False]

@@ -233,9 +233,32 @@ def handle_finding(db: Session, finding: Finding) -> dict | None:
         return entry
     watch.last_acted_at = now
     watch.last_level = level
+    log_activity(db, finding, level, entry)
     if reason:
         entry["reason"] = reason
     return entry
+
+
+def log_activity(db: Session, finding: Finding, level: str, entry: dict) -> None:
+    """Лента «Действия агента» в «Марине» (ai_agent_activities): то же действие, что в журнале."""
+    from app.ai.models import AgentActivity
+
+    title = f"Инициатива ИИ: {finding.title}"[:255]
+    detail = f"{finding.text} Результат: {entry.get('result', '—')}."
+    autonomous = (level == LEVEL_A)
+    related_section = finding.section
+    related_path = finding.href
+    related_label = "Задача на согласование" if level == LEVEL_B else "Открыть раздел"
+    related_label = related_label[:120]
+
+    db.add(AgentActivity(
+        title=title,
+        detail=detail,
+        autonomous=autonomous,
+        related_section=related_section,
+        related_path=related_path,
+        related_label=related_label,
+    ))
 
 
 def build_summary(order: list[str], deviations: list[dict], actions: list[dict], closed: int, reacted: list[str]) -> str:
