@@ -10,6 +10,7 @@ from app.accounting.seed import (
     ensure_counterparties_seed,
     ensure_organizations_seed,
 )
+from app.agents.autonomy.runner import start_autonomy_loop
 from app.agents.loop import start_shift_loop
 from app.ai.demo_seed import ensure_agent_activity_seed, ensure_growth_proposals_seed
 from app.agents.router import app as agents_app
@@ -109,6 +110,7 @@ def on_startup() -> None:
     finally:
         db.close()
     start_shift_loop()
+    start_autonomy_loop()
     start_stage_task_reconcile_loop()
     start_telegram_polling_loop()
     start_task_deadline_loop()

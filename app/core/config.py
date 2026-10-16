@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     agent_shift_autorun: bool = True
     agent_shift_interval_seconds: int = 3600
 
+    # Автономный агент (0112): прогоны в рабочем окне, см. app/agents/autonomy.
+    agent_autonomy_autorun: bool = True
+
     # Сверка задач смены стадии клиента с реальностью: на старте и раз в час.
     stage_task_reconcile_autorun: bool = True
     stage_task_reconcile_interval_seconds: int = 3600
