@@ -38,6 +38,14 @@ def _agent_notes(db, user):
     ).all()
 
 
+@pytest.fixture(autouse=True)
+def _no_max_digest(monkeypatch):
+    """Сводка в MAX (max_digest) проверяется в test_agents_autonomy_outbox.py; здесь мешает счёту карточек."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "agent_max_chat_id", 0)
+
+
 def test_first_run_creates_priorities_and_journal(db, make_user):
     make_user(admin=True)
     run = runner.run_once(db, trigger="manual")
