@@ -1,8 +1,11 @@
+from pydantic import BaseModel
 from fastapi import Depends, FastAPI, Query
 from sqlalchemy.orm import Session
 
 from app.agents import service as agents_service
+from app.agents.autonomy import outbox
 from app.agents.autonomy import service as autonomy_service
+from app.max import service as max_service
 from app.agents.autonomy.schemas import AutonomyStateOut, AutoRunOut, WatchOut
 from app.agents.schemas import (
     AgentRunOut,
@@ -109,3 +112,45 @@ def close_autonomy_proposals(
     admin: User = Depends(require_admin),
 ):
     return {"closed": autonomy_service.close_proposals(db, admin)}
+
+
+class ProposeMaxIn(BaseModel):
+    chat_id: int
+    text: str
+    recipient: str
+    reason: str = ""
+
+
+@app.post("/autonomy/max/propose")
+def propose_max_message(
+    body: ProposeMaxIn,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Агент предлагает сообщение в MAX. Отправки здесь нет — только карточка на согласование."""
+    task = outbox.propose_message(
+        db, chat_id=body.chat_id, text=body.text, recipient=body.recipient,
+        recipient_ids=[admin.id], reason=body.reason,
+    )
+    db.commit()
+    return {"task_id": task.id, "status": task.status.value}
+
+
+@app.post("/autonomy/max/{task_id}/approve")
+def approve_max_message(
+    task_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Согласовать и отправить. Только администратор, только из статуса «на согласование»."""
+    return outbox.approve_and_send(db, task_id, admin, max_service.send_message)
+
+
+@app.post("/autonomy/max/{task_id}/reject")
+def reject_max_message(
+    task_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    outbox.reject(db, task_id, admin)
+    return {"ok": True}
