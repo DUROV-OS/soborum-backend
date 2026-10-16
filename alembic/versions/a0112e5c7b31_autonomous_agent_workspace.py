@@ -55,6 +55,7 @@ def upgrade() -> None:
         sa.Column('escalate_after', sa.DateTime(timezone=True), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('last_seen_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column('last_acted_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('resolved_by_id', sa.Integer(), sa.ForeignKey('users.id', ondelete='SET NULL'), nullable=True),
     )
     op.create_index('ix_agent_watchlist_key', 'agent_watchlist', ['key'], unique=True)

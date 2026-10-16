@@ -67,6 +67,9 @@ class AgentWatch(Base):
     escalate_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Когда агент в последний раз что-то сделал по этому наблюдению (напомнил,
+    # завёл карточку) — чтобы не повторять действие на каждом прогоне.
+    last_acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

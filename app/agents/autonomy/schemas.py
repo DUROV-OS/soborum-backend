@@ -41,6 +41,7 @@ class WatchOut(BaseModel):
     escalate_after: datetime | None
     created_at: datetime
     last_seen_at: datetime
+    last_acted_at: datetime | None
 
 
 class CounterOut(BaseModel):
