@@ -209,6 +209,8 @@ def handle_finding(db: Session, finding: Finding) -> dict | None:
             watch.last_acted_at is None or now - ws.aware(watch.last_acted_at) >= REMIND_EVERY
         ):
             pass  # повторное напоминание — пойдёт через счётчик
+        elif finding.level == LEVEL_B and watch.last_level != LEVEL_B and watch.status == WATCH_OPEN:
+            pass  # стало хуже (например исполнитель перегружен) — нужна карточка
         else:
             return None
     level, reason = resolve_level(db, finding)
@@ -230,6 +232,7 @@ def handle_finding(db: Session, finding: Finding) -> dict | None:
         entry.update({"result": f"заблокировано ограничителем: {error}"})
         return entry
     watch.last_acted_at = now
+    watch.last_level = level
     if reason:
         entry["reason"] = reason
     return entry

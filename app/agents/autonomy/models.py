@@ -70,6 +70,8 @@ class AgentWatch(Base):
     # Когда агент в последний раз что-то сделал по этому наблюдению (напомнил,
     # завёл карточку) — чтобы не повторять действие на каждом прогоне.
     last_acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Уровень последнего действия: нужен, чтобы новость «стало хуже» (А→Б) не терялась.
+    last_level: Mapped[str | None] = mapped_column(String(1), nullable=True)
     resolved_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

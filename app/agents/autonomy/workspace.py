@@ -95,6 +95,7 @@ def touch_watch(
         watch.seen_count = 1
         watch.created_at = now
         watch.last_acted_at = None
+        watch.last_level = None
         watch.escalate_after = now + escalate_in if escalate_in else None
     else:
         watch.seen_count += 1

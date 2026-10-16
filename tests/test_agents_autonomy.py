@@ -278,3 +278,19 @@ def test_section_signal_carries_agent_note(db, make_user):
     runner.run_once(db)
     note = generate_section_signal(db, admin, "tasks").agent_note
     assert note and note.startswith("Инициатива ИИ за сутки") and "Собрать каркас" in note
+
+
+def test_worsening_from_a_to_b_creates_card(db, make_user):
+    worker = make_user(Module.TASKS)
+    make_user(admin=True)
+    _stalled_task(db, worker)
+    runner.run_once(db)
+    assert not _proposals(db)
+    for i in range(playbook.OVERLOAD_OPEN_TASKS + 1):
+        task_service.create_task(db, title=f"Занят {i}", assignee_ids=[worker.id])
+    db.commit()
+    run = runner.run_once(db)
+    assert [a["level"] for a in run.actions if a["scenario"] == "task_stalled"] == ["B"]
+    assert len(_proposals(db)) == 1
+    runner.run_once(db)
+    assert len(_proposals(db)) == 1
