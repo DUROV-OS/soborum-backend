@@ -325,3 +325,29 @@ def test_actions_land_in_marina_activity_feed(db, make_user):
 
     rows = db.query(AgentActivity).order_by(AgentActivity.id).all()
     assert [r.autonomous for r in rows] == [True, False]
+
+
+def test_repeat_counter_counts_once_per_run_not_per_finding(db, make_user):
+    make_user(admin=True)
+    for i in range(playbook.MAX_PER_SCENARIO):
+        _stalled_task(db, make_user(Module.TASKS), title=f"Зависла {i}")
+    run = runner.run_once(db)
+    levels = [a["level"] for a in run.actions if a["scenario"] == "task_stalled"]
+    assert levels == ["A"] * playbook.MAX_PER_SCENARIO
+    assert db.get(AgentActionCounter, "task_stalled").repeats == 1
+
+
+def test_new_cards_per_scenario_are_capped_and_resume_next_run(db, make_user):
+    worker = make_user(Module.TASKS)
+    make_user(admin=True)
+    for i in range(playbook.OVERLOAD_OPEN_TASKS + 1):
+        task_service.create_task(db, title=f"Занят {i}", assignee_ids=[worker.id])
+    for i in range(8):
+        _stalled_task(db, worker, title=f"Старая {i}")
+    run = runner.run_once(db)
+    stalled = [c for c in _proposals(db) if (c.link_meta or {}).get("scenario") == "task_stalled"]
+    assert len(stalled) == runner.MAX_NEW_CARDS_PER_SCENARIO
+    assert "Отложено" in run.summary
+    runner.run_once(db)
+    stalled = [c for c in _proposals(db) if (c.link_meta or {}).get("scenario") == "task_stalled"]
+    assert len(stalled) == min(runner.MAX_NEW_CARDS_PER_SCENARIO * 2, 8)

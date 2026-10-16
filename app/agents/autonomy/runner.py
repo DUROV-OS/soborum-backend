@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -43,6 +45,8 @@ MAX_GAP = timedelta(hours=4)
 POLL_SECONDS = 900
 # Повторное напоминание по одному и тому же наблюдению — не чаще раза в сутки.
 REMIND_EVERY = timedelta(hours=24)
+# Не больше стольких новых карточек «на согласование» на сценарий за прогон.
+MAX_NEW_CARDS_PER_SCENARIO = 5
 
 _started = False
 
@@ -146,6 +150,7 @@ def run_once(db: Session, trigger: str = "schedule") -> AgentAutoRun:
     with_signal: set[str] = set()
     errors: list[str] = []
     scanned: list[str] = []
+    ctx = RunContext()
 
     for section in order:
         values, error = scan_signals(db, section)
@@ -178,7 +183,7 @@ def run_once(db: Session, trigger: str = "schedule") -> AgentAutoRun:
                 seen_keys.add(finding.key)
                 deviations.append({"section": section, "scenario": finding.scenario, "key": finding.key,
                                    "text": finding.text})
-                action = handle_finding(db, finding)
+                action = handle_finding(db, finding, ctx)
                 if action:
                     actions.append(action)
 
@@ -189,13 +194,27 @@ def run_once(db: Session, trigger: str = "schedule") -> AgentAutoRun:
     run.sections, run.deviations, run.actions, run.signals = scanned, deviations, actions, signals
     run.error = "; ".join(errors) or None
     run.summary = build_summary(order, deviations, actions, closed, reacted)
+    if ctx.deferred:
+        run.summary += f" Отложено до следующего прогона (лимит карточек): {sum(ctx.deferred.values())}."
     run.finished_at = ws.utcnow()
     db.commit()
     return run
 
 
-def handle_finding(db: Session, finding: Finding) -> dict | None:
+@dataclass
+class RunContext:
+    """Состояние одного прогона. Счётчик повторов считается раз за прогон, а не за находку:
+    иначе десять находок одного сценария исчерпывают лимит в первом же прогоне."""
+
+    frozen_ask_human: dict[str, bool] = field(default_factory=dict)
+    counted: set[str] = field(default_factory=set)
+    new_cards: Counter = field(default_factory=Counter)
+    deferred: Counter = field(default_factory=Counter)
+
+
+def handle_finding(db: Session, finding: Finding, ctx: RunContext | None = None) -> dict | None:
     """Наблюдение + решение, нужно ли действовать сейчас. None — действовать не нужно."""
+    ctx = ctx or RunContext()
     watch, is_new = ws.touch_watch(
         db, key=finding.key, section=finding.section, scenario=finding.scenario,
         text=finding.text, escalate_in=finding.escalate_in,
@@ -213,16 +232,25 @@ def handle_finding(db: Session, finding: Finding) -> dict | None:
             pass  # стало хуже (например исполнитель перегружен) — нужна карточка
         else:
             return None
-    level, reason = resolve_level(db, finding)
+    if finding.scenario not in ctx.frozen_ask_human:
+        ctx.frozen_ask_human[finding.scenario] = ws.must_ask_human(db, finding.scenario)
+    level, reason = resolve_level(db, finding, ask_human=ctx.frozen_ask_human[finding.scenario])
     if escalate:
         level, reason = LEVEL_B, "не сдвинулось к сроку наблюдения — эскалация"
     entry = {"scenario": finding.scenario, "key": finding.key, "level": level, "text": finding.title}
     try:
         if level == LEVEL_A:
             entry.update(publish_level_a(db, finding))
-            ws.register_action(db, finding.scenario)
+            if finding.scenario not in ctx.counted:
+                ctx.counted.add(finding.scenario)
+                ws.register_action(db, finding.scenario)
         else:
             if find_open_proposal(db, finding.key) is None or escalate:
+                if ctx.new_cards[finding.scenario] >= MAX_NEW_CARDS_PER_SCENARIO:
+                    # Не заваливаем человека: остальное подхватит следующий прогон (наблюдение остаётся открытым).
+                    ctx.deferred[finding.scenario] += 1
+                    return None
+                ctx.new_cards[finding.scenario] += 1
                 entry.update(publish_level_b(db, finding, reason=reason))
             else:
                 return None

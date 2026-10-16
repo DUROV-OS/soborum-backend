@@ -30,7 +30,7 @@ def assert_allowed(kind: str, module: Module | None = None) -> None:
         raise GuardrailViolation(f"Агенту запрещено писать в раздел «{module.value}»")
 
 
-def resolve_level(db: Session, finding: Finding) -> tuple[str, str]:
+def resolve_level(db: Session, finding: Finding, ask_human: bool | None = None) -> tuple[str, str]:
     """Итоговый уровень и причина понижения (пустая строка, если уровень не менялся)."""
     if finding.uncertain:
         return LEVEL_B, "данные противоречивы — карточка с вопросом"
@@ -38,6 +38,6 @@ def resolve_level(db: Session, finding: Finding) -> tuple[str, str]:
         return LEVEL_B, "требует внешней отправки — только после подтверждения"
     if finding.level != LEVEL_A:
         return LEVEL_B, ""
-    if must_ask_human(db, finding.scenario):
+    if must_ask_human(db, finding.scenario) if ask_human is None else ask_human:
         return LEVEL_B, "повторялось без реакции человека — перевожу на подтверждение"
     return LEVEL_A, ""
