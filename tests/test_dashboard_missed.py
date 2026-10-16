@@ -106,3 +106,15 @@ def test_ai_cannot_return_foreign_or_unknown_ids(db, make_user, monkeypatch):
     picked = mod.ai_pick(pool)
 
     assert [(n.id, reason) for n, reason in picked] == [(mine.id, "реальное")]
+
+
+def test_cache_lives_six_hours(db, make_user):
+    from app.ai.models import AiCacheEntry
+
+    user = make_user(Module.TASKS)
+    ai_cache.set(db, mod.cache_key(user.id), {"ids": []}, datetime.now(timezone.utc) - timedelta(hours=5))
+    assert ai_cache.get(db, mod.cache_key(user.id), ttl=mod.CACHE_TTL) is not None
+    entry = db.get(AiCacheEntry, mod.cache_key(user.id))
+    entry.generated_at = datetime.now(timezone.utc) - timedelta(hours=7)
+    db.commit()
+    assert ai_cache.get(db, mod.cache_key(user.id), ttl=mod.CACHE_TTL) is None
