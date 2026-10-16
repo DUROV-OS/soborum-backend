@@ -145,10 +145,11 @@ def run_once(db: Session, trigger: str = "schedule") -> AgentAutoRun:
     scanned_scenarios: set[str] = set()
     with_signal: set[str] = set()
     errors: list[str] = []
+    scanned: list[str] = []
 
     for section in order:
         values, error = scan_signals(db, section)
-        run.sections.append(section)
+        scanned.append(section)
         signals[section] = values
         if error:
             errors.append(f"{section}: {error}")
@@ -184,7 +185,8 @@ def run_once(db: Session, trigger: str = "schedule") -> AgentAutoRun:
     closed = ws.resolve_cleared(db, seen_keys, scanned_scenarios)
     ws.update_priorities(db, with_signal, order)
 
-    run.deviations, run.actions, run.signals = deviations, actions, signals
+    # JSON-колонки отслеживают только присваивание, а не append — отдаём списки целиком.
+    run.sections, run.deviations, run.actions, run.signals = scanned, deviations, actions, signals
     run.error = "; ".join(errors) or None
     run.summary = build_summary(order, deviations, actions, closed, reacted)
     run.finished_at = ws.utcnow()

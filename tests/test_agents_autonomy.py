@@ -43,7 +43,9 @@ def test_first_run_creates_priorities_and_journal(db, make_user):
     run = runner.run_once(db, trigger="manual")
     assert set(ws.SECTIONS) == {p.section for p in db.query(AgentPriority)}
     assert run.finished_at is not None and run.trigger == "manual"
-    assert run.sections == ws.ordered_sections(db) or set(run.sections) == set(ws.SECTIONS)
+    db.expire_all()
+    saved = db.get(AgentAutoRun, run.id)
+    assert saved.sections == ws.ordered_sections(db) and set(saved.sections) == set(ws.SECTIONS)
     assert db.query(AgentAutoRun).count() == 1
 
 
