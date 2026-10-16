@@ -2,6 +2,8 @@ from fastapi import Depends, FastAPI, Query
 from sqlalchemy.orm import Session
 
 from app.agents import service as agents_service
+from app.agents.autonomy import service as autonomy_service
+from app.agents.autonomy.schemas import AutonomyStateOut, AutoRunOut, WatchOut
 from app.agents.schemas import (
     AgentRunOut,
     AgentsStatsOut,
@@ -74,3 +76,28 @@ def decide_approval(
     user: User = Depends(require_admin),
 ):
     return agents_service.decide_approval(db, user, approval_id, body.status, body.subject_hash)
+
+
+@app.get("/autonomy/state", response_model=AutonomyStateOut)
+def get_autonomy_state(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    return autonomy_service.state(db)
+
+
+@app.post("/autonomy/run", response_model=AutoRunOut)
+def run_autonomy(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
+    return autonomy_service.run_manual(db)
+
+
+@app.post("/autonomy/watchlist/{watch_id}/resolve", response_model=WatchOut)
+def resolve_watch(
+    watch_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return autonomy_service.resolve_watch(db, watch_id, admin)

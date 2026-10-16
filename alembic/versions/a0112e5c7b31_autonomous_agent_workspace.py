@@ -20,6 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     with op.get_context().autocommit_block():
         op.execute("ALTER TYPE task_link_type ADD VALUE IF NOT EXISTS 'AGENT_PROPOSAL'")
+        op.execute("ALTER TYPE notification_kind ADD VALUE IF NOT EXISTS 'AGENT_INITIATIVE'")
 
     op.create_table(
         'agent_auto_runs',
