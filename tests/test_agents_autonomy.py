@@ -351,3 +351,36 @@ def test_new_cards_per_scenario_are_capped_and_resume_next_run(db, make_user):
     runner.run_once(db)
     stalled = [c for c in _proposals(db) if (c.link_meta or {}).get("scenario") == "task_stalled"]
     assert len(stalled) == min(runner.MAX_NEW_CARDS_PER_SCENARIO * 2, 8)
+
+
+def test_close_proposals_endpoint_closes_without_deleting(db, make_user, api):
+    worker = make_user(Module.TASKS)
+    admin = make_user(admin=True)
+    for i in range(playbook.OVERLOAD_OPEN_TASKS + 1):
+        task_service.create_task(db, title=f"Занят {i}", assignee_ids=[worker.id])
+    db.commit()
+    
+    _stalled_task(db, worker, title="Старая")
+    runner.run_once(db)
+    
+    proposals = _proposals(db)
+    assert len(proposals) >= 1
+    assert all(p.status == TaskStatus.IN_REVIEW for p in proposals)
+    
+    resp_non_admin = api(worker).post("/api/agents/autonomy/proposals/close")
+    assert resp_non_admin.status_code in (401, 403)
+    
+    resp = api(admin).post("/api/agents/autonomy/proposals/close")
+    assert resp.status_code == 200
+    assert resp.json()["closed"] == len(proposals)
+    
+    db.expire_all()
+    proposals_after = _proposals(db)
+    assert len(proposals_after) == len(proposals)
+    assert all(p.status == TaskStatus.DONE for p in proposals_after)
+    
+    resp_repeat = api(admin).post("/api/agents/autonomy/proposals/close")
+    assert resp_repeat.status_code == 200
+    assert resp_repeat.json()["closed"] == 0
+    
+    assert ws.get_counter(db, "task_stalled").repeats == 0

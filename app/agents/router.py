@@ -101,3 +101,11 @@ def resolve_watch(
     admin: User = Depends(require_admin),
 ):
     return autonomy_service.resolve_watch(db, watch_id, admin)
+
+
+@app.post("/autonomy/proposals/close")
+def close_autonomy_proposals(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return {"closed": autonomy_service.close_proposals(db, admin)}

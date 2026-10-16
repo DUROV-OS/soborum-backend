@@ -10,6 +10,7 @@ from app.agents.autonomy import runner
 from app.agents.autonomy import workspace as ws
 from app.agents.autonomy.models import AgentActionCounter, AgentAutoRun, AgentWatch
 from app.agents.autonomy.schemas import AutonomyStateOut, AutoRunOut, WatchOut
+from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users.models import User
 
@@ -39,6 +40,26 @@ def state(db: Session) -> AutonomyStateOut:
 
 def run_manual(db: Session) -> AutoRunOut:
     return AutoRunOut.model_validate(runner.run_once(db, trigger="manual"))
+
+
+def close_proposals(db: Session, admin: User) -> int:
+    """Закрывает (не удаляет) все открытые карточки «на согласование» агента: статус
+    DONE с пометкой в журнале переходов. Это решение человека — сбрасывает счётчики
+    повторов сценариев, по которым карточки были."""
+    cards = db.query(Task).filter(
+        Task.link_type == TaskLinkType.AGENT_PROPOSAL, Task.status == TaskStatus.IN_REVIEW
+    ).all()
+    scenarios: set[str] = set()
+    for task in cards:
+        # Штатное закрытие с записью в отчёт задачи — каскады и журнал как у обычного закрытия.
+        task_service.close_with_resolution(
+            db, task, admin, comment="Закрыто администратором: предложение автономного агента снято."
+        )
+        scenarios.add((task.link_meta or {}).get("scenario", ""))
+    for scenario in scenarios - {""}:
+        ws.register_reaction(db, scenario)
+    db.commit()
+    return len(cards)
 
 
 def resolve_watch(db: Session, watch_id: int, admin: User) -> WatchOut:
