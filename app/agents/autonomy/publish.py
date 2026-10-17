@@ -39,6 +39,12 @@ def publish_level_a(db: Session, finding: Finding) -> dict:
     return {"result": result, "notified": sent}
 
 
+def count_open_proposals(db: Session) -> int:
+    return db.query(Task).filter(
+        Task.link_type == TaskLinkType.AGENT_PROPOSAL, Task.status == TaskStatus.IN_REVIEW
+    ).count()
+
+
 def find_open_proposal(db: Session, key: str) -> Task | None:
     for task in db.query(Task).filter(
         Task.link_type == TaskLinkType.AGENT_PROPOSAL, Task.status == TaskStatus.IN_REVIEW
