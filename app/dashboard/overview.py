@@ -182,8 +182,8 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
     if proposals:
         actions.insert(0, DashboardAction(
             id="agent:proposals", section="tasks", title="Инициатива ИИ: решения ждут вас",
-            description="Автономный агент подготовил готовые решения — карточки «на согласование» в «Задачах».",
-            href="/tasks", count=proposals, tone="warning",
+            description="Автономный агент подготовил готовые решения — карточки «на согласование» в разделе «Предложения ИИ».",
+            href="/ai-proposals", count=proposals, tone="warning",
         ))
     summary = (
         f"Направлений, требующих внимания: {len(actions)}. Начните с очереди ниже."
