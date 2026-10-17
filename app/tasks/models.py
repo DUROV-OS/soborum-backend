@@ -80,6 +80,9 @@ class TaskLinkType(str, enum.Enum):
     # спецификация блока заведомо неполная — оценка готовности даёт «Нужна
     # сверка». link_id — id блока производства.
     BLOCK_MATERIAL_MATCH = "block_material_match"
+    # Черновик автономного агента уровня Б (0112): ждёт решения человека
+    # («на согласование» = status IN_REVIEW). link_meta = {scenario, key}.
+    AGENT_PROPOSAL = "agent_proposal"
 
 
 task_assignees = Table(

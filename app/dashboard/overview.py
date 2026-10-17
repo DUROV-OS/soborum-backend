@@ -10,6 +10,7 @@ from app.common.module_access import Module
 from app.core.config import settings
 from app.dashboard.schemas import DashboardAction, DashboardWidget, SectionSignalOut, TodayDashboardOut
 from app.dashboard.service import SECTION_BUILDERS, _snapshot_users, build_snapshot
+from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users.models import User, UserRole
 
 # section, title, metric key, attention metric (a positive count needs attention)
@@ -122,6 +123,16 @@ def _production_clear_text(production: dict) -> str | None:
     return None
 
 
+def agent_proposals_count(db: Session, user: User) -> int:
+    """Карточки автономного агента (0112) «на согласование», которые ждут этого человека."""
+    query = db.query(Task).filter(
+        Task.link_type == TaskLinkType.AGENT_PROPOSAL, Task.status == TaskStatus.IN_REVIEW
+    )
+    if user.role != UserRole.ADMIN:
+        query = query.filter(Task.assignees.any(User.id == user.id))
+    return query.count()
+
+
 def generate_today(db: Session, user: User) -> TodayDashboardOut:
     snapshot = build_snapshot(db, user)
     widgets = []
@@ -167,6 +178,13 @@ def generate_today(db: Session, user: User) -> TodayDashboardOut:
                 description="Проверьте предложенные изменения перед выполнением.",
                 href=f"/ai/{pending[0].chat_id}", count=len(pending), tone="warning",
             ))
+    proposals = agent_proposals_count(db, user)
+    if proposals:
+        actions.insert(0, DashboardAction(
+            id="agent:proposals", section="tasks", title="Инициатива ИИ: решения ждут вас",
+            description="Автономный агент подготовил готовые решения — карточки «на согласование» в разделе «Предложения ИИ».",
+            href="/ai-proposals", count=proposals, tone="warning",
+        ))
     summary = (
         f"Направлений, требующих внимания: {len(actions)}. Начните с очереди ниже."
         if actions else "По доступным данным отклонений для очереди внимания нет."
@@ -194,7 +212,7 @@ def _section_builder(user: User, section: str) -> Callable[[Session], dict] | No
     return builder if user.has_access(module) else None
 
 
-def generate_section_signal(db: Session, user: User, section: str, force: bool = False) -> SectionSignalOut:
+def _generate_section_signal(db: Session, user: User, section: str, force: bool = False) -> SectionSignalOut:
     """Один раздел «Работы» отдельным запросом — то же действие, что попало бы
     в `TodayDashboardOut.actions`, но не держит остальные плитки, если этот
     раздел тяжело считать, и кэшируется на 6 часов (общий кеш на организацию —
@@ -245,3 +263,33 @@ def generate_section_signal(db: Session, user: User, section: str, force: bool =
     out = SectionSignalOut(section=section, action=action, checked=checked, clear_text=clear_text, generated_at=now)
     ai_cache.set(db, cache_key, out.model_dump(mode="json"), now)
     return out
+
+
+AGENT_NOTE_WINDOW = timedelta(hours=24)
+
+
+def agent_section_note(db: Session, section: str) -> str | None:
+    """Что автономный агент сам сделал в этом разделе за сутки (0112, уровень А).
+    Не кэшируется вместе с сигналом: свежее действие агента не ждёт 6 часов."""
+    from app.agents.autonomy.models import AgentAutoRun
+    from app.agents.autonomy.playbook import SCENARIO_SECTION
+
+    since = datetime.now(timezone.utc) - AGENT_NOTE_WINDOW
+    runs = db.query(AgentAutoRun).filter(AgentAutoRun.started_at >= since).order_by(AgentAutoRun.id).all()
+    done: dict[str, str] = {}
+    for run in runs:
+        for act in run.actions:
+            if act.get("level") == "A" and SCENARIO_SECTION.get(act.get("scenario")) == section:
+                done[act["key"]] = act["text"]
+    if not done:
+        return None
+    items = list(done.values())
+    tail = f" и ещё {len(items) - 3}" if len(items) > 3 else ""
+    return "Инициатива ИИ за сутки: " + "; ".join(items[:3]) + tail + "."
+
+
+def generate_section_signal(db: Session, user: User, section: str, force: bool = False) -> SectionSignalOut:
+    signal = _generate_section_signal(db, user, section, force)
+    if _section_builder(user, section) is not None:
+        signal.agent_note = agent_section_note(db, section)
+    return signal

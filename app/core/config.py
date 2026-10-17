@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     agent_shift_autorun: bool = True
     agent_shift_interval_seconds: int = 3600
 
+    # Автономный агент (0112): прогоны в рабочем окне, см. app/agents/autonomy.
+    agent_autonomy_autorun: bool = True
+
     # Сверка задач смены стадии клиента с реальностью: на старте и раз в час.
     stage_task_reconcile_autorun: bool = True
     stage_task_reconcile_interval_seconds: int = 3600
@@ -195,6 +198,9 @@ class Settings(BaseSettings):
     # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
     # web.max.ru. Без него раздел /api/max отдаёт 503.
     max_token: str = ""
+    # Кому агент предлагает сообщения в MAX (0112). 0 — сценарий выключен.
+    agent_max_chat_id: int = 27580426
+    agent_max_recipient: str = "Арсений Щекин"
     # Сервисный токен read-only экспорта заявок «Пожелания» для агента (0109).
     # Пуст — экспорт выключен, маршруты /api/feedback/export/* отвечают 404.
     feedback_export_token: str = ""
