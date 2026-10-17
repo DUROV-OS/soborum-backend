@@ -29,6 +29,8 @@ class NotificationKind(str, enum.Enum):
     CONTENT_UPDATE = "content_update"
     MAX_MESSAGE = "max_message"
     FEEDBACK_UPDATE = "feedback_update"
+    # Инициатива автономного агента (0112); object_type = "agent:<сценарий>".
+    AGENT_INITIATIVE = "agent_initiative"
 
 
 class Notification(Base):
