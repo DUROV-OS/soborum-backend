@@ -53,6 +53,8 @@ class SectionSignalOut(BaseModel):
     # checked=true и action=None (см. ALL_CLEAR_TEXT в overview.py).
     clear_text: str | None = None
     generated_at: datetime
+    # Что агент сам сделал в разделе за сутки (0112), не входит в кэш сигнала.
+    agent_note: str | None = None
 
 
 class AktualnoeItem(BaseModel):
