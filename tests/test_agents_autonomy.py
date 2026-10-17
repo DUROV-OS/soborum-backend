@@ -361,6 +361,26 @@ def test_new_cards_per_scenario_are_capped_and_resume_next_run(db, make_user):
     assert len(stalled) == min(runner.MAX_NEW_CARDS_PER_SCENARIO * 2, 8)
 
 
+def test_open_cards_never_exceed_global_cap(db, make_user, monkeypatch):
+    monkeypatch.setattr(runner, "MAX_OPEN_PROPOSALS", 3)
+    monkeypatch.setattr(runner, "MAX_NEW_CARDS_PER_SCENARIO", 10)
+    worker = make_user(Module.TASKS)
+    make_user(admin=True)
+    for i in range(playbook.OVERLOAD_OPEN_TASKS + 1):
+        task_service.create_task(db, title=f"Занят {i}", assignee_ids=[worker.id])
+    for i in range(8):
+        _stalled_task(db, worker, title=f"Старая {i}")
+    run = runner.run_once(db)
+    assert len([c for c in _proposals(db) if c.status == TaskStatus.IN_REVIEW]) == 3
+    assert "Отложено" in run.summary
+    runner.run_once(db)  # лимит держится и на следующем прогоне, пока карточки не решены
+    assert len([c for c in _proposals(db) if c.status == TaskStatus.IN_REVIEW]) == 3
+    task_service.close_with_resolution(db, _proposals(db)[0], make_user(admin=True), comment="решено")
+    db.commit()
+    runner.run_once(db)  # решена одна — освободилось место ровно под одну новую
+    assert len([c for c in _proposals(db) if c.status == TaskStatus.IN_REVIEW]) == 3
+
+
 def test_close_proposals_endpoint_closes_without_deleting(db, make_user, api):
     worker = make_user(Module.TASKS)
     admin = make_user(admin=True)
