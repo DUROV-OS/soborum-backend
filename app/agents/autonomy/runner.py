@@ -25,6 +25,7 @@ from app.agents.autonomy.playbook import DETECTORS, Finding
 from app.agents.autonomy.publish import (
     find_open_proposal,
     object_type,
+    count_open_proposals,
     publish_level_a,
     publish_level_b,
 )
@@ -47,6 +48,8 @@ POLL_SECONDS = 900
 REMIND_EVERY = timedelta(hours=24)
 # Не больше стольких новых карточек «на согласование» на сценарий за прогон.
 MAX_NEW_CARDS_PER_SCENARIO = 5
+# Всего открытых карточек «на согласование» после прогона — не больше стольких (включая прежние).
+MAX_OPEN_PROPOSALS = 10
 
 _started = False
 
@@ -210,6 +213,8 @@ class RunContext:
     counted: set[str] = field(default_factory=set)
     new_cards: Counter = field(default_factory=Counter)
     deferred: Counter = field(default_factory=Counter)
+    # Открытых карточек агента на момент прогона (считаем лениво, растёт с новыми карточками).
+    open_cards: int | None = None
 
 
 def handle_finding(db: Session, finding: Finding, ctx: RunContext | None = None) -> dict | None:
@@ -246,11 +251,14 @@ def handle_finding(db: Session, finding: Finding, ctx: RunContext | None = None)
                 ws.register_action(db, finding.scenario)
         else:
             if find_open_proposal(db, finding.key) is None or escalate:
-                if ctx.new_cards[finding.scenario] >= MAX_NEW_CARDS_PER_SCENARIO:
-                    # Не заваливаем человека: остальное подхватит следующий прогон (наблюдение остаётся открытым).
+                if ctx.open_cards is None:
+                    ctx.open_cards = count_open_proposals(db)
+                if ctx.new_cards[finding.scenario] >= MAX_NEW_CARDS_PER_SCENARIO or ctx.open_cards >= MAX_OPEN_PROPOSALS:
+                    # Не заваливаем человека (на сценарий и в целом): остальное подхватит следующий прогон (наблюдение остаётся открытым).
                     ctx.deferred[finding.scenario] += 1
                     return None
                 ctx.new_cards[finding.scenario] += 1
+                ctx.open_cards += 1
                 entry.update(publish_level_b(db, finding, reason=reason))
             else:
                 return None
