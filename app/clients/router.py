@@ -1,3 +1,6 @@
+import logging
+import time
+from collections import deque
 from urllib.parse import parse_qsl
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
@@ -79,8 +82,53 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User 
     return client
 
 
+# Диагностика приёма заявок на стейдже: какие запросы приходят от Tilda и чем
+# отвечаем. Только метаданные (без значений полей — там телефоны и имена):
+# время, код ответа, тип содержимого, имена полей, User-Agent, адрес.
+_intake_logger = logging.getLogger("uvicorn.error")
+_intake_recent: deque = deque(maxlen=100)
+
+
+def _intake_record(request: Request, code: int, keys: list, note: str) -> None:
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "code": code,
+        "ctype": request.headers.get("content-type", "")[:60],
+        "keys": keys,
+        "ua": request.headers.get("user-agent", "")[:80],
+        "ip": intake_auth.client_address(request),
+        "hdr_token": bool(request.headers.get("x-intake-token")),
+        "note": note[:120],
+    }
+    _intake_recent.append(entry)
+    _intake_logger.warning("intake %s", entry)
+
+
 @app.post("/intake", response_model=LeadIntakeOut)
 async def intake_lead(request: Request, db: Session = Depends(get_db)):
+    seen: dict = {"keys": []}
+    try:
+        result = await _intake_handle(request, db, seen)
+    except HTTPException as exc:
+        _intake_record(request, exc.status_code, seen["keys"], str(exc.detail))
+        raise
+    except Exception as exc:  # noqa: BLE001 — диагностика, ошибка уйдёт дальше как 500
+        _intake_record(request, 500, seen["keys"], repr(exc))
+        raise
+    note = result.status if isinstance(result, LeadIntakeOut) else "test"
+    _intake_record(request, 200, seen["keys"], note)
+    return result
+
+
+@app.get("/intake/recent")
+def intake_recent(request: Request):
+    """Последние запросы приёма (метаданные, без значений полей); тот же токен."""
+    intake_auth.check_token_configured()
+    intake_auth.check_token(request.headers.get("x-intake-token") or request.query_params.get("token"))
+    return list(_intake_recent)
+
+
+async def _intake_handle(request: Request, db: Session, seen: dict):
     """Заявка с сайта (0111-a) — единственная ручка раздела без JWT.
 
     Токен — заголовок `X-Intake-Token` (или `?token=` / поле `token` формы: вебхук
@@ -92,6 +140,7 @@ async def intake_lead(request: Request, db: Session = Depends(get_db)):
     intake_auth.check_token_configured()
     intake_auth.check_rate_limit(intake_auth.client_address(request))
     fields = await _intake_fields(request)
+    seen["keys"] = sorted(str(k) for k in fields.keys())[:40]
     intake_auth.check_token(
         request.headers.get("x-intake-token") or request.query_params.get("token") or fields.pop("token", None)
     )

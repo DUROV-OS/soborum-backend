@@ -193,3 +193,16 @@ def test_tilda_connection_test_request(intake, db):
     assert ok.status_code == 200
     assert db.query(Client).count() == before
     assert intake.post(URL, data={"test": "test"}).status_code == 401
+
+
+def test_recent_intake_log_has_metadata_without_values(intake, db):
+    """Стейдж: /intake/recent показывает имена полей и коды ответов, но не значения."""
+    intake.post(URL, headers={"X-Intake-Token": TOKEN}, data={"Name": "СекретноеИмя", "Phone": "+7 900 555-66-77"})
+    intake.post(URL, headers={"X-Intake-Token": "wrong"}, data={"Name": "X"})
+    assert intake.get(URL + "/recent").status_code == 401
+    rows = intake.get(URL + "/recent", headers={"X-Intake-Token": TOKEN}).json()
+    codes = [r["code"] for r in rows]
+    assert 200 in codes and 401 in codes
+    assert any("name" in r["keys"] and "phone" in r["keys"] for r in rows)
+    text = str(rows)
+    assert "СекретноеИмя" not in text and "555-66-77" not in text
