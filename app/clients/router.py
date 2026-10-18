@@ -124,6 +124,13 @@ async def _intake_fields(request: Request) -> dict:
     return {str(k).strip().lower(): v for k, v in raw.items()}
 
 
+# Поля Tilda и формы, которые не несут сути обращения: служебные и согласие.
+_INTAKE_SKIP = {
+    "token", "name", "phone", "email", "message", "source", "utm", "textarea", "comments", "comment",
+    "checkbox", "tranid", "formid", "formname", "forma", "formservices[]", "cookies", "referer",
+}
+
+
 def _intake_payload(fields: dict) -> dict:
     def text(key: str) -> str | None:
         value = fields.get(key)
@@ -134,6 +141,19 @@ def _intake_payload(fields: dict) -> dict:
         utm.update({str(k): str(v)[:255] for k, v in fields["utm"].items()})
     data = {key: text(key) for key in ("name", "phone", "email", "message", "source")}
     data = {k: v for k, v in data.items() if v is not None}
+    # Форма Tilda называет поле текста «Textarea» (имя переменной блока), в других
+    # формах — comments/comment; всё это — текст обращения. Прочие значимые поля
+    # (тип дома, площадь и т.п. из формы расчёта) дописываются к тексту «ключ: значение».
+    if not data.get("message"):
+        data["message"] = next((v.strip() for k in ("textarea", "comments", "comment") if (v := text(k)) and v.strip()), "")
+    extras = [
+        f"{key}: {value.strip()}"
+        for key, value in fields.items()
+        if key not in _INTAKE_SKIP and not key.startswith("utm_") and isinstance(value, str) and value.strip()
+    ]
+    if extras:
+        data["message"] = "\n".join(filter(None, [data.get("message", ""), *extras]))
+    data["message"] = data.get("message", "")[:4000]
     return {**data, "utm": utm or None}
 
 

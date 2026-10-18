@@ -45,7 +45,8 @@ class LeadIntakePayload(BaseModel):
 
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
-    name: str = Field(min_length=1, max_length=255)
+    # Имя необязательно: часть форм сайта собирает только телефон.
+    name: str = Field(default="", max_length=255)
     phone: str = Field(default="", max_length=32)
     email: str = Field(default="", max_length=255)
     message: str = Field(default="", max_length=4000)
@@ -62,6 +63,8 @@ class LeadIntakePayload(BaseModel):
             raise ValueError("Нужен телефон или почта")
         if not self.source:
             self.source = "Сайт"
+        if not self.name:
+            self.name = f"Заявка с сайта {self.phone or self.email}"[:255]
         return self
 
 
