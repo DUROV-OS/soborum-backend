@@ -73,6 +73,19 @@ class LeadIntakeOut(BaseModel):
     client_id: int
 
 
+class ClientBasicUpdate(BaseModel):
+    """Правка базовых данных клиента (0111-b): частичная, не переданное поле не
+    меняется. Пустое ФИО — нельзя; телефон и почта вместе не могут быть пустыми.
+    Телефон/почта, уже принадлежащие другому клиенту, дают 409 (не слияние)."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    full_name: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=32)
+    email: str | None = Field(default=None, max_length=255)
+    contacts: list[ClientContact] | None = None
+
+
 class ClientChatLinkCreate(BaseModel):
     """Новая привязка клиента к чату MAX (0053). `max_chat_id` уникален
     глобально — 409, если чат уже занят другим клиентом (см.
@@ -291,6 +304,12 @@ class ClientOut(BaseModel):
     email: str
     contacts: list[ClientContact] = []
     chat_links: list[ClientChatLinkOut] = []
+
+    # Заявка с сайта (0111-a/b): откуда лид, что написал клиент и не обработана ли
+    # она ещё. Для лидов, созданных вручную, пусто/false.
+    lead_source: str | None = None
+    lead_message: str | None = None
+    lead_unprocessed: bool = False
 
     via_agency: bool
     agency_name: str | None
