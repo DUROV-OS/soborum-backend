@@ -1,3 +1,4 @@
+import logging
 from urllib.parse import parse_qsl
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
@@ -11,6 +12,7 @@ from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
 from app.clients.schemas import (
     ClientBalanceDueDateUpdate,
+    ClientBasicUpdate,
     ClientBalancePaymentUpdate,
     ClientChatLinkCreate,
     ClientChatLinkOut,
@@ -40,6 +42,8 @@ from app.common.module_access import Module
 from app.core.deps import require_admin, require_edit, require_full, require_view
 from app.db.session import get_db
 from app.users.models import User
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Soborbum — Клиенты",
@@ -108,6 +112,12 @@ async def intake_lead(request: Request, db: Session = Depends(get_db)):
         )
     client, created = client_service.intake_lead(db, payload)
     db.commit()
+    # Уведомление — после commit (notify коммитит сам); сбой уведомления не должен
+    # терять заявку, которая уже сохранена.
+    try:
+        client_service.notify_new_lead(db, client, created)
+    except Exception:  # noqa: BLE001
+        logger.exception("intake: не удалось отправить уведомление о заявке клиента %s", client.id)
     return LeadIntakeOut(status="created" if created else "duplicate", client_id=client.id)
 
 
@@ -176,6 +186,33 @@ def list_assignees(db: Session = Depends(get_db), _: User = Depends(require_clie
 @app.get("/{client_id}", response_model=ClientOut)
 def get_client(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients_view)):
     return client_service.get_client_or_404(db, client_id)
+
+
+@app.patch("/{client_id}/basic", response_model=ClientOut)
+def update_basic(
+    client_id: int,
+    payload: ClientBasicUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_clients_edit),
+):
+    """Дозаполнить базовые данные клиента: ФИО, телефон, почта, способы связи
+    (0111-b). 409 — телефон/почта уже у другого клиента, 422 — пустое ФИО или
+    нет ни телефона, ни почты."""
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.update_basic(db, client, payload, user)
+    db.commit()
+    db.refresh(client)
+    return client
+
+
+@app.post("/{client_id}/take", response_model=ClientOut)
+def take_lead(client_id: int, db: Session = Depends(get_db), _: User = Depends(require_clients_edit)):
+    """«Взять в работу»: снять подсветку необработанной заявки с сайта (0111-b)."""
+    client = client_service.get_client_or_404(db, client_id)
+    client = client_service.take_lead(db, client)
+    db.commit()
+    db.refresh(client)
+    return client
 
 
 @app.patch("/{client_id}/source", response_model=ClientOut)
