@@ -183,3 +183,13 @@ def test_tilda_forms_of_the_site(intake, db):
 
     assert message(full["client_id"]) == "Хочу баню"
     assert "type_of_buiding: Дом" in message(calc["client_id"]) and "m2: 96" in message(calc["client_id"])
+
+
+def test_tilda_connection_test_request(intake, db):
+    """При сохранении вебхука Tilda шлёт `test=test` без контактов: 200, клиент не создаётся;
+    без токена — по-прежнему 401."""
+    before = db.query(Client).count()
+    ok = intake.post(URL, headers={"X-Intake-Token": TOKEN}, data={"test": "test"})
+    assert ok.status_code == 200
+    assert db.query(Client).count() == before
+    assert intake.post(URL, data={"test": "test"}).status_code == 401

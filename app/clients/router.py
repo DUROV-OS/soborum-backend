@@ -1,6 +1,7 @@
 from urllib.parse import parse_qsl
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -94,6 +95,10 @@ async def intake_lead(request: Request, db: Session = Depends(get_db)):
     intake_auth.check_token(
         request.headers.get("x-intake-token") or request.query_params.get("token") or fields.pop("token", None)
     )
+    # Пробный запрос Tilda при сохранении вебхука (`test=test`, без контактов):
+    # без 200 сервис не подключается. Токен уже проверен; клиента не создаём.
+    if str(fields.get("test", "")).strip().lower() == "test" and not (fields.get("phone") or fields.get("email")):
+        return JSONResponse({"status": "test"})
     try:
         payload = LeadIntakePayload.model_validate(_intake_payload(fields))
     except ValidationError as exc:
