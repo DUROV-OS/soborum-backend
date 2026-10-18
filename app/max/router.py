@@ -75,11 +75,25 @@ def get_chat(
 
 
 @app.post("/messages", status_code=201)
-def send_message(payload: SendMessageIn, _: User = Depends(get_current_user)):
+def send_message(payload: SendMessageIn, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     """Отправить текстовое сообщение в чат MAX (MSG_SEND, opcode 64).
 
     ``chat_id=0`` — «Избранное» (заметки для себя)."""
-    return max_service.send_message(payload.chat_id, payload.text, notify=payload.notify)
+    result = max_service.send_message(payload.chat_id, payload.text, notify=payload.notify)
+    _mark_lead_contacted(db, payload.chat_id)
+    return result
+
+
+def _mark_lead_contacted(db: Session, chat_id: int) -> None:
+    """Написали клиенту (0111-b) — его заявка с сайта перестаёт быть «новой». Сбой
+    здесь не должен ломать уже ушедшее сообщение."""
+    try:
+        link = db.query(ClientChatLink).filter(ClientChatLink.max_chat_id == chat_id).first()
+        if link is not None and link.client is not None and link.client.lead_unprocessed:
+            link.client.lead_unprocessed = False
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
 
 
 @app.post("/contacts", status_code=201)
