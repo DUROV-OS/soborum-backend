@@ -131,10 +131,9 @@ def test_form_body_keeps_cyrillic_both_encoded_and_raw(intake, db):
     assert db.get(Client, raw.json()["client_id"]).full_name == "Тильда"
 
 
-def test_validation_requires_name_and_contact(intake, db):
+def test_validation_requires_contact(intake, db):
     assert _post(intake, {"name": "Без контактов"}).status_code == 422
     assert _post(intake, {"name": "Мусор", "phone": "abc"}).status_code == 422
-    assert _post(intake, {"phone": "+7 900 111-22-33"}).status_code == 422
     assert _post(intake, {"name": "Почта", "email": "не-почта"}).status_code == 422
     assert db.query(Client).count() == 0
 
@@ -157,3 +156,30 @@ def test_rate_limit(intake, monkeypatch):
 
 def test_other_client_routes_still_need_login(intake):
     assert intake.get("/api/clients/").status_code in (401, 403)
+
+
+def test_tilda_forms_of_the_site(intake, db):
+    """Реальные формы durov.house: `Name/Phone/Textarea`, форма только с `phone`,
+    форма расчёта с `type_of_buiding/target/m2`."""
+    full = intake.post(
+        URL, headers={"X-Intake-Token": TOKEN},
+        data={"Name": "Мария", "Phone": "+7 900 222-33-44", "Textarea": "Хочу баню", "Checkbox": "yes",
+              "tranid": "1:2", "formid": "form1", "formservices[]": "x"},
+    ).json()
+    only_phone = intake.post(URL, headers={"X-Intake-Token": TOKEN}, data={"phone": "+7 900 333-44-55"}).json()
+    calc = intake.post(
+        URL, headers={"X-Intake-Token": TOKEN},
+        data={"name": "Олег", "phone": "+7 900 444-55-66", "email": "o@example.com",
+              "type_of_buiding": "Дом", "target": "ПМЖ", "m2": "96"},
+    ).json()
+    assert full["status"] == only_phone["status"] == calc["status"] == "created"
+    first = db.get(Client, full["client_id"])
+    assert first.full_name == "Мария"
+    assert db.get(Client, only_phone["client_id"]).full_name.startswith("Заявка с сайта")
+    from app.clients.models import ClientLeadRequest
+
+    def message(client_id):
+        return db.query(ClientLeadRequest).filter(ClientLeadRequest.client_id == client_id).one().message
+
+    assert message(full["client_id"]) == "Хочу баню"
+    assert "type_of_buiding: Дом" in message(calc["client_id"]) and "m2: 96" in message(calc["client_id"])
