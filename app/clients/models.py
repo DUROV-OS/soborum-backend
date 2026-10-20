@@ -212,6 +212,12 @@ class Client(Base):
         ForeignKey("partners.id", ondelete="RESTRICT"), nullable=True, index=True
     )
 
+    # --- Заявка с сайта (0111-a) ---
+    # Откуда пришёл лид, если он создан приёмом заявок, а не вручную. NULL —
+    # клиент заведён менеджером. Сами обращения (в т.ч. повторные) — в
+    # client_lead_requests.
+    lead_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at
     # DISCUSSION (with wishes/area/price/layout free-text fields) — removed by
@@ -299,6 +305,9 @@ class Client(Base):
 
     cycle: Mapped["Cycle"] = relationship(back_populates="client")  # noqa: F821
     notes: Mapped[list["ClientNote"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    lead_requests: Mapped[list["ClientLeadRequest"]] = relationship(
+        back_populates="client", cascade="all, delete-orphan", order_by="ClientLeadRequest.id"
+    )
     # Задачи менеджера по клиенту (0079-d) — обычные задачи системы, связанные
     # с клиентом через link_type/link_id, поэтому связь только на чтение и без
     # внешнего ключа: задачами владеет раздел «Задачи», здесь их только видно.
@@ -386,6 +395,26 @@ class ClientNote(Base):
 
     client: Mapped["Client"] = relationship(back_populates="notes")
     author: Mapped["User"] = relationship()  # noqa: F821
+
+
+class ClientLeadRequest(Base):
+    """Обращение, пришедшее вебхуком с сайта (0111-a). Первое создаёт клиента-лида,
+    последующие с тем же телефоном/почтой — «повторные заявки» того же клиента
+    (`is_repeat`). Автора-сотрудника нет, поэтому это не `ClientNote`."""
+
+    __tablename__ = "client_lead_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    utm: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_repeat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    client: Mapped["Client"] = relationship(back_populates="lead_requests")
 
 
 class ClientChatLink(Base):

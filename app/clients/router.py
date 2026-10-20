@@ -1,6 +1,11 @@
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, status
+from urllib.parse import parse_qsl
+
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.clients import intake_auth
 from app.clients import reconcile as client_reconcile
 from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
@@ -13,6 +18,8 @@ from app.clients.schemas import (
     ClientContractVerify,
     ClientManagerOut,
     ClientCreate,
+    LeadIntakeOut,
+    LeadIntakePayload,
     ClientDocumentsUpdate,
     ClientHousesCountUpdate,
     ClientManagerUpdate,
@@ -70,6 +77,89 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _: User 
     db.commit()
     db.refresh(client)
     return client
+
+
+@app.post("/intake", response_model=LeadIntakeOut)
+async def intake_lead(request: Request, db: Session = Depends(get_db)):
+    """Заявка с сайта (0111-a) — единственная ручка раздела без JWT.
+
+    Токен — заголовок `X-Intake-Token` (или `?token=` / поле `token` формы: вебхук
+    Tilda не умеет свои заголовки). Тело — JSON или обычная форма
+    (`application/x-www-form-urlencoded`), имена полей без учёта регистра:
+    `name`, `phone`, `email`, `message`, `source`, остальные `utm_*` попадают в
+    `utm`. 200 `created` — заведён новый лид, 200 `duplicate` — телефон/почта уже
+    есть у клиента, к нему добавлено повторное обращение."""
+    intake_auth.check_token_configured()
+    intake_auth.check_rate_limit(intake_auth.client_address(request))
+    fields = await _intake_fields(request)
+    intake_auth.check_token(
+        request.headers.get("x-intake-token") or request.query_params.get("token") or fields.pop("token", None)
+    )
+    # Пробный запрос Tilda при сохранении вебхука (`test=test`, без контактов):
+    # без 200 сервис не подключается. Токен уже проверен; клиента не создаём.
+    if str(fields.get("test", "")).strip().lower() == "test" and not (fields.get("phone") or fields.get("email")):
+        return JSONResponse({"status": "test"})
+    try:
+        payload = LeadIntakePayload.model_validate(_intake_payload(fields))
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()],
+        )
+    client, created = client_service.intake_lead(db, payload)
+    db.commit()
+    return LeadIntakeOut(status="created" if created else "duplicate", client_id=client.id)
+
+
+async def _intake_fields(request: Request) -> dict:
+    """Плоский словарь полей из JSON или формы; ключи — в нижнем регистре."""
+    try:
+        if "json" in request.headers.get("content-type", ""):
+            raw = await request.json()
+            if not isinstance(raw, dict):
+                raise ValueError
+        elif "multipart" in request.headers.get("content-type", ""):
+            raw = dict((await request.form()).items())
+        else:
+            # urlencoded разбираем сами как UTF-8: штатный разбор Starlette читает
+            # непроцентованные байты как latin-1 и ломает кириллицу.
+            raw = dict(parse_qsl((await request.body()).decode("utf-8", errors="replace"), keep_blank_values=True))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Не удалось прочитать тело заявки")
+    return {str(k).strip().lower(): v for k, v in raw.items()}
+
+
+# Поля Tilda и формы, которые не несут сути обращения: служебные и согласие.
+_INTAKE_SKIP = {
+    "token", "name", "phone", "email", "message", "source", "utm", "textarea", "comments", "comment",
+    "checkbox", "tranid", "formid", "formname", "forma", "formservices[]", "cookies", "referer",
+}
+
+
+def _intake_payload(fields: dict) -> dict:
+    def text(key: str) -> str | None:
+        value = fields.get(key)
+        return value if isinstance(value, str) else None
+
+    utm = {k: v[:255] for k, v in fields.items() if k.startswith("utm_") and isinstance(v, str) and v.strip()}
+    if isinstance(fields.get("utm"), dict):
+        utm.update({str(k): str(v)[:255] for k, v in fields["utm"].items()})
+    data = {key: text(key) for key in ("name", "phone", "email", "message", "source")}
+    data = {k: v for k, v in data.items() if v is not None}
+    # Форма Tilda называет поле текста «Textarea» (имя переменной блока), в других
+    # формах — comments/comment; всё это — текст обращения. Прочие значимые поля
+    # (тип дома, площадь и т.п. из формы расчёта) дописываются к тексту «ключ: значение».
+    if not data.get("message"):
+        data["message"] = next((v.strip() for k in ("textarea", "comments", "comment") if (v := text(k)) and v.strip()), "")
+    extras = [
+        f"{key}: {value.strip()}"
+        for key, value in fields.items()
+        if key not in _INTAKE_SKIP and not key.startswith("utm_") and isinstance(value, str) and value.strip()
+    ]
+    if extras:
+        data["message"] = "\n".join(filter(None, [data.get("message", ""), *extras]))
+    data["message"] = data.get("message", "")[:4000]
+    return {**data, "utm": utm or None}
 
 
 @app.get("/assignees", response_model=list[ClientManagerOut])

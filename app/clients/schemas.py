@@ -39,6 +39,40 @@ class ClientCreate(ClientSourceUpdate):
     contacts: list[ClientContact] = []
 
 
+class LeadIntakePayload(BaseModel):
+    """Заявка с сайта (0111-a). Лишние поля формы (служебные поля Tilda и т.п.)
+    игнорируются; строки обрезаются, длина ограничена."""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    # Имя необязательно: часть форм сайта собирает только телефон.
+    name: str = Field(default="", max_length=255)
+    phone: str = Field(default="", max_length=32)
+    email: str = Field(default="", max_length=255)
+    message: str = Field(default="", max_length=4000)
+    source: str = Field(default="Сайт", max_length=255)
+    utm: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _need_contact(self):
+        if self.phone and not any(ch.isdigit() for ch in self.phone):
+            self.phone = ""
+        if self.email and ("@" not in self.email or " " in self.email):
+            raise ValueError("Некорректная почта")
+        if not self.phone and not self.email:
+            raise ValueError("Нужен телефон или почта")
+        if not self.source:
+            self.source = "Сайт"
+        if not self.name:
+            self.name = f"Заявка с сайта {self.phone or self.email}"[:255]
+        return self
+
+
+class LeadIntakeOut(BaseModel):
+    status: Literal["created", "duplicate"]
+    client_id: int
+
+
 class ClientChatLinkCreate(BaseModel):
     """Новая привязка клиента к чату MAX (0053). `max_chat_id` уникален
     глобально — 409, если чат уже занят другим клиентом (см.
