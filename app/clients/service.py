@@ -19,6 +19,7 @@ from app.clients.models import (
     stage_label,
 )
 from app.clients.schemas import (
+    ClientBasicUpdate,
     ClientBalanceDueDateUpdate,
     ClientBalancePaymentUpdate,
     ClientChatLinkCreate,
@@ -283,6 +284,9 @@ def intake_lead(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool]:
         )
         client.lead_source = payload.source
         created = True
+    # Заявка с сайта ждёт обработки (0111-b); повторное обращение тоже поднимает
+    # признак заново — менеджеру нужно увидеть, что клиент написал ещё раз.
+    client.lead_unprocessed = True
     db.add(
         ClientLeadRequest(
             client_id=client.id,
@@ -294,6 +298,119 @@ def intake_lead(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool]:
     )
     db.flush()
     return client, created
+
+
+def clear_lead_unprocessed(client: Client | None) -> None:
+    """Любое действие сотрудника с лидом (стадия, задача, сообщение клиенту)
+    снимает подсветку «новая заявка» (0111-b)."""
+    if client is not None and client.lead_unprocessed:
+        client.lead_unprocessed = False
+
+
+def take_lead(db: Session, client: Client) -> Client:
+    """«Взять в работу» (0111-b): снимает признак необработанной заявки."""
+    client.lead_unprocessed = False
+    db.flush()
+    return client
+
+
+def _lead_recipients(db: Session, client: Client) -> list[int]:
+    """Кому сообщить о заявке: ответственному менеджеру клиента, а если его нет —
+    всем, кто может править раздел «Клиенты» (0111-b)."""
+    if client.manager_id is not None:
+        return [client.manager_id]
+    return [
+        user.id
+        for user in user_service.users_with_access(db, Module.CLIENTS)
+        if user.access_level(Module.CLIENTS) >= AccessLevel.EDIT
+    ]
+
+
+def notify_new_lead(db: Session, client: Client, created: bool) -> None:
+    """Уведомление о заявке с сайта. `notify` сам делает commit — вызывать после
+    сохранения клиента."""
+    title = ("Новая заявка с сайта: " if created else "Повторная заявка с сайта: ") + client.full_name
+    body = (client.lead_message or "").strip() or None
+    for user_id in _lead_recipients(db, client):
+        notify(
+            db,
+            user_id,
+            kind=NotificationKind.CLIENT_UPDATE,
+            module=Module.CLIENTS,
+            title=title,
+            body=body[:300] if body else None,
+            object_type="client",
+            object_id=client.id,
+        )
+
+
+def _find_other_client(db: Session, client_id: int, phone: str, email: str) -> Client | None:
+    phone_key = _phone_key(phone)
+    email_key = _email_key(email)
+    for other in db.query(Client).filter(Client.id != client_id).order_by(Client.id).all():
+        if phone_key and _phone_key(other.phone) == phone_key:
+            return other
+        if email_key and _email_key(other.email) == email_key:
+            return other
+    return None
+
+
+def update_basic(db: Session, client: Client, payload: ClientBasicUpdate, actor: User) -> Client:
+    """Правка базовых данных клиента (0111-b) — «дозаполнить по ходу общения».
+
+    Частичная. ФИО стереть нельзя; клиента нельзя оставить без обоих способов
+    связи; телефон/почта другого клиента → 409 с его именем (молча не сливаем).
+    Дубль проверяется только по тем контактам, которые меняются, — иначе давняя
+    «двойная» запись не давала бы поправить даже имя. Правка пишется заметкой
+    клиента от имени сотрудника — это его «история»."""
+    changes: list[str] = []
+
+    if payload.full_name is not None:
+        name = payload.full_name.strip()
+        if not name:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ФИО не может быть пустым")
+        if name != client.full_name:
+            changes.append(f"ФИО: «{client.full_name}» → «{name}»")
+            client.full_name = name
+
+    new_phone = client.phone if payload.phone is None else payload.phone.strip()
+    new_email = client.email if payload.email is None else payload.email.strip()
+    if new_phone and not any(ch.isdigit() for ch in new_phone):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Некорректный телефон")
+    if new_email and ("@" not in new_email or " " in new_email):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Некорректная почта")
+    if not new_phone and not new_email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Нужен хотя бы один способ связи: телефон или почта"
+        )
+    phone_changed = new_phone != client.phone
+    email_changed = new_email != client.email
+    if phone_changed or email_changed:
+        other = _find_other_client(
+            db, client.id, new_phone if phone_changed else "", new_email if email_changed else ""
+        )
+        if other is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Такой телефон или почта уже есть у клиента «{other.full_name}»",
+            )
+    if phone_changed:
+        changes.append(f"Телефон: {client.phone or '—'} → {new_phone or '—'}")
+        client.phone = new_phone
+    if email_changed:
+        changes.append(f"Почта: {client.email or '—'} → {new_email or '—'}")
+        client.email = new_email
+
+    if payload.contacts is not None:
+        new_contacts = [c.model_dump() for c in payload.contacts]
+        if new_contacts != (client.contacts or []):
+            changes.append("Способы связи обновлены")
+            client.contacts = new_contacts
+
+    if changes:
+        db.add(ClientNote(client_id=client.id, author_id=actor.id, text="Изменены данные клиента. " + "; ".join(changes)))
+    db.flush()
+    return client
 
 
 def search_clients(clients: list[Client], search: str | None) -> list[Client]:
@@ -900,6 +1017,7 @@ def transition_stage(db: Session, client: Client) -> Client:
         client.payment_locked_at = datetime.now(timezone.utc)
 
     client.stage = next_stage
+    clear_lead_unprocessed(client)
     db.flush()
     _notify_stage_change(db, client)
 
@@ -959,6 +1077,7 @@ def advance_stage_automatically(db: Session, client: Client | None, target: Clie
     if CLIENT_STAGE_ORDER.index(client.stage) >= CLIENT_STAGE_ORDER.index(target):
         return client
     client.stage = target
+    clear_lead_unprocessed(client)
     db.flush()
     _notify_stage_change(db, client)
     _reset_stage_tasks(db, client)
@@ -1007,6 +1126,7 @@ def create_followup_task(db: Session, client: Client, payload: ClientTaskCreate,
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Напишите, что нужно сделать")
+    clear_lead_unprocessed(client)
     return task_service.create_task(
         db,
         title=title,

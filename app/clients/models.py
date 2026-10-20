@@ -217,6 +217,10 @@ class Client(Base):
     # клиент заведён менеджером. Сами обращения (в т.ч. повторные) — в
     # client_lead_requests.
     lead_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Заявка с сайта ещё никем не обработана (0111-b): ставит приём заявки,
+    # снимает «Взять в работу» или любое действие с лидом (стадия, задача,
+    # сообщение клиенту). У лидов, заведённых вручную, не выставляется.
+    lead_unprocessed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     # --- Documents info: appears at APPROVAL, required before PAYMENT, then locked ---
     # order_type/house_model_key used to live in a separate "project" group at
@@ -308,6 +312,11 @@ class Client(Base):
     lead_requests: Mapped[list["ClientLeadRequest"]] = relationship(
         back_populates="client", cascade="all, delete-orphan", order_by="ClientLeadRequest.id"
     )
+
+    @property
+    def lead_message(self) -> str | None:
+        """Текст последнего обращения с сайта (0111-b) — для плашки в карточке."""
+        return self.lead_requests[-1].message if self.lead_requests else None
     # Задачи менеджера по клиенту (0079-d) — обычные задачи системы, связанные
     # с клиентом через link_type/link_id, поэтому связь только на чтение и без
     # внешнего ключа: задачами владеет раздел «Задачи», здесь их только видно.
