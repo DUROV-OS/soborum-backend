@@ -143,6 +143,8 @@ def resolve_lines(db, recipe, warehouse, multiplier):
 
 
 def preview(db, recipe, parameters):
+    from app.warehouse.reservation_service import available
+
     inputs, outputs = resolve_lines(db, recipe, parameters.warehouse, parameters.multiplier)
 
     def grouped(lines):
@@ -162,7 +164,8 @@ def preview(db, recipe, parameters):
                 "quantity": float(q),
                 "unit": m.unit,
                 "stock": float(m.quantity_in_stock),
-                "enough": Decimal(str(m.quantity_in_stock)) >= q,
+                "available_quantity": float(max(Decimal(0), available(db, m))),
+                "enough": available(db, m) >= q,
             }
             for m, q in grouped(inputs)
         ],
@@ -227,6 +230,9 @@ def manufacture(db, recipe_id, parameters, user):
         ]
         if missing:
             raise HTTPException(422, "Не хватает материалов: " + ", ".join(missing))
+        from app.warehouse.reservation_service import assert_available
+
+        assert_available(db, [(materials[id], q) for id, q in required.items()], code=422)
         now = datetime.now(timezone.utc)
         issue = WarehouseOperation(
             kind=WarehouseOperationKind.ISSUE_MANUAL,

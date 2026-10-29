@@ -572,9 +572,7 @@ def _list_materials(db: Session, user: User, needs_supply: bool = False) -> dict
     required_module=Module.WAREHOUSE, read_only=True, domains=[ChatDomain.WAREHOUSE],
 )
 def _list_pending_requests(db: Session, user: User) -> dict:
-    requests = (
-        db.query(MaterialRequest).filter(MaterialRequest.status == MaterialRequestStatus.PENDING).all()
-    )
+    requests = db.query(MaterialRequest).filter(MaterialRequest.status == MaterialRequestStatus.PENDING).all()
     return {
         "requests": [
             {
@@ -583,6 +581,12 @@ def _list_pending_requests(db: Session, user: User) -> dict:
                 "material_title": r.warehouse_material.title,
                 "quantity": r.quantity,
                 "block_id": r.block_material.block_id,
+                "available_quantity": max(
+                    0,
+                    warehouse_service.reservations.available(
+                        db, r.warehouse_material, r.block_material.block.production_id
+                    ),
+                ),
             }
             for r in requests
         ]

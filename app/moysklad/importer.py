@@ -76,6 +76,12 @@ def import_export(db: Session, data: dict, metadata: dict, reports: dict, manife
         .first()
     )
     same_snapshot = previous and previous.summary.get("source_completed_at") == manifest.get("completed_at")
+    from app.warehouse.reservation_models import StockReservation
+
+    if not same_snapshot and db.query(StockReservation.id).first():
+        raise ValueError(
+            "Local reservations require delta reconciliation; a stock snapshot cannot replace their balances"
+        )
     for typ, count in manifest.get("counts", {}).items():
         if len(data.get(typ, [])) != count:
             raise ValueError("Incomplete export: " + typ)

@@ -384,6 +384,9 @@ def create(
     for mid, q in quantities.items():
         if dec(materials[mid].quantity_in_stock) < q:
             fail("Недостаточно материала на складе для возврата")
+    from app.warehouse.reservation_service import assert_available
+
+    assert_available(db, [(materials[mid], q) for mid, q in quantities.items()])
     amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if order:
         from app.purchasing.service import balance

@@ -18,6 +18,7 @@ from app.tasks.models import Task, TaskLinkType, TaskStatus
 from app.users import service as user_service
 from app.users.models import User
 from app.warehouse import price_import
+from app.warehouse import reservation_service as reservations
 from app.warehouse.price_import import ColumnMapping
 from app.warehouse.models import (
     STOCK_IN_REASONS,
@@ -121,8 +122,20 @@ def create_material(db: Session, payload: WarehouseMaterialCreate) -> WarehouseM
     return material
 
 
-def update_material(db: Session, material: WarehouseMaterial, payload: WarehouseMaterialUpdate) -> WarehouseMaterial:
+def update_material(
+    db: Session, material: WarehouseMaterial, payload: WarehouseMaterialUpdate
+) -> WarehouseMaterial:
+    material = _lock_materials(db, [material.id])[material.id]
     fields = payload.model_dump(exclude_unset=True)
+    from app.warehouse.reservation_models import StockReservation
+
+    if (
+        any(k in fields and fields[k] != getattr(material, k) for k in ("unit", "is_fractional"))
+        and db.query(StockReservation.id).filter_by(material_id=material.id).first()
+    ):
+        raise HTTPException(
+            409, "У карточки есть история резервов. Для другой единицы учёта создайте новую позицию."
+        )
     if "supplier_id" in fields:
         ensure_supplier_exists(db, fields["supplier_id"])
     for field, value in fields.items():
@@ -173,10 +186,13 @@ def needs_supply(material: WarehouseMaterial, requested: float) -> bool:
     return not material.is_archived and (float(material.quantity_in_stock) - requested) < float(material.threshold)
 
 
-def to_out(db: Session, material: WarehouseMaterial, breakdown=None) -> WarehouseMaterialOut:
+def to_out(db: Session, material: WarehouseMaterial, breakdown=None, holds=None) -> WarehouseMaterialOut:
     if breakdown is None:
         breakdown = compute_breakdown(db, material.id)
     requested = sum(item.quantity_requested for item in breakdown)
+    groups = reservations.allocations(db, [material.id]).get(material.id, {}) if holds is None else holds
+    held = sum(groups.values(), Decimal(0))
+    free = Decimal(str(material.quantity_in_stock)) - held
     return WarehouseMaterialOut(
         id=material.id,
         is_archived=material.is_archived,
@@ -188,6 +204,11 @@ def to_out(db: Session, material: WarehouseMaterial, breakdown=None) -> Warehous
         unit=material.unit,
         is_fractional=material.is_fractional,
         quantity_in_stock=float(material.quantity_in_stock),
+        reserved_quantity=float(held),
+        available_quantity=float(max(Decimal(0), free)),
+        reservation_shortage=float(
+            max(Decimal(0), held - max(Decimal(0), Decimal(str(material.quantity_in_stock))))
+        ),
         purchase_price=float(material.purchase_price),
         threshold=float(material.threshold),
         kind=material.kind,
@@ -198,7 +219,7 @@ def to_out(db: Session, material: WarehouseMaterial, breakdown=None) -> Warehous
         supplier_id=material.supplier_id,
         supplier_name=material.supplier.name if material.supplier else None,
         total_requested=requested,
-        needs_supply=needs_supply(material, requested),
+        needs_supply=needs_supply(material, float(reservations.demand_with_holds(breakdown, groups))),
         request_breakdown=breakdown,
         created_at=material.created_at,
     )
@@ -213,18 +234,29 @@ def list_materials(
     materials = query.order_by(WarehouseMaterial.id).all()
     # A migrated catalogue can contain thousands of variants. Read pending
     # reservations once rather than running a query for every material.
-    pending = db.query(MaterialRequest.warehouse_material_id, BlockMaterial.block_id,
-        ProductionBlock.name, ProductionBlock.production_id, MaterialRequest.quantity).join(
-        BlockMaterial, MaterialRequest.block_material_id == BlockMaterial.id).join(
-        ProductionBlock, ProductionBlock.id == BlockMaterial.block_id).filter(
-        MaterialRequest.status == MaterialRequestStatus.PENDING).all()
+    pending = (
+        db.query(
+            MaterialRequest.warehouse_material_id,
+            BlockMaterial.block_id,
+            ProductionBlock.name,
+            ProductionBlock.production_id,
+            MaterialRequest.quantity,
+        )
+        .join(BlockMaterial, MaterialRequest.block_material_id == BlockMaterial.id)
+        .join(ProductionBlock, ProductionBlock.id == BlockMaterial.block_id)
+        .filter(MaterialRequest.status == MaterialRequestStatus.PENDING)
+        .all()
+    )
     grouped = {}
     for material_id, block_id, name, production_id, quantity in pending:
         groups = grouped.setdefault(material_id, {})
         if block_id not in groups:
-            groups[block_id] = RequestBreakdownItem(module_id=block_id,module_name=name,production_id=production_id,quantity_requested=0)
+            groups[block_id] = RequestBreakdownItem(
+                module_id=block_id, module_name=name, production_id=production_id, quantity_requested=0
+            )
         groups[block_id].quantity_requested += float(quantity)
-    result = [to_out(db, m, list(grouped.get(m.id, {}).values())) for m in materials]
+    holds = reservations.allocations(db, [m.id for m in materials])
+    result = [to_out(db, m, list(grouped.get(m.id, {}).values()), holds.get(m.id, {})) for m in materials]
     if only_needs_supply:
         result = [r for r in result if r.needs_supply]
     return result
@@ -234,7 +266,12 @@ SHORTAGE_TITLE = "Заказать дефицитный материал: {title
 
 
 def sync_shortage_task(db: Session, material: WarehouseMaterial) -> None:
-    requested = total_requested(db, material.id)
+    breakdown = compute_breakdown(db, material.id)
+    requested = float(
+        reservations.demand_with_holds(
+            breakdown, reservations.allocations(db, [material.id]).get(material.id, {})
+        )
+    )
     open_task = (
         db.query(Task)
         .filter(
@@ -376,7 +413,10 @@ def _lock_materials(db: Session, ids: list[int]) -> dict[int, WarehouseMaterial]
         .with_for_update(of=WarehouseMaterial).all()}
 
 
-def _ensure_enough_stock(lines: list[tuple[WarehouseMaterial, float]]) -> None:
+def _ensure_enough_stock(lines: list[tuple[WarehouseMaterial, float]], db=None, production_id=None) -> None:
+    if db is not None:
+        reservations.assert_available(db, lines, production_id, code=400)
+        return
     shortages = [
         f"{material.title} (есть {_fmt_qty(material.quantity_in_stock)}, нужно {_fmt_qty(quantity)} {material.unit})"
         for material, quantity in lines
@@ -404,8 +444,9 @@ def create_stock_operation(
     occurred_at = resolve_occurred_at(occurred_at)
     loaded = _load_operation_lines(db, lines)
     reason, sign = _OPERATION_REASON[kind]
+    reserve_production = production_id if kind == WarehouseOperationKind.ISSUE_TECHCARD else None
     if sign < 0:
-        _ensure_enough_stock(loaded)
+        _ensure_enough_stock(loaded, db=db, production_id=reserve_production)
 
     note = (note or "").strip() or None
     operation = WarehouseOperation(
@@ -424,7 +465,13 @@ def create_stock_operation(
     for material, quantity in loaded:
         material.quantity_in_stock = float(material.quantity_in_stock) + sign * quantity
         db.flush()
-        log_movement(db, material, sign * quantity, reason, created_by, note=note, operation_id=operation.id)
+        movement = log_movement(
+            db, material, sign * quantity, reason, created_by, note=note, operation_id=operation.id
+        )
+        if sign < 0:
+            reservations.consume_for_production(
+                db, material.id, reserve_production, quantity, created_by.id, movement.id
+            )
         sync_shortage_task(db, material)
     return operation
 
@@ -591,7 +638,9 @@ def techcard_preview(db: Session, production: Production) -> dict:
             },
         )
         required, requested, provided = (
-            float(bm.quantity_required), float(bm.quantity_requested), float(bm.quantity_provided)
+            float(bm.quantity_required),
+            float(bm.quantity_requested),
+            float(bm.quantity_provided),
         )
         row["norm_total"] += required + requested + provided
         row["provided"] += provided
@@ -601,8 +650,10 @@ def techcard_preview(db: Session, production: Production) -> dict:
             row["blocks"].append({"block_id": bm.block_id, "block_name": bm.block.name, "to_issue": required})
     lines = list(by_material.values())
     for row in lines:
+        m = db.get(WarehouseMaterial, row["warehouse_material_id"])
+        row["available_quantity"] = float(max(Decimal(0), reservations.available(db, m, production.id)))
         row["balance_after"] = row["in_stock"] - row["to_issue"]
-        row["shortage"] = row["balance_after"] < -1e-9
+        row["shortage"] = row["available_quantity"] < row["to_issue"] - 1e-9
 
     block_ids = db.query(ProductionBlock.id).filter(ProductionBlock.production_id == production.id)
     unmatched = (
@@ -817,8 +868,16 @@ def _notify_material_request(db: Session, request: MaterialRequest, title: str) 
     )
 
 
-def approve_request(db: Session, request: MaterialRequest, decided_by: User, quantity: Decimal | None = None) -> MaterialRequest:
-    request = db.query(MaterialRequest).filter_by(id=request.id).populate_existing().with_for_update(of=MaterialRequest).one()
+def approve_request(
+    db: Session, request: MaterialRequest, decided_by: User, quantity: Decimal | None = None
+) -> MaterialRequest:
+    request = (
+        db.query(MaterialRequest)
+        .filter_by(id=request.id)
+        .populate_existing()
+        .with_for_update(of=MaterialRequest)
+        .one()
+    )
     if request.status != MaterialRequestStatus.PENDING:
         raise _bad_request("Заявка уже обработана")
     module_material = lock_block_material(db, request.block_material_id)
@@ -831,9 +890,13 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User, qua
         raise _bad_request("Количество выдачи должно быть больше нуля и не больше остатка заявки")
     if not warehouse_material.is_fractional and issue != issue.to_integral_value():
         raise _bad_request("Этот материал учитывается только целыми единицами")
-    _ensure_enough_stock([(warehouse_material, float(issue))])
+    _ensure_enough_stock(
+        [(warehouse_material, float(issue))], db=db, production_id=module_material.block.production_id
+    )
     if Decimal(str(module_material.quantity_requested)) < issue:
-        raise _bad_request("Остаток заявки не совпадает с нормативом. Обновите данные и обратитесь к руководителю производства")
+        raise _bad_request(
+            "Остаток заявки не совпадает с нормативом. Обновите данные и обратитесь к руководителю производства"
+        )
 
     module_material.quantity_requested = float(Decimal(str(module_material.quantity_requested)) - issue)
     module_material.quantity_provided = float(Decimal(str(module_material.quantity_provided)) + issue)
@@ -848,21 +911,37 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User, qua
         # Preserve an approved row for every partial issue; the original request
         # stays pending with the remaining quantity and retains its board task.
         request.quantity = float(requested - issue)
-        recorded = MaterialRequest(block_material_id=request.block_material_id,
-            warehouse_material_id=request.warehouse_material_id, quantity=float(issue),
-            status=MaterialRequestStatus.APPROVED, requested_by_id=request.requested_by_id,
-            decided_by_id=decided_by.id, decided_at=decided_at)
+        recorded = MaterialRequest(
+            block_material_id=request.block_material_id,
+            warehouse_material_id=request.warehouse_material_id,
+            quantity=float(issue),
+            status=MaterialRequestStatus.APPROVED,
+            requested_by_id=request.requested_by_id,
+            decided_by_id=decided_by.id,
+            decided_at=decided_at,
+        )
         db.add(recorded)
         if request.task_id:
             task = db.get(Task, request.task_id)
             if task:
-                task.title = (f"Заявка на материал «{warehouse_material.title}» "
-                              f"(осталось {_fmt_qty(request.quantity)} {module_material.unit}) "
-                              f"для блока «{module_material.block.name}»")
+                task.title = (
+                    f"Заявка на материал «{warehouse_material.title}» "
+                    f"(осталось {_fmt_qty(request.quantity)} {module_material.unit}) "
+                    f"для блока «{module_material.block.name}»"
+                )
     db.flush()
     readiness.invalidate_production_caches(db, module_material.block.production_id)
-    log_movement(db, warehouse_material, -float(issue), StockMovementReason.ISSUED, decided_by, recorded.id)
-    _notify_material_request(db, request, "Заявка на материал одобрена" if issue == requested else "Материал по заявке выдан частично")
+    movement = log_movement(
+        db, warehouse_material, -float(issue), StockMovementReason.ISSUED, decided_by, recorded.id
+    )
+    reservations.consume_for_production(
+        db, warehouse_material.id, module_material.block.production_id, issue, decided_by.id, movement.id
+    )
+    _notify_material_request(
+        db,
+        request,
+        "Заявка на материал одобрена" if issue == requested else "Материал по заявке выдан частично",
+    )
     if issue == requested and request.task_id:
         task = db.get(Task, request.task_id)
         if task:

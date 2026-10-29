@@ -472,6 +472,8 @@ def post_document(db, row, body, user):
             fail("Для штучного материала укажите целое количество", 422)
         if row.kind == "transfer" and (qty <= 0 or dec(m.quantity_in_stock) < qty):
             fail("Недостаточно остатка для перемещения")
+        if row.kind == "transfer":
+            service.reservations.assert_available(db, [(m, qty)])
         if row.kind == "inventory" and (
             dec(m.quantity_in_stock) != dec(line["expected_quantity"])
             or watermarks.get(m.id, 0) != line.get("expected_movement_id", 0)
