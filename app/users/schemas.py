@@ -31,7 +31,7 @@ class UserUpdate(BaseModel):
 class WorkspacePreferences(BaseModel):
     view: Literal["general", "director", "manager", "accountant"]
     blocks: list[Literal["personal_tasks", "my_clients", "attention", "metrics", "aktualnoe", "marina"]] = Field(max_length=6)
-    sections: list[Literal["clients", "production", "installation", "cycle", "warehouse", "marketing", "tasks", "users", "accounting"]] = Field(max_length=9)
+    sections: list[Literal["clients", "production", "installation", "cycle", "warehouse", "marketing", "tasks", "users", "accounting", "ai"]] = Field(max_length=10)
 
 
 class UserAccessUpdate(BaseModel):
