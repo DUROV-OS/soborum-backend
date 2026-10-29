@@ -13,6 +13,7 @@ from app.cycle.models import Cycle, CycleStatus
 from app.db import import_all_models  # noqa: F401
 from app.db.base import Base
 from app.production.models import BlockMaterial, Production, ProductionBlock
+from app.production.service import request_material
 from app.users.models import User, UserRole
 from app.warehouse.models import MaterialCategory, Warehouse, WarehouseMaterial
 from app.warehouse.service import issue_by_techcard
@@ -60,6 +61,36 @@ def test_simultaneous_issues_cannot_exceed_the_same_norm():
         with Session(engine) as db:
             norm = db.get(BlockMaterial, norm_id); material = db.get(WarehouseMaterial, material_id)
             assert (float(norm.quantity_required), float(norm.quantity_provided), float(material.quantity_in_stock)) == (1, 4, 96)
+            # A new norm for the same material: production requests and direct
+            # warehouse issues must coordinate on the same row as well.
+            cycle = Cycle(status=CycleStatus.PRODUCTION); db.add(cycle); db.flush()
+            house = Production(cycle_id=cycle.id, house_index=1, name='Второй дом'); db.add(house); db.flush()
+            block = ProductionBlock(production_id=house.id, name='Стены', sequence=1); db.add(block); db.flush()
+            norm2 = BlockMaterial(block_id=block.id, warehouse_material_id=material_id, inventory_number='', unit='шт', quantity_required=5, quantity_requested=0, quantity_provided=0)
+            db.add(norm2); db.commit(); house2_id, norm2_id = house.id, norm2.id
+        gate2 = threading.Barrier(2)
+        def request_or_issue(action):
+            with Session(engine) as db:
+                actor = db.get(User, user_id); norm2 = db.get(BlockMaterial, norm2_id); house2 = db.get(Production, house2_id)
+                gate2.wait(timeout=10)
+                try:
+                    if action == 'request':
+                        request_material(db, norm2, 4, actor)
+                    else:
+                        issue_by_techcard(db, house2, actor, received_by='Цех', lines=[(material_id, 4)])
+                    db.commit()
+                    return 'ok'
+                except HTTPException as exc:
+                    db.rollback()
+                    return exc.status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(request_or_issue, action) for action in ('request', 'issue')]
+            results = [future.result(timeout=30) for future in futures]
+        assert sorted(map(str, results)) == ['400', 'ok']
+        with Session(engine) as db:
+            norm2 = db.get(BlockMaterial, norm2_id)
+            assert float(norm2.quantity_required) == 1
+            assert float(norm2.quantity_requested) + float(norm2.quantity_provided) == 4
     finally:
         engine.dispose()
         with root.begin() as conn:
