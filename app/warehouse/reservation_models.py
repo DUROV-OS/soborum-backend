@@ -23,7 +23,7 @@ class StockReservation(Base):
             name="ck_stock_reservations_quantities",
         ),
         CheckConstraint(
-            "production_id IS NULL OR source_order_id IS NULL",
+            "(production_id IS NULL OR (source_order_id IS NULL AND sales_order_id IS NULL)) AND (source_order_id IS NULL OR sales_order_id IS NULL)",
             name="ck_stock_reservations_target",
         ),
         CheckConstraint(
@@ -33,6 +33,10 @@ class StockReservation(Base):
         CheckConstraint(
             "NOT archived OR quantity = released_quantity + consumed_quantity",
             name="ck_stock_reservations_archive",
+        ),
+        CheckConstraint(
+            "(sales_order_id IS NULL AND sales_line IS NULL) OR (sales_order_id IS NOT NULL AND sales_line IS NOT NULL)",
+            name="ck_stock_reservations_sales_line",
         ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -46,6 +50,10 @@ class StockReservation(Base):
         ForeignKey("moysklad_records.id"), index=True
     )
     source_line: Mapped[int | None] = mapped_column(Integer)
+    sales_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("sales_orders.id"), index=True
+    )
+    sales_line: Mapped[int | None] = mapped_column(Integer)
     purpose: Mapped[str] = mapped_column(String(255))
     unit: Mapped[str] = mapped_column(String(32))
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
