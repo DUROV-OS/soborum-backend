@@ -30,18 +30,29 @@ class StockMovementReason(str, enum.Enum):
     RECEIPT = "receipt"
     ISSUED_TECHCARD = "issued_techcard"
     ISSUED_MANUAL = "issued_manual"
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_OUT = "transfer_out"
+    COUNT_GAIN = "count_gain"
+    COUNT_LOSS = "count_loss"
 
 
 # Причины, которые реально меняют остаток склада, — только они попадают в
 # журнал операций. REQUIRED_ADJUSTED_UP (рост потребности производства) и
 # REQUEST_REJECTED_RETURN (delta 0) пишутся в stock_movements, но остаток не
 # трогают. MANUAL_ADJUST не используется нигде.
-STOCK_IN_REASONS = (StockMovementReason.SUPPLY, StockMovementReason.RECEIPT)
+STOCK_IN_REASONS = (
+    StockMovementReason.SUPPLY,
+    StockMovementReason.RECEIPT,
+    StockMovementReason.TRANSFER_IN,
+    StockMovementReason.COUNT_GAIN,
+)
 STOCK_OUT_REASONS = (
     StockMovementReason.ISSUED,
     StockMovementReason.WRITE_OFF,
     StockMovementReason.ISSUED_TECHCARD,
     StockMovementReason.ISSUED_MANUAL,
+    StockMovementReason.TRANSFER_OUT,
+    StockMovementReason.COUNT_LOSS,
 )
 
 
@@ -50,6 +61,10 @@ class WarehouseOperationKind(str, enum.Enum):
     WRITE_OFF = "write_off"
     ISSUE_TECHCARD = "issue_techcard"
     ISSUE_MANUAL = "issue_manual"
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_OUT = "transfer_out"
+    COUNT_GAIN = "count_gain"
+    COUNT_LOSS = "count_loss"
 
 
 class IssueDestinationKind(str, enum.Enum):
@@ -193,6 +208,34 @@ class WarehouseOperation(Base):
     movements: Mapped[list["StockMovement"]] = relationship(
         back_populates="operation", order_by="StockMovement.id"
     )
+
+
+class StockDocument(Base):
+    """Drafts and immutable posted count/transfer documents; history never replays stock."""
+
+    __tablename__ = "stock_documents"
+    __table_args__ = (UniqueConstraint("kind", "source_id", name="uq_stock_documents_source"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    number: Mapped[str] = mapped_column(String(255), nullable=False)
+    warehouse: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_warehouse: Mapped[str | None] = mapped_column(String(255))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    note: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    lines: Mapped[list] = mapped_column(JSON, nullable=False)
+    operation_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_id: Mapped[str | None] = mapped_column(String(255))
+    source_state: Mapped[str | None] = mapped_column(String(255))
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    request_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    parameters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    post_request_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    posted_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class StockMovement(Base):
