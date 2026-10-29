@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -24,6 +25,13 @@ class UserUpdate(BaseModel):
     password: str | None = None
     is_active: bool | None = None
     role: UserRole | None = None
+    job_role: Literal["director", "manager", "accountant"] | None = None
+
+
+class WorkspacePreferences(BaseModel):
+    view: Literal["general", "director", "manager", "accountant"]
+    blocks: list[Literal["personal_tasks", "my_clients", "attention", "metrics", "aktualnoe", "marina"]] = Field(max_length=6)
+    sections: list[Literal["clients", "production", "installation", "cycle", "warehouse", "marketing", "tasks", "users", "accounting"]] = Field(max_length=9)
 
 
 class UserAccessUpdate(BaseModel):
@@ -45,6 +53,7 @@ class UserOut(BaseModel):
     is_active: bool
     created_at: datetime
     module_access: dict[Module, AccessLevel] = {}
+    job_role: Literal["director", "manager", "accountant"] | None = None
 
     @staticmethod
     def from_model(user) -> "UserOut":
@@ -56,4 +65,5 @@ class UserOut(BaseModel):
             is_active=user.is_active,
             created_at=user.created_at,
             module_access=user.access_levels(),
+            job_role=user.job_role,
         )

@@ -6,7 +6,7 @@ from app.core.deps import get_current_user, require_admin
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
 from app.users.models import User
-from app.users.schemas import PasswordChange, Token, UserAccessUpdate, UserCreate, UserOut, UserUpdate
+from app.users.schemas import PasswordChange, Token, UserAccessUpdate, UserCreate, UserOut, UserUpdate, WorkspacePreferences
 from app.users.service import (
     apply_account_change,
     change_password,
@@ -36,6 +36,20 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 @app.get("/me", response_model=UserOut)
 def get_me(user: User = Depends(get_current_user)):
     return UserOut.from_model(user)
+
+
+@app.get("/me/workspace", response_model=WorkspacePreferences | None)
+def get_my_workspace(user: User = Depends(get_current_user)):
+    return user.workspace_preferences
+
+
+@app.put("/me/workspace", response_model=WorkspacePreferences)
+def update_my_workspace(payload: WorkspacePreferences, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if user.job_role is not None and payload.view != user.job_role:
+        raise HTTPException(status_code=403, detail="Рабочий экран определяется назначенной должностью")
+    user.workspace_preferences = payload.model_dump()
+    db.commit()
+    return user.workspace_preferences
 
 
 @app.post("/me/password", response_model=UserOut)
@@ -92,6 +106,9 @@ def update_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
     if payload.full_name is not None:
         user.full_name = payload.full_name
+    if "job_role" in payload.model_fields_set and user.job_role != payload.job_role:
+        user.job_role = payload.job_role
+        user.workspace_preferences = None
     if payload.password is not None:
         user.hashed_password = hash_password(payload.password)
     # Роль и активность — через сервис: он же держит проверки на самого себя
