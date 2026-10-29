@@ -54,7 +54,7 @@ def is_claimable_for(task: Task, user: User) -> bool:
 
 
 def is_mine_or_claimable(task: Task, user: User) -> bool:
-    if user in task.assignees or user in task.reviewers:
+    if user in task.assignees or user in task.reviewers or task.responsible_id == user.id:
         return True
     return is_claimable_for(task, user)
 
@@ -66,7 +66,7 @@ def default_board_scope(user: User) -> TaskScope:
 
 
 def apply_scope(tasks: list[Task], user: User, scope: TaskScope) -> list[Task]:
-    """Фильтр `scope` доски (0021): ALL — без фильтра, MINE — свои и свободные,
+    """Фильтр `scope` доски (0021): ALL — без фильтра, MINE — исполнитель, проверяющий, ответственный и свободные,
     CLAIMABLE — только свободные. Права на ALL проверяет вызывающий."""
     if scope == TaskScope.MINE:
         return [t for t in tasks if is_mine_or_claimable(t, user)]

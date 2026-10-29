@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -408,3 +409,21 @@ class TechcardIssueCreate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
     # None — отпустить весь остаток норматива.
     lines: list[OperationLineIn] | None = None
+
+
+class MaterialRequestIssue(BaseModel):
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6, allow_inf_nan=False)
+
+
+class PendingMaterialRequestOut(BaseModel):
+    id: int
+    production_id: int
+    production_name: str
+    block_name: str
+    material_title: str
+    unit: str
+    quantity: float
+    in_stock: float
+    is_fractional: bool
+    requested_by: str
+    created_at: datetime

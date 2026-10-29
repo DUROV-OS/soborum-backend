@@ -30,6 +30,7 @@ jobs:
       APP_ENV: dev
       JWT_SECRET: ci-only-checks-secret-not-used-anywhere
       DATABASE_URL: postgresql+psycopg2://soborbum:soborbum@localhost:5432/soborbum
+      LOCK_TEST_DATABASE_URL: postgresql+psycopg2://soborbum:soborbum@localhost:5432/soborbum
     steps:
       - uses: actions/checkout@v4
 
