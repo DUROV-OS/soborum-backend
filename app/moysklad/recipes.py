@@ -213,7 +213,7 @@ def manufacture(db, recipe_id, parameters, user):
             .filter(WarehouseMaterial.id.in_(ids))
             .order_by(WarehouseMaterial.id)
             .populate_existing()
-            .with_for_update()
+            .with_for_update(of=WarehouseMaterial)
         }
         if any(m.is_archived for m in materials.values()):
             raise HTTPException(422, "В составе есть архивный материал")

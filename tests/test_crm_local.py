@@ -209,3 +209,15 @@ def test_imported_files_are_scoped_and_path_is_confined(db, make_user, api, tmp_
     with pytest.raises(HTTPException) as e:
         _read_imported_attachment(db, sales, row.id)
     assert e.value.status_code == 404
+
+
+def test_overlapping_export_pages_do_not_duplicate_source_events(db, make_user):
+    owner = make_user(admin=True)
+    event = {"id": "same-event", "entity_id": 123, "type": "lead_added"}
+    data = {"events": [event, dict(event)]}
+    result = import_export(
+        db, data, {"counts": {"events": 2}, "completed_at": "2026-10-28T00:00:00Z"}, owner.id
+    )
+    db.commit()
+    assert result["duplicates_suppressed"] == 1
+    assert db.query(SourceRecord).filter_by(entity_type="amocrm/events").count() == 1

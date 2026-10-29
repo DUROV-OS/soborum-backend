@@ -342,13 +342,14 @@ def _load_operation_lines(
 ) -> list[tuple[WarehouseMaterial, float]]:
     if not lines:
         raise _bad_request("Добавьте хотя бы одну позицию")
+    locked = _lock_materials(db, [id for id, _ in lines])
     seen: set[int] = set()
     loaded: list[tuple[WarehouseMaterial, float]] = []
     for material_id, quantity in lines:
         if material_id in seen:
             raise _bad_request("Материал повторяется в нескольких строках — объедините их в одну")
         seen.add(material_id)
-        material = get_material_or_404(db, material_id)
+        material = locked.get(material_id) or get_material_or_404(db, material_id)
         if material.is_archived:
             raise _bad_request(f"«{material.title}» находится в архиве")
         quantity = float(quantity)
@@ -358,6 +359,19 @@ def _load_operation_lines(
             raise _bad_request(f"«{material.title}» учитывается в целых {material.unit} — укажите целое количество")
         loaded.append((material, quantity))
     return loaded
+
+
+def _lock_materials(db: Session, ids: list[int]) -> dict[int, WarehouseMaterial]:
+    """Every stock writer shares ordered row locks with manufacturing.
+
+    Lock only the material table: its eager supplier join is nullable and
+    PostgreSQL cannot lock that side of an outer join.
+    """
+    db.flush()
+    return {m.id: m for m in db.query(WarehouseMaterial)
+        .filter(WarehouseMaterial.id.in_(sorted(set(ids))))
+        .order_by(WarehouseMaterial.id).populate_existing()
+        .with_for_update(of=WarehouseMaterial).all()}
 
 
 def _ensure_enough_stock(lines: list[tuple[WarehouseMaterial, float]]) -> None:
@@ -804,11 +818,15 @@ def _notify_material_request(db: Session, request: MaterialRequest, title: str) 
 
 
 def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> MaterialRequest:
+    request = db.query(MaterialRequest).filter_by(id=request.id).populate_existing().with_for_update(of=MaterialRequest).one()
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
 
     module_material = request.block_material
-    warehouse_material = request.warehouse_material
+    warehouse_material = _lock_materials(db, [request.warehouse_material_id])[request.warehouse_material_id]
+    if warehouse_material.is_archived:
+        raise _bad_request("Материал находится в архиве")
+    _ensure_enough_stock([(warehouse_material, float(request.quantity))])
 
     module_material.quantity_requested -= request.quantity
     module_material.quantity_provided += request.quantity
@@ -834,6 +852,7 @@ def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> 
 
 
 def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> MaterialRequest:
+    request = db.query(MaterialRequest).filter_by(id=request.id).populate_existing().with_for_update(of=MaterialRequest).one()
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
 
@@ -863,7 +882,12 @@ def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> M
 
 
 def create_supply(db: Session, payload: SupplyCreate, created_by: User) -> Supply:
-    materials = {line.warehouse_material_id: get_material_or_404(db, line.warehouse_material_id) for line in payload.lines}
+    materials = _lock_materials(db, [line.warehouse_material_id for line in payload.lines])
+    for line in payload.lines:
+        if line.warehouse_material_id not in materials:
+            get_material_or_404(db, line.warehouse_material_id)
+        if materials[line.warehouse_material_id].is_archived:
+            raise _bad_request("Материал находится в архиве")
     warehouses = {m.warehouse for m in materials.values()}
     if len(warehouses) > 1:
         raise HTTPException(
@@ -888,6 +912,10 @@ def create_supply(db: Session, payload: SupplyCreate, created_by: User) -> Suppl
 
 
 def import_supply(db: Session, rows: list[dict], warehouse: Warehouse, created_by: User) -> Supply:
+    known_ids = {row['warehouse_material_id'] for row in rows if row['warehouse_material_id'] is not None}
+    known_codes = [row['code'] for row in rows if row['warehouse_material_id'] is None]
+    known_ids.update(id for (id,) in db.query(WarehouseMaterial.id).filter(WarehouseMaterial.warehouse == warehouse, WarehouseMaterial.code.in_(known_codes)))
+    _lock_materials(db, list(known_ids))
     supply = Supply(supplier_name=None, created_by_id=created_by.id)
     db.add(supply)
     db.flush()
@@ -928,6 +956,8 @@ def import_supply(db: Session, rows: list[dict], warehouse: Warehouse, created_b
                 db.flush()
 
         db.add(SupplyLine(supply_id=supply.id, warehouse_material_id=material.id, quantity=row["quantity"]))
+        if material.is_archived:
+            raise _bad_request("Материал находится в архиве")
         material.quantity_in_stock += row["quantity"]
         db.flush()
         log_movement(db, material, float(row["quantity"]), StockMovementReason.SUPPLY, created_by, supply.id)
