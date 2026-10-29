@@ -107,16 +107,18 @@ class WarehouseMaterial(Base):
         default=MaterialCategory.NONE,
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    catalog_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     code: Mapped[str] = mapped_column(String(64), nullable=False)
 
     unit: Mapped[str] = mapped_column(String(32), nullable=False)
     is_fractional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    quantity_in_stock: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
-    purchase_price: Mapped[float] = mapped_column(Numeric(14, 2, asdecimal=False), nullable=False, default=0)
+    quantity_in_stock: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False, default=0)
+    purchase_price: Mapped[float] = mapped_column(Numeric(20, 8, asdecimal=False), nullable=False, default=0)
 
     # kept for the automatic shortage-task feature (see service.sync_shortage_task);
     # not part of the user-facing field set, edited only via update_threshold
-    threshold: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
+    threshold: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False, default=0)
 
     # Характеристики позиции (0078) - всё необязательное: у старых материалов
     # и у импортированных из прайсов этих данных нет.
@@ -124,7 +126,7 @@ class WarehouseMaterial(Base):
     size: Mapped[str | None] = mapped_column(String(120), nullable=True)
     diameter: Mapped[str | None] = mapped_column(String(60), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    pack_quantity: Mapped[float | None] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=True)
+    pack_quantity: Mapped[float | None] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=True)
     supplier_id: Mapped[int | None] = mapped_column(
         ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True
     )
@@ -152,7 +154,7 @@ class SupplyLine(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     supply_id: Mapped[int] = mapped_column(ForeignKey("supplies.id", ondelete="CASCADE"), nullable=False)
     warehouse_material_id: Mapped[int] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=False)
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False)
 
     supply: Mapped["Supply"] = relationship(back_populates="lines")
     warehouse_material: Mapped["WarehouseMaterial"] = relationship()
@@ -198,7 +200,7 @@ class StockMovement(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     warehouse_material_id: Mapped[int] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=False)
-    delta: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False)
+    delta: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False)
     reason: Mapped[StockMovementReason] = mapped_column(
         Enum(StockMovementReason, name="stock_movement_reason"), nullable=False
     )
@@ -214,7 +216,7 @@ class StockMovement(Base):
     )
     # Остаток материала сразу после движения — фиксируется при проведении и не
     # пересчитывается. NULL у движений до 0088.
-    balance_after: Mapped[float | None] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=True)
+    balance_after: Mapped[float | None] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

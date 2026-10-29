@@ -91,9 +91,9 @@ class BlockMaterial(Base):
     warehouse_material_id: Mapped[int] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=False)
     inventory_number: Mapped[str] = mapped_column(String(64), nullable=False)
     unit: Mapped[str] = mapped_column(String(32), nullable=False)
-    quantity_required: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
-    quantity_requested: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
-    quantity_provided: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False, default=0)
+    quantity_required: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False, default=0)
+    quantity_requested: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False, default=0)
+    quantity_provided: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False, default=0)
     # Время последнего изменения количеств — «время факта» для оценки
     # готовности. NULL у строк, созданных до 0084-b.
     updated_at: Mapped[datetime | None] = mapped_column(
@@ -115,7 +115,7 @@ class MaterialRequest(Base):
         ForeignKey("block_materials.id", ondelete="CASCADE"), nullable=False
     )
     warehouse_material_id: Mapped[int] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=False)
-    quantity: Mapped[float] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=False)
     status: Mapped[MaterialRequestStatus] = mapped_column(
         Enum(MaterialRequestStatus, name="material_request_status"),
         nullable=False,

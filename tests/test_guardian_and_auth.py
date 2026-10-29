@@ -154,6 +154,13 @@ def test_storage_falls_back_off_read_only_app(monkeypatch):
     from app.common import files as files_mod
     from app.core import config
 
+    makedirs = files_mod.os.makedirs
+    def readonly_app(path, *args, **kwargs):
+        if path == '/app/storage':
+            raise PermissionError('read-only application mount')
+        return makedirs(path, *args, **kwargs)
+    monkeypatch.setattr(files_mod.os, 'makedirs', readonly_app)
+
     monkeypatch.setattr(config.settings, "storage_dir", "/app/storage")
     path = files_mod._writable_storage_dir()
     assert path == "/tmp/soborum-storage"
