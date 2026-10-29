@@ -4,6 +4,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import time
 from urllib.parse import urlsplit
@@ -81,7 +82,7 @@ def analyze(text):
     }, 'required': ['summary','key_points','tasks']}
     prompt = ('Ты помощник руководителя продаж домов и бань компании Дуров.House. '
               'Составь полезный короткий разбор телефонного разговора на русском. '
-              'Продавец звонит от компании, покупатель отвечает. Не путай их решения: '
+              'Продавец представляет компанию, покупатель обсуждает покупку. Не путай их решения: '
               'если покупатель отложил покупку, это НЕ означает, что компания отложила планы. '
               'Если роли неясны, используй нейтральную формулировку о покупке. '
               'summary: 2–3 простых предложения о предмете, результате и следующем шаге. '
@@ -89,7 +90,8 @@ def analyze(text):
               'не названы. Договорились связаться позднее, точной даты нет». '
               'key_points: только факты о потребности, препятствиях и договорённостях. '
               'Вопрос продавца НЕ является фактом о клиенте. '
-              'tasks: только явно оговорённые следующие действия. '
+              'tasks: только явно произнесённые просьбы или обещания следующего действия, '
+              'без твоих рекомендаций. Не назначай задачу уточнить дату, если это не поручали. '
               'Каждый пункт должен содержать короткий text и дословную подтверждающую quote. '
               'Не придумывай суммы, имена, сроки, эмоции и причины отказа. '
               'Если фактов нет — пустые списки. Никогда не упоминай источник, транскрипт, '
@@ -116,7 +118,13 @@ def analyze(text):
         for value in results:
             for item in value.get(key, [])[:20]:
                 if isinstance(item,dict) and isinstance(item.get('quote'),str) and item['quote'].strip() and item['quote'] in text:
-                    result[key].append({'text': str(item.get('text',''))[:1500], 'quote': item['quote'][:1500]})
+                    quote = item['quote'][:1500]
+                    if key == 'tasks':
+                        # Conservative first release: only verbatim requests/promises with
+                        # an explicit action, never a model-invented task title or deadline.
+                        if not re.search(r'\b(?:пришл(?:ю|ём|ем|ите)|отправ(?:лю|им|ьте)|перезвон(?:ю|им|ите)|позвон(?:ю|им|ите)|свяж(?:усь|емся|итесь)|связимся|подготов(?:лю|им|ьте)|сдела(?:ю|ем|йте)|договорились)\b', quote, re.I):
+                            continue
+                    result[key].append({'text': quote if key == 'tasks' else str(item.get('text',''))[:1500], 'quote': quote})
     return result
 
 

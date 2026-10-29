@@ -144,9 +144,10 @@ def test_analysis_keeps_only_points_with_real_quotes(monkeypatch):
     import httpx
     monkeypatch.setattr(settings,'call_analysis_url','http://127.0.0.1:11434')
     def response(request):
-        return httpx.Response(200,json={'message':{'content': '{"summary":"Обсуждали расчёт.","key_points":[{"text":"Есть расчёт","quote":"Пришлите расчёт"},{"text":"Оплачено","quote":"Оплатили миллион"}],"tasks":[]}'}})
+        return httpx.Response(200,json={'message':{'content': '{"summary":"Обсуждали расчёт.","key_points":[{"text":"Есть расчёт","quote":"Пришлите расчёт"},{"text":"Оплачено","quote":"Оплатили миллион"}],"tasks":[{"text":"Назначить встречу в пятницу","quote":"Пока не думаем об этом"},{"text":"Прислать через неделю","quote":"Пришлите расчёт"}]}'}})
     original=httpx.Client
     monkeypatch.setattr(worker.httpx,'Client',lambda **kw:original(transport=httpx.MockTransport(response)))
-    result=worker.analyze('Пришлите расчёт завтра.')
+    result=worker.analyze('Пришлите расчёт завтра. Пока не думаем об этом')
     assert len(result['key_points'])==1
     assert result['key_points'][0]['quote']=='Пришлите расчёт'
+    assert result['tasks']==[{'text':'Пришлите расчёт','quote':'Пришлите расчёт'}]
