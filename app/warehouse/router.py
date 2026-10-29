@@ -12,6 +12,7 @@ from app.production.schemas import MaterialRequestOut
 from app.production.models import MaterialRequest, MaterialRequestStatus
 from app.users.models import User
 from app.warehouse import excel, price_import, service as warehouse_service
+from app.warehouse.documents import router as document_router
 from app.warehouse.models import (
     IssueDestinationKind,
     MaterialCategory,
@@ -635,3 +636,6 @@ def unlink_max_chat(supplier_id: int, db: Session = Depends(get_db), _: User = D
     supplier = warehouse_service.unlink_max_chat(db, supplier)
     db.commit()
     return warehouse_service.supplier_out(supplier)
+
+
+app.include_router(document_router)
