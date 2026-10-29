@@ -287,16 +287,20 @@ def intake_lead(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool]:
     # Заявка с сайта ждёт обработки (0111-b); повторное обращение тоже поднимает
     # признак заново — менеджеру нужно увидеть, что клиент написал ещё раз.
     client.lead_unprocessed = True
-    db.add(
-        ClientLeadRequest(
-            client_id=client.id,
-            source=payload.source,
-            message=payload.message,
-            utm=payload.utm or None,
-            is_repeat=not created,
-        )
+    lead_request = ClientLeadRequest(
+        client_id=client.id,
+        source=payload.source,
+        message=payload.message,
+        utm=payload.utm or None,
+        is_repeat=not created,
     )
+    db.add(lead_request)
     db.flush()
+    # Both views share the same transaction: a saved website inquiry must also
+    # be visible to sales, including repeat requests for an existing client.
+    from app.crm.service import register_client_request
+
+    register_client_request(db, client, lead_request)
     return client, created
 
 

@@ -25,6 +25,8 @@ class DealData(BaseModel):
     loss_reason: str = Field("", max_length=2000)
     custom_fields: list = Field(default_factory=list, max_length=100)
     is_unsorted: bool = False
+    client_id: int | None = Field(None, ge=1)
+    client_request_id: int | None = Field(None, ge=1)
 
 
 class InquiryData(BaseModel):
@@ -37,6 +39,8 @@ class InquiryData(BaseModel):
     deal_id: int | None = None
     accepted_deal_id: int | None = None
     reason: str = Field("", max_length=2000)
+    client_id: int | None = Field(None, ge=1)
+    client_request_id: int | None = Field(None, ge=1)
 
 
 class TaskData(BaseModel):

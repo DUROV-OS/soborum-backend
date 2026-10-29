@@ -19,6 +19,32 @@ SCHEMAS = {
 }
 
 
+def register_client_request(db, client, request, *, archived=False):
+    """Idempotent local sales inbox entry; caller owns the transaction."""
+    source_id = "website/" + str(request.id)
+    row = db.query(CRMEntity).filter_by(kind="inquiry", source_id=source_id).first()
+    if row is not None:
+        return row
+    row = CRMEntity(
+        kind="inquiry",
+        source_id=source_id,
+        name=("Повторная заявка: " if request.is_repeat else "Заявка с сайта: ") + client.full_name,
+        archived=archived,
+        created_at=request.created_at,
+        payload=InquiryData(
+            source_name=request.source,
+            contact_name=client.full_name,
+            phone=client.phone or "",
+            email=client.email or "",
+            client_id=client.id,
+            client_request_id=request.id,
+        ).model_dump(mode="json"),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
 def out(row):
     return {
         "id": row.id,
@@ -71,6 +97,17 @@ def validate(db, kind, payload, previous=None):
         get(db, data["company_id"], "company")
     if kind == "task" and data.get("entity_id"):
         get(db, data["entity_id"])
+    if data.get("client_id"):
+        from app.clients.models import Client
+
+        if db.get(Client, data["client_id"]) is None:
+            raise HTTPException(422, "Карточка клиента не найдена")
+    if data.get("client_request_id"):
+        from app.clients.models import ClientLeadRequest
+
+        request = db.get(ClientLeadRequest, data["client_request_id"])
+        if request is None or request.client_id != data.get("client_id"):
+            raise HTTPException(422, "Заявка не принадлежит клиенту")
     return data
 
 
@@ -228,6 +265,29 @@ def history(db, row, limit=100, offset=0):
                     "source": "amocrm",
                 }
             )
+    if row.payload.get("client_request_id"):
+        from app.clients.models import ClientLeadRequest
+
+        request = db.get(ClientLeadRequest, row.payload["client_request_id"])
+        if request is not None and request.client_id == row.payload.get("client_id"):
+            entries.append(
+                {
+                    "id": "website-" + str(request.id),
+                    "created_at": request.created_at.isoformat(),
+                    "text": "\n".join(
+                        filter(
+                            None,
+                            [
+                                request.source,
+                                request.message,
+                                "\n".join(f"{k}: {v}" for k, v in (request.utm or {}).items()),
+                            ],
+                        )
+                    ),
+                    "details": {"client_id": request.client_id, "is_repeat": request.is_repeat},
+                    "source": "soborum",
+                }
+            )
     entries.sort(key=lambda r: r["created_at"], reverse=True)
     return {"total": len(entries), "items": entries[offset : offset + limit]}
 
@@ -283,19 +343,31 @@ def accept_inquiry(db, row, entry, user):
         raise HTTPException(409, "Заявка находится в архиве")
     if not entry.name.strip():
         raise HTTPException(422, "Введите название сделки")
-    data = validate(db, "deal", {**entry.data, "is_unsorted": False})
     old = row.payload
+    data = validate(
+        db,
+        "deal",
+        {
+            **entry.data,
+            "is_unsorted": False,
+            "client_id": old.get("client_id"),
+            "client_request_id": old.get("client_request_id"),
+        },
+    )
     deal = get(db, old["deal_id"], "deal") if old.get("deal_id") else None
     if deal and not data.get("contact_ids"):
         data["contact_ids"] = deal.payload.get("contact_ids", [])
     if not data.get("contact_ids") and (old.get("phone") or old.get("email")):
         phone = old.get("phone", "")
         email = old.get("email", "")
-        existing = db.query(CRMEntity).filter_by(kind="contact").all()
+        existing = db.query(CRMEntity).filter_by(kind="contact", archived=False).all()
+        from app.clients.service import _phone_key, _email_key
+
         candidates = [
             r
             for r in existing
-            if (phone and r.payload.get("phone") == phone) or (email and r.payload.get("email") == email)
+            if (_phone_key(phone) and _phone_key(r.payload.get("phone") or "") == _phone_key(phone))
+            or (_email_key(email) and _email_key(r.payload.get("email") or "") == _email_key(email))
         ]
         contact = candidates[0] if len(candidates) == 1 else None
         if contact is None:
@@ -319,6 +391,13 @@ def accept_inquiry(db, row, entry, user):
     row.payload = {**old, "accepted_deal_id": deal.id}
     row.archived = True
     row.version += 1
+    if old.get("client_id"):
+        from app.clients.models import Client
+        from app.clients.service import take_lead
+
+        client = db.get(Client, old["client_id"])
+        if client is not None:
+            take_lead(db, client)
     db.add(CRMEvent(entity_id=row.id, actor_id=user.id, action="accepted", details={"deal_id": deal.id}))
     db.add(
         CRMEvent(

@@ -49,6 +49,71 @@ def test_creates_lead_with_phone_only(intake, db):
     assert (req.message, req.source, req.is_repeat) == ("Хочу дом", "Сайт", False)
 
 
+def test_website_requests_reach_sales_and_keep_client_history(intake, db, make_user):
+    from app.crm import service
+    from app.crm.models import CRMEntity
+    from app.crm.schemas import Entry
+
+    first = _post(
+        intake, {"name": "Иван", "phone": "8 (900) 111-22-33", "message": "Нужен дом", "utm_source": "site"}
+    ).json()
+    _post(intake, {"name": "Иван", "phone": "+79001112233", "message": "Уточнение"})
+    inquiries = db.query(CRMEntity).filter_by(kind="inquiry").order_by(CRMEntity.id).all()
+    assert len(inquiries) == 2
+    client = db.get(Client, first["client_id"])
+    request = db.query(ClientLeadRequest).order_by(ClientLeadRequest.id).first()
+    assert service.register_client_request(db, client, request).id == inquiries[0].id
+    assert db.query(CRMEntity).filter_by(kind="inquiry").count() == 2
+    assert "Нужен дом" in service.history(db, inquiries[0])["items"][0]["text"]
+    assert "utm_source: site" in service.history(db, inquiries[0])["items"][0]["text"]
+    owner = make_user(admin=True)
+    pipeline = service.create(db, "pipeline", Entry(name="Продажи"), owner)
+    stage = service.create(db, "stage", Entry(name="Новый", data={"pipeline_id": pipeline["id"]}), owner)
+    contact = service.create(db, "contact", Entry(name="Иван", data={"phone": "+7 900 111 22 33"}), owner)
+    service.create(db, "contact", Entry(name="Старый контакт", archived=True, data={"phone": "+79001112233"}), owner)
+    deal = service.accept_inquiry(
+        db,
+        inquiries[0],
+        Entry(name="Дом", data={"pipeline_id": pipeline["id"], "stage_id": stage["id"]}),
+        owner,
+    )
+    assert deal["data"]["client_id"] == client.id
+    assert deal["data"]["contact_ids"] == [contact["id"]]
+    assert "Нужен дом" in "\n".join(
+        r["text"] for r in service.history(db, service.get(db, deal["id"]))["items"]
+    )
+    assert not client.lead_unprocessed
+    assert inquiries[0].archived and not inquiries[1].archived
+
+
+def test_backfill_keeps_processed_website_request_archived(intake, db):
+    from app.crm.models import CRMEntity
+    from app.crm.service import register_client_request
+    first = _post(intake, {"name": "Клиент", "phone": "89001112233"}).json()
+    db.query(CRMEntity).delete()
+    client = db.get(Client, first['client_id'])
+    request = db.query(ClientLeadRequest).one()
+    inquiry = register_client_request(db, client, request, archived=True)
+    assert inquiry.archived
+    assert inquiry.created_at == request.created_at
+
+
+def test_sales_registration_failure_rolls_back_website_request(db, monkeypatch):
+    from app.clients.service import intake_lead
+    from app.clients.schemas import LeadIntakePayload
+    from app.crm import service
+
+    def fail(*args):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(service, "register_client_request", fail)
+    with pytest.raises(RuntimeError):
+        intake_lead(db, LeadIntakePayload(name="Клиент", phone="89001112233"))
+    db.rollback()
+    assert db.query(Client).count() == 0
+    assert db.query(ClientLeadRequest).count() == 0
+
+
 def test_creates_lead_with_email_only_and_utm(intake, db):
     response = _post(
         intake,
