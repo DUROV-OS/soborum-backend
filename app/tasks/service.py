@@ -41,6 +41,8 @@ def task_section(task: Task) -> Module | None:
     with access to `tasks`."""
     if task.block_id is not None:
         return Module.PRODUCTION
+    if (task.link_meta or {}).get("crm_task_id"):
+        return Module.CLIENTS
     return _LINK_TYPE_SECTION.get(task.link_type)
 
 
@@ -102,10 +104,14 @@ def claim_task(db: Session, task: Task, user: User) -> Task:
     return task
 
 
-def get_task_or_404(db: Session, task_id: int) -> Task:
+def get_task_or_404(db: Session, task_id: int, *, for_update: bool = False) -> Task:
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Задача не найдена")
+    if for_update and (task.link_meta or {}).get("crm_task_id"):
+        from app.crm.tasks import lock_for_board
+
+        return lock_for_board(db, task)
     return task
 
 
@@ -316,7 +322,10 @@ def _finalize_status(
     if task.status == TaskStatus.DONE:
         _cascade_readiness(db, task)
         task_sync.handle_task_closed(db, task)
+    if (task.link_meta or {}).get("crm_task_id"):
+        from app.crm.tasks import sync_from_board
 
+        sync_from_board(db, task, actor)
     return task
 
 

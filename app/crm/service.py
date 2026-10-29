@@ -6,6 +6,7 @@ from app.crm.models import CRMEntity, CRMEvent
 from app.crm.schemas import ContactData, DealData, TaskData, PipelineData, StageData, InquiryData
 from app.moysklad.models import SourceRecord
 from app.users.models import User
+from app.common.module_access import Module
 from pydantic import ValidationError
 
 SCHEMAS = {
@@ -42,11 +43,28 @@ def register_client_request(db, client, request, *, archived=False):
     )
     db.add(row)
     db.flush()
+    if not archived:
+        from app.crm.guard import ensure_followup, aware, settings
+        from datetime import timedelta
+
+        ensure_followup(
+            db,
+            row,
+            key="website-task/" + str(request.id),
+            responsible_id=client.manager_id,
+            due_at=aware(request.created_at) + timedelta(hours=settings(db)["response_hours"]),
+        )
     return row
 
 
 def out(row):
+    from sqlalchemy.orm import object_session
+    from app.crm.models import CRMTaskLink
+
+    db = object_session(row)
+    task_link = db.get(CRMTaskLink, row.id) if db and row.kind == "task" else None
     return {
+        "board_task_id": task_link.task_id if task_link else None,
         "id": row.id,
         "kind": row.kind,
         "name": row.name,
@@ -75,7 +93,7 @@ def validate(db, kind, payload, previous=None):
     uid = data.get("responsible_user_id")
     if uid is not None:
         user = db.get(User, uid)
-        if not user or not user.is_active:
+        if not user or not user.is_active or not user.has_access(Module.CLIENTS):
             raise HTTPException(422, "Выберите действующего сотрудника")
     if kind in ("deal", "stage"):
         pipeline = get(db, data["pipeline_id"], "pipeline")
@@ -148,11 +166,29 @@ def func_lower(value):
 
 def create(db, kind, entry, user):
     data = validate(db, kind, entry.data)
+    if kind == "deal" and not data.get("responsible_user_id"):
+        data["responsible_user_id"] = user.id
+    if kind=='task' and data.get('entity_id') and not entry.archived:
+        from app.crm.followup import step_owner
+        parent=db.query(CRMEntity).filter_by(id=data['entity_id']).populate_existing().with_for_update(of=CRMEntity).one()
+        if parent.kind in ('deal','inquiry','contact','company'):
+            data['responsible_user_id']=step_owner(db,parent,user,data.get('responsible_user_id'))
     row = CRMEntity(kind=kind, name=entry.name.strip(), archived=entry.archived, payload=data)
     if not row.name:
         raise HTTPException(422, "Введите название")
     db.add(row)
     db.flush()
+    if kind == "task":
+        from app.crm.tasks import sync_to_board
+
+        sync_to_board(db, row)
+    if kind == "deal" and not row.archived and not data.get("is_unsorted"):
+        from app.crm.guard import ensure_followup, close_terminal_followups
+
+        ensure_followup(
+            db, row, key="followup/deal/" + str(row.id), responsible_id=data.get("responsible_user_id")
+        )
+        close_terminal_followups(db, row, user)
     db.add(
         CRMEvent(
             entity_id=row.id, actor_id=user.id, action="created", details={"name": row.name, "data": data}
@@ -189,6 +225,18 @@ def patch(db, id, payload, user):
     if result.rowcount != 1:
         db.rollback()
         raise HTTPException(409, "Запись уже изменена. Обновите карточку.")
+    if row.kind == "task":
+        from app.crm.tasks import sync_to_board
+
+        db.expire(row)
+        db.refresh(row)
+        sync_to_board(db, row)
+    if row.kind == "deal":
+        from app.crm.guard import close_terminal_followups
+
+        db.expire(row)
+        db.refresh(row)
+        close_terminal_followups(db, row, user)
     db.add(
         CRMEvent(
             entity_id=id,
@@ -354,6 +402,8 @@ def accept_inquiry(db, row, entry, user):
             "client_request_id": old.get("client_request_id"),
         },
     )
+    if not data.get("responsible_user_id"):
+        data["responsible_user_id"] = user.id
     deal = get(db, old["deal_id"], "deal") if old.get("deal_id") else None
     if deal and not data.get("contact_ids"):
         data["contact_ids"] = deal.payload.get("contact_ids", [])
@@ -391,6 +441,10 @@ def accept_inquiry(db, row, entry, user):
     row.payload = {**old, "accepted_deal_id": deal.id}
     row.archived = True
     row.version += 1
+    from app.crm.guard import accepted, close_terminal_followups
+
+    accepted(db, row, deal, user)
+    close_terminal_followups(db, deal, user)
     if old.get("client_id"):
         from app.clients.models import Client
         from app.clients.service import take_lead

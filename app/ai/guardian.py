@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 from app.ai.models import Chat, ChatMode
 from app.ai.tools import DOMAIN_TOOLS, TOOLS, ToolDef
-from app.common.module_access import Module
+from app.common.module_access import Module, AccessLevel
 from app.users.models import User
 
 POLICY_VERSION = "pilot-guardian-v1"
@@ -50,6 +50,8 @@ def authorize_tool(chat: Chat, user: User, name: str, tool_input: dict, *, appro
     if not user.has_access(tool.required_module):
         raise HTTPException(403, "Доступ к разделу действия отсутствует или был отозван")
     if not tool.read_only:
+        if user.access_level(tool.required_module) < AccessLevel.EDIT:
+            raise HTTPException(403, 'Для изменения данных нужны права редактирования раздела')
         if chat.mode == ChatMode.NO_ACTIONS:
             raise HTTPException(403, "В режиме анализа изменение данных запрещено")
         # A3/A4 require a separate approved rule and limits. A chat switch is not that rule.

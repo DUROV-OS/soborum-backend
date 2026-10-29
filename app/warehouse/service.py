@@ -1024,7 +1024,13 @@ def delete_supplier(db: Session, supplier: Supplier) -> None:
     (`ondelete="CASCADE"`). Заказы поставщику (`app.accounting.SupplierOrder`)
     ссылаются на него без `ondelete` — отказ 409 с понятным сообщением вместо
     сырого `IntegrityError`, если такие заказы есть (0030-c)."""
-    has_orders = db.query(SupplierOrder.id).filter(SupplierOrder.supplier_id == supplier.id).first() is not None
+    from app.purchasing.models import PurchaseReceipt
+
+    if db.query(PurchaseReceipt.id).filter_by(supplier_id=supplier.id).first():
+        raise HTTPException(409, "Нельзя удалить поставщика — по нему есть приёмки. Используйте архив.")
+    has_orders = (
+        db.query(SupplierOrder.id).filter(SupplierOrder.supplier_id == supplier.id).first() is not None
+    )
     if has_orders:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1312,15 +1318,29 @@ def recalculate_supplier_totals(db: Session, supplier_id: int) -> None:
     не разъезжается при правке/удалении заказов. Вызывается сервисом заказов
     после create/update/delete; `total_paid` эта функция не трогает (растёт
     при проведении оплаты — 0011-f)."""
-    supplier = db.get(Supplier, supplier_id)
+    supplier = (
+        db.query(Supplier).filter_by(id=supplier_id).populate_existing().with_for_update(of=Supplier).first()
+    )
     if supplier is None:
         return
     total = (
-        db.query(func.sum(SupplierOrder.total_cost))
+        db.query(func.sum(SupplierOrder.total_cost)).filter(SupplierOrder.supplier_id == supplier_id).scalar()
+    )
+    supplier.total_ordered = float(total or 0)
+    from app.accounting.models import MoneyMovement, MoneyMovementStatus
+
+    opening = (
+        db.query(func.sum(SupplierOrder.opening_paid))
         .filter(SupplierOrder.supplier_id == supplier_id)
         .scalar()
     )
-    supplier.total_ordered = float(total or 0)
+    paid = (
+        db.query(func.sum(MoneyMovement.amount))
+        .join(SupplierOrder, MoneyMovement.supply_id == SupplierOrder.id)
+        .filter(SupplierOrder.supplier_id == supplier_id, MoneyMovement.status == MoneyMovementStatus.POSTED)
+        .scalar()
+    )
+    supplier.total_paid = float(opening or 0) + float(paid or 0)
     db.flush()
 
 

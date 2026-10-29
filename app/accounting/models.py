@@ -139,6 +139,12 @@ class SupplierOrder(Base):
     __tablename__ = "supplier_orders"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    number: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_state: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    version: Mapped[int] = mapped_column(default=1, server_default="1")
+    opening_paid: Mapped[float] = mapped_column(Numeric(18, 2, asdecimal=False), default=0, server_default="0")
     supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
     # позиции заказа: [{"material", "category", "quantity", "unit_price"}] —
     # цена на момент заказа, а не диапазон, как в SupplierPriceItem
@@ -264,6 +270,7 @@ class MoneyMovement(Base):
     __tablename__ = "money_movements"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
 
     direction: Mapped[MoneyDirection] = mapped_column(
         Enum(MoneyDirection, name="money_direction"), nullable=False

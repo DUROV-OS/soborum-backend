@@ -18,6 +18,47 @@ edit = require_edit(Module.CLIENTS)
 full = require_full(Module.CLIENTS)
 
 
+@app.get('/attention')
+def attention(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    reason: str | None = Query(None,pattern='^(inquiry|overdue|no_next_step|no_deadline|no_owner|idle)$'),
+    db: Session = Depends(get_db),
+    user: User = Depends(view),
+):
+    from app.crm.guard import attention
+
+    return attention(db, offset=offset, limit=limit, reason=reason)
+
+
+@app.get('/settings')
+def settings(db: Session = Depends(get_db), user: User = Depends(view)):
+    from app.crm.guard import settings
+
+    return settings(db)
+
+
+from pydantic import BaseModel,Field,ConfigDict
+class GuardSettings(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    response_hours:int=Field(ge=1,le=168)
+    idle_days:int=Field(ge=1,le=90)
+
+
+@app.put('/settings')
+def update_settings(body: GuardSettings, db: Session = Depends(get_db), user: User = Depends(full)):
+    from app.crm.models import CRMSettings
+
+    row = db.get(CRMSettings, 1)
+    if row is None:
+        row = CRMSettings(id=1)
+        db.add(row)
+    row.response_hours = body.response_hours
+    row.idle_days = body.idle_days
+    db.commit()
+    return body.model_dump()
+
+
 @app.get("/files")
 def files(
     query: str = Query("", max_length=300),

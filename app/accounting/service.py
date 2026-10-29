@@ -177,11 +177,34 @@ def _assert_no_open_salary_payout(db: Session, employee_id: int | None) -> None:
         raise _conflict("У сотрудника уже есть незакрытая зарплатная проводка")
 
 
-def _assert_no_open_supply_payment(db: Session, supply_id: int | None) -> None:
+def _assert_no_open_supply_payment(db: Session, supply_id: int | None, amount=None, exclude_id=None) -> None:
     """0011-f: заказ у поставщика оплачивается один раз — повторный `pay` на
     заказ, который уже оплачивается (draft/approved) или оплачен (posted),
     отклоняется. Отменённая (`cancelled`) проводка оплату не блокирует."""
     if supply_id is None:
+        return
+    if amount is not None:
+        from decimal import Decimal
+
+        order = (
+            db.query(SupplierOrder)
+            .filter_by(id=supply_id)
+            .populate_existing()
+            .with_for_update(of=SupplierOrder)
+            .first()
+        )
+        if order is None or order.archived:
+            raise _conflict("Заказ не найден или находится в архиве")
+        payments = db.query(MoneyMovement).filter(
+            MoneyMovement.supply_id == supply_id, MoneyMovement.status != MoneyMovementStatus.CANCELLED
+        )
+        if exclude_id is not None:
+            payments = payments.filter(MoneyMovement.id != exclude_id)
+        used = Decimal(str(order.opening_paid or 0)) + sum(
+            (Decimal(str(m.amount)) for m in payments), Decimal(0)
+        )
+        if used + Decimal(str(amount)) > Decimal(str(order.total_cost)):
+            raise _conflict("Сумма превышает неоплаченный остаток заказа с учётом платежей на согласовании")
         return
     has_active = (
         db.query(MoneyMovement.id)
@@ -210,7 +233,6 @@ def _create_approval_task(db: Session, mm: MoneyMovement) -> None:
         assignees=assignees,
         link_meta={"subkind": mm.subkind.value, "amount": mm.amount},
     )
-
 
 
 # --------------------------------------------------------------------------- #
@@ -455,7 +477,6 @@ def money_summary(
     return MoneySummaryOut(total=total, organizations=organizations)
 
 
-
 # --------------------------------------------------------------------------- #
 # Единый справочник контрагентов (0081-c)                                     #
 # --------------------------------------------------------------------------- #
@@ -662,16 +683,36 @@ def list_counterparty_payments(
 
 
 def create_money_movement(
-    db: Session, data: MoneyMovementCreate, initiator_id: int
+    db: Session, data: MoneyMovementCreate, initiator_id: int, *, request_id: str | None = None
 ) -> MoneyMovement:
-    if data.amount is None or data.amount <= 0:
+    if request_id:
+        if db.get_bind().dialect.name == "postgresql":
+            import hashlib
+            from sqlalchemy import text
+
+            key = int.from_bytes(
+                hashlib.sha256(("payment/" + request_id).encode()).digest()[:8], "big", signed=True
+            )
+            db.execute(text("select pg_advisory_xact_lock(:key)"), {"key": key})
+        old = db.query(MoneyMovement).filter_by(request_id=request_id).first()
+        if old:
+            if (
+                old.initiator_id != initiator_id
+                or old.subkind != data.subkind
+                or old.supply_id != data.supply_id
+                or old.account_id != data.account_id
+                or float(old.amount) != float(data.amount)
+            ):
+                raise _conflict("Этот номер запроса уже использован для другого платежа")
+            return old
+    import math
+
+    if data.amount is None or not math.isfinite(data.amount) or data.amount <= 0:
         raise _bad_request("Сумма проводки должна быть положительной")
     if data.tax is not None and data.tax < 0:
         raise _bad_request("Сумма налога не может быть отрицательной")
 
-    source_kind = _resolve_source(
-        db, data.subkind, data.client_id, data.employee_id, data.supply_id
-    )
+    source_kind = _resolve_source(db, data.subkind, data.client_id, data.employee_id, data.supply_id)
     account_id = _resolve_account(db, data.account_id)
     if data.counterparty_id is not None:
         if db.get(Counterparty, data.counterparty_id) is None:
@@ -681,9 +722,15 @@ def create_money_movement(
         _assert_no_open_salary_payout(db, data.employee_id)
 
     if data.subkind is MoneySubkind.SUPPLY_PAYMENT:
-        _assert_no_open_supply_payment(db, data.supply_id)
+        _assert_no_open_supply_payment(db, data.supply_id, data.amount)
+        order = db.get(SupplierOrder, data.supply_id)
+        if (data.currency or "RUB") != order.currency or db.get(
+            BankAccount, account_id
+        ).currency != order.currency:
+            raise _bad_request("Валюта платежа и счёта должна совпадать с валютой заказа")
 
     mm = MoneyMovement(
+        request_id=request_id,
         direction=_direction_for(data.subkind),
         subkind=data.subkind,
         amount=data.amount,
@@ -708,10 +755,10 @@ def create_money_movement(
     if data.document_ids:
         mm.documents = db.query(FileAsset).filter(FileAsset.id.in_(list(data.document_ids))).all()
     db.add(mm)
-    db.commit()
-    db.refresh(mm)
+    db.flush()
     _create_approval_task(db, mm)
     db.commit()
+    db.refresh(mm)
     return mm
 
 
@@ -807,13 +854,16 @@ def list_money_movements(
     return list(db.execute(stmt).scalars().all())
 
 
-def update_money_movement(
-    db: Session, mm: MoneyMovement, data: MoneyMovementUpdate
-) -> MoneyMovement:
+def update_money_movement(db: Session, mm: MoneyMovement, data: MoneyMovementUpdate) -> MoneyMovement:
+    mm = (
+        db.query(MoneyMovement)
+        .filter_by(id=mm.id)
+        .populate_existing()
+        .with_for_update(of=MoneyMovement)
+        .one()
+    )
     if mm.status not in _EDITABLE_STATUSES:
-        raise _conflict(
-            f"Проводку в статусе «{mm.status.value}» редактировать нельзя"
-        )
+        raise _conflict(f"Проводку в статусе «{mm.status.value}» редактировать нельзя")
 
     payload = data.model_dump(exclude_unset=True)
 
@@ -837,10 +887,23 @@ def update_money_movement(
         if db.get(Counterparty, payload["counterparty_id"]) is None:
             raise _bad_request("Контрагент не найден")
 
+    if new_subkind is MoneySubkind.SUPPLY_PAYMENT:
+        _assert_no_open_supply_payment(db, new_supply, payload.get("amount", mm.amount), exclude_id=mm.id)
     for field in (
-        "amount", "currency", "tax", "assessment", "affects_profit",
-        "payment_purpose", "comment", "external_number", "link",
-        "subkind", "client_id", "employee_id", "supply_id", "counterparty_id",
+        "amount",
+        "currency",
+        "tax",
+        "assessment",
+        "affects_profit",
+        "payment_purpose",
+        "comment",
+        "external_number",
+        "link",
+        "subkind",
+        "client_id",
+        "employee_id",
+        "supply_id",
+        "counterparty_id",
     ):
         if field in payload:
             setattr(mm, field, payload[field])
@@ -856,10 +919,15 @@ def update_money_movement(
 
 
 def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
+    mm = (
+        db.query(MoneyMovement)
+        .filter_by(id=mm.id)
+        .populate_existing()
+        .with_for_update(of=MoneyMovement)
+        .one()
+    )
     if mm.status is not MoneyMovementStatus.DRAFT:
-        raise _conflict(
-            "Удалять можно только черновик; для остального — отмена с основанием"
-        )
+        raise _conflict("Удалять можно только черновик; для остального — отмена с основанием")
     db.delete(mm)
     db.commit()
 
@@ -913,6 +981,10 @@ def _compute_kpi_for_period(
     on_time = late = overdue = 0
     for t in tasks:
         duration = durations.get(t.id)
+        if (t.link_meta or {}).get('source_imported') and t.status is TaskStatus.DONE and not (duration and duration.completed_at):
+            # A migrated completion flag does not establish when it happened.
+            # Keep history visible without inventing wage/KPI evidence.
+            continue
         if t.status is TaskStatus.DONE and duration and duration.completed_at:
             if _aware(duration.completed_at) <= _aware(t.deadline):
                 on_time += 1
@@ -1024,7 +1096,16 @@ def _adjust_supplier_paid(db: Session, mm: MoneyMovement, delta: float) -> None:
     order = db.get(SupplierOrder, mm.supply_id)
     if order is None or order.supplier is None:
         return
-    order.supplier.total_paid = float(order.supplier.total_paid or 0) + delta
+    supplier = (
+        db.query(Supplier)
+        .filter_by(id=order.supplier_id)
+        .populate_existing()
+        .with_for_update(of=Supplier)
+        .one()
+    )
+    from decimal import Decimal
+
+    supplier.total_paid = Decimal(str(supplier.total_paid or 0)) + Decimal(str(delta))
 
 
 _MONEY_MOVEMENT_STATUS_LABELS: dict[MoneyMovementStatus, str] = {
@@ -1069,6 +1150,13 @@ def change_status(
     to: MoneyMovementStatus,
     reason: str | None = None,
 ) -> MoneyMovement:
+    mm = (
+        db.query(MoneyMovement)
+        .filter_by(id=mm.id)
+        .populate_existing()
+        .with_for_update(of=MoneyMovement)
+        .one()
+    )
     if to not in _ALLOWED_TRANSITIONS[mm.status]:
         raise _conflict(f"Недопустимый переход статуса «{mm.status.value}» → «{to.value}»")
 
@@ -1437,15 +1525,21 @@ _ORDER_EDITABLE_STATUSES = {SupplierOrderStatus.ORDERED, SupplierOrderStatus.IN_
 
 
 def _compute_order_total(items: list) -> float:
-    total = 0.0
+    from decimal import Decimal, ROUND_HALF_UP
+
+    total = Decimal(0)
     for item in items:
         quantity = item.quantity if hasattr(item, "quantity") else item["quantity"]
         unit_price = item.unit_price if hasattr(item, "unit_price") else item["unit_price"]
-        total += float(quantity) * float(unit_price)
-    return total
+        total += Decimal(str(quantity)) * Decimal(str(unit_price))
+    if total >= Decimal("1000000000000"):
+        raise _bad_request("Стоимость заказа превышает допустимую сумму")
+    return float(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def _validate_order_items(items: list) -> None:
+    import math
+
     if not items:
         raise _bad_request("Заказ должен содержать хотя бы одну позицию")
     for item in items:
@@ -1454,9 +1548,9 @@ def _validate_order_items(items: list) -> None:
         unit_price = item.unit_price if hasattr(item, "unit_price") else item.get("unit_price")
         if not material:
             raise _bad_request("У позиции заказа не указан материал")
-        if quantity is None or quantity <= 0:
+        if quantity is None or not math.isfinite(quantity) or quantity <= 0:
             raise _bad_request(f"Позиция «{material}» — количество должно быть положительным")
-        if unit_price is None or unit_price <= 0:
+        if unit_price is None or not math.isfinite(unit_price) or unit_price <= 0:
             raise _bad_request(f"Позиция «{material}» — цена должна быть положительной")
 
 
@@ -1485,7 +1579,11 @@ def list_supplier_orders(
 def create_supplier_order(db: Session, data: SupplierOrderCreate) -> SupplierOrder:
     if db.get(Supplier, data.supplier_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Поставщик не найден")
+    if db.get(Supplier, data.supplier_id).status.value == "archived":
+        raise _bad_request("Поставщик находится в архиве")
     _validate_order_items(data.items)
+    if any(item.received_quantity for item in data.items):
+        raise _bad_request("Количество полученного заполняется приёмками")
 
     order = SupplierOrder(
         supplier_id=data.supplier_id,
@@ -1504,19 +1602,45 @@ def create_supplier_order(db: Session, data: SupplierOrderCreate) -> SupplierOrd
 
 
 def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrderUpdate) -> SupplierOrder:
+    order = (
+        db.query(SupplierOrder)
+        .filter_by(id=order.id)
+        .populate_existing()
+        .with_for_update(of=SupplierOrder)
+        .one()
+    )
+    if order.archived:
+        raise _conflict("Заказ находится в архиве")
     if order.status not in _ORDER_EDITABLE_STATUSES:
         raise _conflict(f"Заказ в статусе «{order.status.value}» редактировать нельзя")
 
     payload = data.model_dump(exclude_unset=True)
     if "items" in payload:
+        if any(i.get("received_quantity", 0) for i in order.items):
+            raise _conflict("После приёмки состав заказа не меняется")
+        if any(i.received_quantity for i in data.items):
+            raise _bad_request("Количество полученного заполняется приёмками")
         _validate_order_items(data.items)
         order.items = [item.model_dump() for item in data.items]
         order.total_cost = _compute_order_total(data.items)
+        from decimal import Decimal
+
+        used = Decimal(str(order.opening_paid or 0)) + sum(
+            (
+                Decimal(str(m.amount))
+                for m in db.query(MoneyMovement).filter(
+                    MoneyMovement.supply_id == order.id, MoneyMovement.status != MoneyMovementStatus.CANCELLED
+                )
+            ),
+            Decimal(0),
+        )
+        if Decimal(str(order.total_cost)) < used:
+            raise _conflict("Стоимость заказа меньше уже оплаченной суммы и платежей на согласовании")
     if "expected_at" in payload:
         order.expected_at = data.expected_at
     if "comment" in payload:
         order.comment = data.comment
-
+    order.version += 1
     db.commit()
     warehouse_service.recalculate_supplier_totals(db, order.supplier_id)
     db.commit()
@@ -1525,6 +1649,10 @@ def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrder
 
 
 def delete_supplier_order(db: Session, order: SupplierOrder) -> None:
+    from app.purchasing.models import PurchaseReceipt
+
+    if order.source_id or db.query(PurchaseReceipt.id).filter_by(order_id=order.id).first():
+        raise _conflict("Заказ с историей сохраняется в архиве")
     if order.status is not SupplierOrderStatus.ORDERED:
         raise _conflict("Удалить можно только заказ в статусе «заказана»")
     supplier_id = order.supplier_id
@@ -1534,12 +1662,24 @@ def delete_supplier_order(db: Session, order: SupplierOrder) -> None:
     db.commit()
 
 
-def change_supplier_order_status(
-    db: Session, order: SupplierOrder, to: SupplierOrderStatus
-) -> SupplierOrder:
+def change_supplier_order_status(db: Session, order: SupplierOrder, to: SupplierOrderStatus) -> SupplierOrder:
+    order = (
+        db.query(SupplierOrder)
+        .filter_by(id=order.id)
+        .populate_existing()
+        .with_for_update(of=SupplierOrder)
+        .one()
+    )
+    if order.archived:
+        raise _conflict("Заказ находится в архиве")
+    if to is SupplierOrderStatus.RECEIVED and any(
+        i.get("warehouse_material_id") and i.get("received_quantity", 0) < i["quantity"] for i in order.items
+    ):
+        raise _conflict("Оформите приёмку материалов: один статус не меняет остатки склада")
     if to not in _ORDER_ALLOWED_TRANSITIONS[order.status]:
         raise _conflict(f"Недопустимый переход статуса «{order.status.value}» → «{to.value}»")
     order.status = to
+    order.version += 1
     if to is SupplierOrderStatus.RECEIVED:
         order.received_at = _utcnow()
     db.commit()
@@ -1552,7 +1692,11 @@ def pay_supplier_order(db: Session, order: SupplierOrder, initiator_id: int) -> 
     `supply_payment` на полную сумму заказа (MVP, частичная оплата не
     делается). Оплата не меняет статус физической приёмки заказа и наоборот —
     независимые состояния (см. родителя 0011, п. 6)."""
-    data = MoneyMovementCreate(
-        subkind=MoneySubkind.SUPPLY_PAYMENT, amount=order.total_cost, supply_id=order.id
-    )
+    from app.purchasing.service import balance, get_order
+
+    order = get_order(db, order.id, lock=True)
+    remaining = balance(db, order)["available_payment"]
+    if remaining <= 0:
+        raise _conflict("Заказ уже оплачивается или оплачен")
+    data = MoneyMovementCreate(subkind=MoneySubkind.SUPPLY_PAYMENT, amount=remaining, supply_id=order.id)
     return create_money_movement(db, data, initiator_id=initiator_id)

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.common.module_access import Module
+from app.common.module_access import Module, AccessLevel
 from app.core.deps import require_admin, require_edit, require_view
 from app.db.session import get_db
 from app.tasks import service as task_service
@@ -21,6 +21,14 @@ from app.tasks.schemas import (
     WorkloadOut,
 )
 from app.users.models import User
+
+
+def _editable_task(db, task_id, actor):
+    task = task_service.get_task_or_404(db, task_id)
+    if (task.link_meta or {}).get("crm_task_id") and actor.access_level(Module.CLIENTS) < AccessLevel.EDIT:
+        raise HTTPException(403, "Для изменения задачи продаж нужны права редактирования клиентов")
+    return task_service.get_task_or_404(db, task_id, for_update=True)
+
 
 app = FastAPI(
     title="Soborbum — Задачи",
@@ -102,8 +110,13 @@ def get_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(requ
 
 
 @app.patch("/{task_id}", response_model=TaskOut)
-def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db), _: User = Depends(require_tasks_edit)):
-    task = task_service.get_task_or_404(db, task_id)
+def update_task(
+    task_id: int,
+    payload: TaskUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_tasks_edit),
+):
+    task = _editable_task(db, task_id, actor)
     task = task_service.update_task(
         db,
         task,
@@ -117,6 +130,10 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
         depends_on_ids=payload.depends_on_ids,
         image_ids=payload.image_ids,
     )
+    if (task.link_meta or {}).get("crm_task_id"):
+        from app.crm.tasks import sync_from_board
+
+        sync_from_board(db, task, actor)
     db.commit()
     db.refresh(task)
     return TaskOut.from_model(task)
@@ -134,7 +151,7 @@ def update_task_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Сдать задачу можно только с отчётом — POST /api/tasks/{id}/report",
         )
-    task = task_service.get_task_or_404(db, task_id)
+    task = _editable_task(db, task_id, actor)
     task = task_service.set_status(db, task, payload.status, actor)
     db.commit()
     db.refresh(task)
@@ -152,7 +169,7 @@ def submit_task_report(
     """Сдать задачу с отчётом: «в работе» → «на проверке» вместе с
     комментарием и файлами. Единственный способ сдать задачу вручную —
     PATCH /{task_id}/status со статусом in_review отклоняется."""
-    task = task_service.get_task_or_404(db, task_id)
+    task = _editable_task(db, task_id, actor)
     task = task_service.submit_report(db, task, actor, comment=comment, files=files)
     db.commit()
     db.refresh(task)
@@ -171,7 +188,7 @@ def review_task(
     """Решение проверяющего с отчётом: принять («на проверке» → «выполнена»)
     или вернуть в работу, приложив комментарий и файлы. Без комментария и
     файлов работает так же, как PATCH /{task_id}/status."""
-    task = task_service.get_task_or_404(db, task_id)
+    task = _editable_task(db, task_id, actor)
     task = task_service.review_task(db, task, actor, accept=accept, comment=comment, files=files)
     db.commit()
     db.refresh(task)
@@ -189,7 +206,7 @@ def edit_report_comment(
     """Поправить текст своего комментария в журнале отчётов. Доступно в любом
     статусе задачи, включая уже принятую; прежний текст сохраняется ревизией
     (см. GET /{task_id}/reports/{report_id}/revisions)."""
-    task = task_service.get_task_or_404(db, task_id)
+    task = _editable_task(db, task_id, actor)
     task_service.edit_report_comment(db, task, report_id, actor, payload.comment)
     db.commit()
     db.refresh(task)
@@ -214,8 +231,12 @@ def list_report_revisions(
 
 @app.post("/{task_id}/claim", response_model=TaskOut)
 def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depends(require_tasks_edit)):
-    task = task_service.get_task_or_404(db, task_id)
+    task = _editable_task(db, task_id, current)
     task = task_service.claim_task(db, task, current)
+    if (task.link_meta or {}).get("crm_task_id"):
+        from app.crm.tasks import sync_from_board
+
+        sync_from_board(db, task, current)
     db.commit()
     db.refresh(task)
     return TaskOut.from_model(task)
@@ -223,8 +244,12 @@ def claim_task(task_id: int, db: Session = Depends(get_db), current: User = Depe
 
 @app.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks_edit)):
-    task = task_service.get_task_or_404(db, task_id)
-    if task.link_type != TaskLinkType.NONE or task.block_id is not None:
+    task = _editable_task(db, task_id, _)
+    if (
+        task.link_type != TaskLinkType.NONE
+        or task.block_id is not None
+        or (task.link_meta or {}).get("crm_task_id")
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя удалить задачу, синхронизированную с другим разделом",

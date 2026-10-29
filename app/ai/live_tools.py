@@ -10,6 +10,34 @@ from app.common.module_access import Module
 from app.core.config import settings
 
 
+@register('read_sales_attention',
+    'Контроль лидов Соборума по фактическим данным: входящие, просроченные задачи, '
+    'сделки без следующего шага, срока или ответственного. Покажи причины и предложи действия менеджеру. '
+    'Не сообщай, что действие выполнено, если только прочитал этот список.',
+    {'reason':{'type':'string','enum':['inquiry','overdue','no_next_step','no_deadline','no_owner','idle']},'offset':{'type':'integer'}},required_module=Module.CLIENTS,read_only=True,domains=list(ChatDomain))
+def _read_sales_attention(db,user,reason=None,offset=0):
+    from app.crm.guard import attention
+    return attention(db,limit=30,reason=reason,offset=max(0,min(offset,100000)))
+
+
+@register('schedule_sales_followup',
+    'Предложить следующий шаг по открытой сделке или входящей заявке Соборума: задача менеджеру '
+    'с ответственным и сроком в общем списке и продажах. Вызывай, когда пользователь попросил '
+    'подготовить или назначить задачи. Требуется согласование человека. Существующие сроки '
+    'не переносятся; повтор не создаёт вторую задачу. Если ответственный за сделку не назначен '
+    'или недоступен, назначается менеджер следующего шага. Если срок не задан, используется правило первого шага.',
+    {'entry_id':{'type':'integer'},'title':{'type':'string'},'due_at':{'type':'string'},
+     'responsible_user_id':{'type':'integer'},'note':{'type':'string'}},
+    ['entry_id','title'],required_module=Module.CLIENTS,read_only=False,domains=list(ChatDomain))
+def _schedule_sales_followup(db,user,entry_id,title,due_at=None,responsible_user_id=None,note=''):
+    from app.crm.followup import schedule_followup
+    try:
+        return schedule_followup(db,user,entry_id,title,due_at,responsible_user_id,note)
+    except Exception:
+        db.rollback()
+        raise
+
+
 @register(
     "live_company_pulse",
     "Живой срез базы DurovOS: клиенты по стадиям, цикл, производство, склад, задачи, "
