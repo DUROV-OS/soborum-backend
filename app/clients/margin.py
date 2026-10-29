@@ -43,7 +43,7 @@ def margin_preview(data: MarginPreviewInput) -> dict:
     profit = data.sale_price - cost
     available = Decimal('0.65') - (data.realtor_percent + data.salesperson_percent) / 100
     feasible = available > 0 or (available == 0 and base_cost == 0)
-    minimum = ((base_cost / available).quantize(MONEY, rounding=ROUND_CEILING) if available > 0
+    minimum = (max(MONEY, (base_cost / available).quantize(MONEY, rounding=ROUND_CEILING)) if available > 0
                else MONEY if feasible else None)
     margin = profit / data.sale_price * 100 if data.sale_price > 0 else None
     markup = profit / cost * 100 if cost > 0 else None
