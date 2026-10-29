@@ -17,6 +17,13 @@ SHA = 'a' * 40
 
 
 class BoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.previous_umask = os.umask(0o077)
+        os.umask(self.previous_umask)
+
+    def tearDown(self):
+        os.umask(self.previous_umask)
+
     def test_exact_command_is_accepted(self):
         self.assertEqual(ci.command('deploy ' + SHA), SHA)
 
