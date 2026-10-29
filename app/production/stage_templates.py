@@ -124,6 +124,6 @@ class TemplateBlockMaterial(Base):
     warehouse_material_id: Mapped[int | None] = mapped_column(ForeignKey("warehouse_materials.id"), nullable=True)
     # Норматив на один дом из спецификации КР (0088-e) — основа отпуска по
     # техкарте. NULL — в тексте КР количество не найдено, инженер заполняет сам.
-    quantity: Mapped[float | None] = mapped_column(Numeric(14, 3, asdecimal=False), nullable=True)
+    quantity: Mapped[float | None] = mapped_column(Numeric(18, 6, asdecimal=False), nullable=True)
 
     block: Mapped["TemplateBlock"] = relationship(back_populates="materials")

@@ -168,14 +168,17 @@ def total_requested(db: Session, material_id: int) -> float:
 
 
 def needs_supply(material: WarehouseMaterial, requested: float) -> bool:
-    return (float(material.quantity_in_stock) - requested) < float(material.threshold)
+    return not material.is_archived and (float(material.quantity_in_stock) - requested) < float(material.threshold)
 
 
-def to_out(db: Session, material: WarehouseMaterial) -> WarehouseMaterialOut:
-    breakdown = compute_breakdown(db, material.id)
+def to_out(db: Session, material: WarehouseMaterial, breakdown=None) -> WarehouseMaterialOut:
+    if breakdown is None:
+        breakdown = compute_breakdown(db, material.id)
     requested = sum(item.quantity_requested for item in breakdown)
     return WarehouseMaterialOut(
         id=material.id,
+        is_archived=material.is_archived,
+        catalog_path=material.catalog_path,
         warehouse=material.warehouse,
         category=material.category,
         title=material.title,
@@ -206,7 +209,20 @@ def list_materials(
     if warehouse is not None:
         query = query.filter(WarehouseMaterial.warehouse == warehouse)
     materials = query.order_by(WarehouseMaterial.id).all()
-    result = [to_out(db, m) for m in materials]
+    # A migrated catalogue can contain thousands of variants. Read pending
+    # reservations once rather than running a query for every material.
+    pending = db.query(MaterialRequest.warehouse_material_id, BlockMaterial.block_id,
+        ProductionBlock.name, ProductionBlock.production_id, MaterialRequest.quantity).join(
+        BlockMaterial, MaterialRequest.block_material_id == BlockMaterial.id).join(
+        ProductionBlock, ProductionBlock.id == BlockMaterial.block_id).filter(
+        MaterialRequest.status == MaterialRequestStatus.PENDING).all()
+    grouped = {}
+    for material_id, block_id, name, production_id, quantity in pending:
+        groups = grouped.setdefault(material_id, {})
+        if block_id not in groups:
+            groups[block_id] = RequestBreakdownItem(module_id=block_id,module_name=name,production_id=production_id,quantity_requested=0)
+        groups[block_id].quantity_requested += float(quantity)
+    result = [to_out(db, m, list(grouped.get(m.id, {}).values())) for m in materials]
     if only_needs_supply:
         result = [r for r in result if r.needs_supply]
     return result
@@ -333,6 +349,8 @@ def _load_operation_lines(
             raise _bad_request("Материал повторяется в нескольких строках — объедините их в одну")
         seen.add(material_id)
         material = get_material_or_404(db, material_id)
+        if material.is_archived:
+            raise _bad_request(f"«{material.title}» находится в архиве")
         quantity = float(quantity)
         if quantity <= 0:
             raise _bad_request(f"Количество по «{material.title}» должно быть больше нуля")

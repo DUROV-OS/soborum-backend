@@ -57,6 +57,8 @@ class WarehouseMaterialOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    is_archived: bool = False
+    catalog_path: str | None = None
     warehouse: Warehouse
     category: MaterialCategory
     title: str

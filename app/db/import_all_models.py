@@ -23,3 +23,6 @@ from app.production import stage_templates as _production_stage_templates  # noq
 from app.tasks import models as _tasks_models  # noqa: F401
 from app.users import models as _users_models  # noqa: F401
 from app.warehouse import models as _warehouse_models  # noqa: F401
+from app.moysklad import models as _moysklad_models  # noqa: F401
+from app.moysklad import recipes as _local_recipes_models  # noqa: F401
+from app.crm import models as _crm_models  # noqa: F401
