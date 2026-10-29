@@ -26,4 +26,5 @@ from app.warehouse import models as _warehouse_models  # noqa: F401
 from app.moysklad import models as _moysklad_models  # noqa: F401
 from app.moysklad import recipes as _local_recipes_models  # noqa: F401
 from app.crm import models as _crm_models  # noqa: F401
+from app.telephony import models as _telephony_models  # noqa: F401
 from app.purchasing import models as _purchasing_models  # noqa: F401
