@@ -30,3 +30,16 @@ class CRMEvent(Base):
     action: Mapped[str] = mapped_column(String(50))
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CRMTaskLink(Base):
+    __tablename__ = 'crm_task_links'
+    entity_id: Mapped[int] = mapped_column(ForeignKey('crm_entities.id'), primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey('tasks.id'), unique=True)
+
+
+class CRMSettings(Base):
+    __tablename__ = 'crm_settings'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    response_hours: Mapped[int] = mapped_column(Integer, default=24)
+    idle_days: Mapped[int] = mapped_column(Integer, default=3)

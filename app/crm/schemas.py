@@ -50,6 +50,7 @@ class TaskData(BaseModel):
     due_at: datetime | None = None
     completed: bool = False
     result: str = Field("", max_length=5000)
+    description: str = Field('', max_length=20000)
     task_type: str = Field("Задача", max_length=100)
 
 

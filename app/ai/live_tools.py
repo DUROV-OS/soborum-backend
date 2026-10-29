@@ -10,6 +10,16 @@ from app.common.module_access import Module
 from app.core.config import settings
 
 
+@register('read_sales_attention',
+    'Контроль лидов Соборума по фактическим данным: входящие, просроченные задачи, '
+    'сделки без следующего шага, срока или ответственного. Покажи причины и предложи действия менеджеру. '
+    'Не сообщай, что действие выполнено, если только прочитал этот список.',
+    {},required_module=Module.CLIENTS,read_only=True,domains=list(ChatDomain))
+def _read_sales_attention(db,user):
+    from app.crm.guard import attention
+    return attention(db,limit=30)
+
+
 @register(
     "live_company_pulse",
     "Живой срез базы DurovOS: клиенты по стадиям, цикл, производство, склад, задачи, "
