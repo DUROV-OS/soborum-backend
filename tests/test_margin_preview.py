@@ -55,3 +55,13 @@ def test_equal_to_65_percent_commission_and_zero_cost_has_a_positive_minimum(api
     result = api(make_user(Module.CLIENTS)).post('/api/clients/margin-preview', json=payload).json()
     assert result['minimum_price'] == '0.01'
     assert result['status'] == 'meets_target'
+
+
+def test_rounded_margin_cannot_hide_a_below_threshold_sale(api, make_user):
+    payload = {'sale_price': '1000000', 'materials': '650000.01', 'labor': '0', 'purchase': '0',
+               'other_variable': '0', 'advertising': '0', 'realtor_percent': '0', 'salesperson_percent': '0',
+               'fixed_per_month': '0', 'planned_items': 1}
+    result = api(make_user(Module.CLIENTS)).post('/api/clients/margin-preview', json=payload).json()
+    assert result['margin_percent'] == '35.00'  # display rounded
+    assert result['status'] == 'below_target'   # exact arithmetic decides
+    assert result['minimum_price'] == '1000000.02'
