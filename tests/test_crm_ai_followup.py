@@ -91,3 +91,23 @@ def test_imported_completion_without_timestamp_does_not_invent_kpi(db, make_user
     db.commit()
     result = accounting._compute_kpi_for_period(db, owner.id, date(2026, 10, 1), date(2026, 11, 1))
     assert result.tasks_total == 0 and result.kpi is None
+
+
+def test_disabled_owner_is_visible_and_approved_followup_repairs_assignment(db, make_user):
+    from app.crm.guard import attention
+
+    owner = make_user(admin=True)
+    worker = make_user(Module.CLIENTS, Module.TASKS)
+    deal = legacy_deal(db, owner)
+    deal.payload = {**deal.payload, "responsible_user_id": worker.id}
+    db.commit()
+    first = _schedule_sales_followup(db, owner, deal.id, "Позвонить", responsible_user_id=worker.id)
+    worker.is_active = False
+    db.commit()
+    assert attention(db, reason="no_owner")["total"] == 2
+    repaired = _schedule_sales_followup(db, owner, deal.id, "Позвонить")
+    db.refresh(deal)
+    assert deal.payload["responsible_user_id"] == owner.id
+    assert repaired["task"]["data"]["responsible_user_id"] == owner.id
+    assert repaired["task"]["data"]["due_at"] == first["task"]["data"]["due_at"]
+    assert attention(db, reason="no_owner")["total"] == 0

@@ -104,7 +104,7 @@ def aware(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def attention(db, *, now=None, offset=0, limit=50):
+def attention(db, *, now=None, offset=0, limit=50, reason=None):
     active_users = {u.id for u in db.query(User).filter_by(is_active=True) if u.has_access(Module.CLIENTS)}
     now = aware(now or datetime.now(timezone.utc))
     rules = settings(db)
@@ -126,6 +126,10 @@ def attention(db, *, now=None, offset=0, limit=50):
         )
         for r in db.query(SourceRecord).filter_by(entity_type="amocrm/leads")
     }
+    received = {
+        r.source_id: datetime.fromtimestamp(r.payload.get("created_at") or 0, timezone.utc)
+        for r in db.query(SourceRecord).filter_by(entity_type="amocrm/leads/unsorted")
+    }
     signals = []
 
     def add(row, reason, title, due=None):
@@ -138,6 +142,7 @@ def attention(db, *, now=None, offset=0, limit=50):
                 "title": title,
                 "responsible_user_id": row.payload.get("responsible_user_id"),
                 "due_at": due.isoformat() if due else None,
+                "received_at": (received.get(row.source_id) or aware(row.created_at)).isoformat(),
             }
         )
 
@@ -174,10 +179,20 @@ def attention(db, *, now=None, offset=0, limit=50):
         if not scheduled and last < now - timedelta(days=rules["idle_days"]):
             add(row, "idle", "Нет активности по сделке")
     priority = {"overdue": 0, "inquiry": 1, "no_next_step": 2, "no_deadline": 3, "no_owner": 4, "idle": 5}
-    signals.sort(key=lambda s: (priority[s["reason"]], s.get("due_at") or "", -s["entry_id"]))
+    signals.sort(
+        key=lambda s: (
+            priority[s["reason"]],
+            s.get("due_at") or "",
+            -datetime.fromisoformat(s["received_at"]).timestamp(),
+            -s["entry_id"],
+        )
+    )
+    counts = dict(Counter(s["reason"] for s in signals))
+    if reason:
+        signals = [s for s in signals if s["reason"] == reason]
     return {
         "total": len(signals),
-        "counts": dict(Counter(s["reason"] for s in signals)),
+        "counts": counts,
         "items": signals[offset : offset + limit],
         "settings": rules,
         "checked_at": now.isoformat(),

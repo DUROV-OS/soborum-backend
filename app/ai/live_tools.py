@@ -14,10 +14,10 @@ from app.core.config import settings
     'Контроль лидов Соборума по фактическим данным: входящие, просроченные задачи, '
     'сделки без следующего шага, срока или ответственного. Покажи причины и предложи действия менеджеру. '
     'Не сообщай, что действие выполнено, если только прочитал этот список.',
-    {},required_module=Module.CLIENTS,read_only=True,domains=list(ChatDomain))
-def _read_sales_attention(db,user):
+    {'reason':{'type':'string','enum':['inquiry','overdue','no_next_step','no_deadline','no_owner','idle']},'offset':{'type':'integer'}},required_module=Module.CLIENTS,read_only=True,domains=list(ChatDomain))
+def _read_sales_attention(db,user,reason=None,offset=0):
     from app.crm.guard import attention
-    return attention(db,limit=30)
+    return attention(db,limit=30,reason=reason,offset=max(0,min(offset,100000)))
 
 
 @register('schedule_sales_followup',

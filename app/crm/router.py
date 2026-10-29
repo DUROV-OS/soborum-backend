@@ -22,12 +22,13 @@ full = require_full(Module.CLIENTS)
 def attention(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
+    reason: str | None = Query(None,pattern='^(inquiry|overdue|no_next_step|no_deadline|no_owner|idle)$'),
     db: Session = Depends(get_db),
     user: User = Depends(view),
 ):
     from app.crm.guard import attention
 
-    return attention(db, offset=offset, limit=limit)
+    return attention(db, offset=offset, limit=limit, reason=reason)
 
 
 @app.get('/settings')
