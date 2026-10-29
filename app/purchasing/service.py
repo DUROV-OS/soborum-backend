@@ -22,8 +22,12 @@ def dec(value):
 
 
 def balance(db, order):
+    from app.purchasing.returns import order_credit, order_refunds
+    credit = order_credit(db, order.id)
+    refunded = order_refunds(db, order.id)
+    net_total = max(Decimal(0), dec(order.total_cost) - credit)
     rows = db.query(MoneyMovement).filter_by(supply_id=order.id).all()
-    paid = dec(order.opening_paid) + sum(
+    paid = dec(order.opening_paid) - refunded + sum(
         (dec(m.amount) for m in rows if m.status == MoneyMovementStatus.POSTED), Decimal(0)
     )
     pending = sum(
@@ -35,10 +39,14 @@ def balance(db, order):
         Decimal(0),
     )
     return {
+        "return_credit": float(credit),
+        "refund_received": float(refunded),
+        "net_total": float(net_total),
         "paid": float(paid),
         "pending_payment": float(pending),
-        "unpaid": float(max(Decimal(0), dec(order.total_cost) - paid)),
-        "available_payment": float(max(Decimal(0), dec(order.total_cost) - paid - pending)),
+        "unpaid": float(max(Decimal(0), net_total - paid)),
+        "overpaid": float(max(Decimal(0), paid - net_total)),
+        "available_payment": float(max(Decimal(0), net_total - paid - pending)),
     }
 
 
@@ -165,6 +173,7 @@ def receive(db, body, user):
                 "unit": material.unit if material else item.get("unit", ""),
                 "quantity": float(line.quantity),
                 "unit_price": float(line.unit_price),
+                "stock_tracked": tracked,
             }
         )
     operation = None

@@ -203,7 +203,10 @@ def _assert_no_open_supply_payment(db: Session, supply_id: int | None, amount=No
         used = Decimal(str(order.opening_paid or 0)) + sum(
             (Decimal(str(m.amount)) for m in payments), Decimal(0)
         )
-        if used + Decimal(str(amount)) > Decimal(str(order.total_cost)):
+        from app.purchasing.returns import order_credit, order_refunds
+
+        used -= order_refunds(db, order.id)
+        if used + Decimal(str(amount)) > Decimal(str(order.total_cost)) - order_credit(db, order.id):
             raise _conflict("Сумма превышает неоплаченный остаток заказа с учётом платежей на согласовании")
         return
     has_active = (
@@ -700,6 +703,7 @@ def create_money_movement(
                 old.initiator_id != initiator_id
                 or old.subkind != data.subkind
                 or old.supply_id != data.supply_id
+                or old.purchase_return_id != data.purchase_return_id
                 or old.account_id != data.account_id
                 or float(old.amount) != float(data.amount)
             ):
@@ -714,6 +718,17 @@ def create_money_movement(
 
     source_kind = _resolve_source(db, data.subkind, data.client_id, data.employee_id, data.supply_id)
     account_id = _resolve_account(db, data.account_id)
+    from app.purchasing.returns import validate_refund
+
+    validate_refund(
+        db,
+        data.purchase_return_id,
+        data.amount,
+        data.currency or "RUB",
+        account_id,
+        data.subkind,
+        data.affects_profit,
+    )
     if data.counterparty_id is not None:
         if db.get(Counterparty, data.counterparty_id) is None:
             raise _bad_request("Контрагент не найден")
@@ -730,6 +745,7 @@ def create_money_movement(
             raise _bad_request("Валюта платежа и счёта должна совпадать с валютой заказа")
 
     mm = MoneyMovement(
+        purchase_return_id=data.purchase_return_id,
         request_id=request_id,
         direction=_direction_for(data.subkind),
         subkind=data.subkind,
@@ -868,12 +884,16 @@ def update_money_movement(db: Session, mm: MoneyMovement, data: MoneyMovementUpd
     payload = data.model_dump(exclude_unset=True)
 
     new_subkind = payload.get("subkind", mm.subkind)
+    if "purchase_return_id" in payload and payload["purchase_return_id"] != mm.purchase_return_id:
+        raise _conflict("Привязку возврата денег к документу менять нельзя")
     new_client = payload.get("client_id", mm.client_id)
     new_employee = payload.get("employee_id", mm.employee_id)
     new_supply = payload.get("supply_id", mm.supply_id)
 
     if "amount" in payload:
-        if payload["amount"] is None or payload["amount"] <= 0:
+        import math
+
+        if payload["amount"] is None or not math.isfinite(payload["amount"]) or payload["amount"] <= 0:
             raise _bad_request("Сумма проводки должна быть положительной")
     if payload.get("tax") is not None and payload["tax"] < 0:
         raise _bad_request("Сумма налога не может быть отрицательной")
@@ -889,6 +909,18 @@ def update_money_movement(db: Session, mm: MoneyMovement, data: MoneyMovementUpd
 
     if new_subkind is MoneySubkind.SUPPLY_PAYMENT:
         _assert_no_open_supply_payment(db, new_supply, payload.get("amount", mm.amount), exclude_id=mm.id)
+    from app.purchasing.returns import validate_refund
+
+    validate_refund(
+        db,
+        mm.purchase_return_id,
+        payload.get("amount", mm.amount),
+        payload.get("currency", mm.currency),
+        mm.account_id,
+        new_subkind,
+        payload.get("affects_profit", mm.affects_profit),
+        exclude_id=mm.id,
+    )
     for field in (
         "amount",
         "currency",
@@ -1163,6 +1195,31 @@ def change_status(
     was_draft = mm.status is MoneyMovementStatus.DRAFT
     was_posted = mm.status is MoneyMovementStatus.POSTED
 
+    if to in (MoneyMovementStatus.APPROVED, MoneyMovementStatus.POSTED):
+        if mm.subkind is MoneySubkind.SUPPLY_PAYMENT:
+            _assert_no_open_supply_payment(db, mm.supply_id, mm.amount, exclude_id=mm.id)
+        from app.purchasing.returns import validate_refund
+
+        validate_refund(
+            db,
+            mm.purchase_return_id,
+            mm.amount,
+            mm.currency,
+            mm.account_id,
+            mm.subkind,
+            mm.affects_profit,
+            exclude_id=mm.id,
+        )
+    if mm.purchase_return_id and to is MoneyMovementStatus.CANCELLED:
+        from app.purchasing.models import PurchaseReturn
+
+        parent = db.get(PurchaseReturn, mm.purchase_return_id)
+        if parent.order_id:
+            from app.purchasing.service import get_order
+
+            get_order(db, parent.order_id, lock=True)
+        db.query(PurchaseReturn).filter_by(id=parent.id).with_for_update(of=PurchaseReturn).one()
+
     if to is MoneyMovementStatus.POSTED:
         if mm.amount is None or mm.amount <= 0:
             raise _conflict("Нельзя провести проводку без положительной суммы")
@@ -1182,6 +1239,11 @@ def change_status(
             _adjust_supplier_paid(db, mm, -mm.amount)
 
     mm.status = to
+    if mm.purchase_return_id:
+        from app.purchasing.models import PurchaseReturn
+
+        parent = db.get(PurchaseReturn, mm.purchase_return_id)
+        warehouse_service.recalculate_supplier_totals(db, parent.supplier_id)
     db.commit()
     db.refresh(mm)
 

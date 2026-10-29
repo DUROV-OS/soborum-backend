@@ -1326,7 +1326,14 @@ def recalculate_supplier_totals(db: Session, supplier_id: int) -> None:
     total = (
         db.query(func.sum(SupplierOrder.total_cost)).filter(SupplierOrder.supplier_id == supplier_id).scalar()
     )
-    supplier.total_ordered = float(total or 0)
+    from app.purchasing.models import PurchaseReturn
+
+    credit = (
+        db.query(func.sum(PurchaseReturn.amount))
+        .filter(PurchaseReturn.supplier_id == supplier_id, PurchaseReturn.order_id.is_not(None), PurchaseReturn.cancelled.is_(False))
+        .scalar()
+    )
+    supplier.total_ordered = float(total or 0) - float(credit or 0)
     from app.accounting.models import MoneyMovement, MoneyMovementStatus
 
     opening = (
@@ -1340,7 +1347,17 @@ def recalculate_supplier_totals(db: Session, supplier_id: int) -> None:
         .filter(SupplierOrder.supplier_id == supplier_id, MoneyMovement.status == MoneyMovementStatus.POSTED)
         .scalar()
     )
-    supplier.total_paid = float(opening or 0) + float(paid or 0)
+    refunds = (
+        db.query(func.sum(MoneyMovement.amount))
+        .join(PurchaseReturn, MoneyMovement.purchase_return_id == PurchaseReturn.id)
+        .filter(
+            PurchaseReturn.supplier_id == supplier_id,
+            PurchaseReturn.order_id.is_not(None),
+            MoneyMovement.status == MoneyMovementStatus.POSTED,
+        )
+        .scalar()
+    )
+    supplier.total_paid = float(opening or 0) + float(paid or 0) - float(refunds or 0)
     db.flush()
 
 

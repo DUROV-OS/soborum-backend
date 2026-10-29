@@ -156,6 +156,7 @@ class CounterpartyOut(BaseModel):
 
 
 class MoneyMovementCreate(BaseModel):
+    purchase_return_id: int | None = None
     subkind: MoneySubkind
     amount: float
     counterparty_id: int | None = None
@@ -187,6 +188,7 @@ class MoneyMovementCreate(BaseModel):
 
 
 class MoneyMovementUpdate(BaseModel):
+    purchase_return_id: int | None = None
     subkind: MoneySubkind | None = None
     counterparty_id: int | None = None
     account_id: int | None = None
@@ -226,6 +228,7 @@ class MoneyMovementOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    purchase_return_id: int | None = None
     direction: MoneyDirection
     subkind: MoneySubkind
     amount: float
