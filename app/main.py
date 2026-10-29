@@ -48,6 +48,7 @@ from app.users.service import bootstrap_admin
 from app.warehouse.router import app as warehouse_app
 from app.moysklad.router import app as moysklad_app
 from app.crm.router import app as crm_app
+from app.purchasing.router import app as purchasing_app
 
 app = FastAPI(title="Soborbum")
 
@@ -156,6 +157,7 @@ app.mount("/api/cycles", cycle_app)
 app.mount("/api/warehouse", warehouse_app)
 app.mount("/api/moysklad", moysklad_app)
 app.mount("/api/crm", crm_app)
+app.mount("/api/purchasing", purchasing_app)
 app.mount("/api/marketing", marketing_app)
 app.mount("/api/house-models", house_models_app)
 app.mount("/api/max", max_app)

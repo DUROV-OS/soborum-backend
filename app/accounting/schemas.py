@@ -287,6 +287,10 @@ class SupplierOrderItem(BaseModel):
     category: str | None = None
     quantity: float
     unit_price: float
+    warehouse_material_id: int | None = None
+    received_quantity: float = 0
+    unit: str = ''
+    stock_tracked: bool = True
 
 
 class SupplierOrderCreate(BaseModel):

@@ -154,7 +154,8 @@ def test_source_ref_invariants(db, api, acc_user, make_user):
     ).status_code == 422
     # подвид требует конкретный источник
     assert _create(api_client, subkind="supply_payment", client_id=client.id).status_code == 422
-    assert _create(api_client, subkind="supply_payment", supply_id=supply.id).status_code == 201
+    # The payment must fit the order's unpaid balance as well as its source type.
+    assert _create(api_client, subkind="supply_payment", supply_id=supply.id, amount=supply.total_cost).status_code == 201
     # подвид без источника не принимает привязку
     assert _create(api_client, subkind="tax", employee_id=employee.id).status_code == 422
     assert _create(api_client, subkind="other_income").status_code == 201
