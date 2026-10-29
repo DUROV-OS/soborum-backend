@@ -128,13 +128,16 @@ def update_material(
     material = _lock_materials(db, [material.id])[material.id]
     fields = payload.model_dump(exclude_unset=True)
     from app.warehouse.reservation_models import StockReservation
+    from app.sales.models import SalesOrder, SalesShipment
 
     if (
         any(k in fields and fields[k] != getattr(material, k) for k in ("unit", "is_fractional"))
-        and db.query(StockReservation.id).filter_by(material_id=material.id).first()
+        and (db.query(StockReservation.id).filter_by(material_id=material.id).first()
+            or any(l.get("material_id") == material.id for cls in (SalesOrder, SalesShipment)
+                for (entries,) in db.query(cls.lines) for l in entries))
     ):
         raise HTTPException(
-            409, "У карточки есть история резервов. Для другой единицы учёта создайте новую позицию."
+            409, "У карточки есть история резервов или продаж. Для другой единицы учёта создайте новую позицию."
         )
     if "supplier_id" in fields:
         ensure_supplier_exists(db, fields["supplier_id"])

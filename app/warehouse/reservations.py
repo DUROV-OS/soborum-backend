@@ -50,6 +50,8 @@ class Create(BaseModel):
     production_id: int | None = Field(default=None, gt=0)
     source_order_id: int | None = Field(default=None, gt=0)
     source_line: int | None = Field(default=None, ge=0)
+    sales_order_id: int | None = Field(default=None, gt=0)
+    sales_line: int | None = Field(default=None, ge=0)
 
 
 class Change(BaseModel):
@@ -116,6 +118,8 @@ def out(db, row):
         "production_id": row.production_id,
         "source_order_id": row.source_order_id,
         "source_line": row.source_line,
+        "sales_order_id": row.sales_order_id,
+        "sales_line": row.sales_line,
         "purpose": row.purpose,
         "quantity": float(row.quantity),
         "remaining_quantity": float(left),
@@ -149,6 +153,9 @@ def order_capacity(db, source, index, exclude_id=None):
 
 @router.get("/catalog")
 def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
+    from app.sales.models import SalesOrder
+    from app.sales.service import remaining_to_reserve
+
     orders = []
     active_ids = {
         mid for (mid,) in db.query(WarehouseMaterial.id).filter_by(is_archived=False)
@@ -161,6 +168,8 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
         entity_type="customerorder", archived=False
     ):
         if not source.payload.get("applicable"):
+            continue
+        if db.query(SalesOrder.id).filter_by(source_record_id=source.id).first():
             continue
         positions = []
         for index, line in enumerate(rows(source.payload.get("positions"))):
@@ -192,7 +201,27 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
         .filter(Cycle.status != CycleStatus.COMPLETED)
         .order_by(Production.id)
     ]
-    return {"orders": orders, "houses": houses}
+    sales_orders = []
+    for order in db.query(SalesOrder).filter_by(status="confirmed", archived=False):
+        lines = [
+            {
+                "index": i,
+                "material_id": l["material_id"],
+                "capacity": float(remaining_to_reserve(db, order, i)),
+            }
+            for i, l in enumerate(order.lines)
+            if l.get("stock_tracked", True) and l.get("material_id") in active_ids
+        ]
+        lines = [l for l in lines if l["capacity"] > 0]
+        if lines:
+            sales_orders.append(
+                {
+                    "id": order.id,
+                    "name": "Заказ покупателя № " + order.number,
+                    "lines": lines,
+                }
+            )
+    return {"orders": orders, "houses": houses, "sales_orders": sales_orders}
 
 
 @router.get("")
@@ -252,13 +281,43 @@ def create(body: Create, db: Session = Depends(get_db), user: User = Depends(edi
     advisory(db, "reserve:" + str(body.request_id))
     old = db.query(StockReservation).filter_by(request_id=str(body.request_id)).first()
     if old:
-        if old.actor_id != user.id or old.parameters != parameters:
+        if (
+            old.actor_id != user.id
+            or {"sales_order_id": None, "sales_line": None, **old.parameters}
+            != parameters
+        ):
             fail("Номер запроса уже использован с другими данными")
         return out(db, old)
-    if body.production_id and body.source_order_id:
+    if (
+        sum(
+            bool(v)
+            for v in (body.production_id, body.source_order_id, body.sales_order_id)
+        )
+        > 1
+    ):
         fail("Выберите один заказ или дом", 422)
     if (body.source_order_id is None) != (body.source_line is None):
         fail("Укажите заказ покупателя и его строку", 422)
+    if (body.sales_order_id is None) != (body.sales_line is None):
+        fail("Укажите заказ Соборума и его строку", 422)
+    from app.sales.models import SalesOrder
+    from app.sales.service import get_order, remaining_to_reserve
+
+    if body.source_order_id:
+        native = (
+            db.query(SalesOrder.id)
+            .filter_by(source_record_id=body.source_order_id)
+            .first()
+        )
+        if native:
+            body = body.model_copy(
+                update={
+                    "sales_order_id": native.id,
+                    "sales_line": body.source_line,
+                    "source_order_id": None,
+                    "source_line": None,
+                }
+            )
     purpose = body.purpose.strip()
     norms = None
     if body.production_id:
@@ -269,6 +328,23 @@ def create(body: Create, db: Session = Depends(get_db), user: User = Depends(edi
 
         norms = lock_house_materials(db, production.id)
         purpose = purpose or service.house_label(production)
+    if body.sales_order_id:
+        order = get_order(db, body.sales_order_id, True)
+        if (
+            order.archived
+            or order.status != "confirmed"
+            or body.sales_line >= len(order.lines)
+        ):
+            fail("Выберите строку подтверждённого действующего заказа", 422)
+        line = order.lines[body.sales_line]
+        if (
+            not line.get("stock_tracked", True)
+            or line.get("material_id") != body.material_id
+        ):
+            fail("Материал не совпадает со строкой заказа", 422)
+        if body.quantity > remaining_to_reserve(db, order, body.sales_line):
+            fail("Резерв превышает невыданный остаток заказа с учётом других резервов")
+        purpose = purpose or "Заказ покупателя № " + order.number
     if body.source_order_id:
         source = (
             db.query(SourceRecord)
@@ -340,6 +416,8 @@ def create(body: Create, db: Session = Depends(get_db), user: User = Depends(edi
         production_id=body.production_id,
         source_order_id=body.source_order_id,
         source_line=body.source_line,
+        sales_order_id=body.sales_order_id,
+        sales_line=body.sales_line,
         purpose=purpose[:255],
         unit=m.unit,
         quantity=body.quantity,
@@ -427,6 +505,18 @@ def release(
 def issue(
     id: int, body: Issue, db: Session = Depends(get_db), user: User = Depends(edit)
 ):
+    initial = get(db, id)
+    from app.sales.models import SalesOrder
+
+    if initial.sales_order_id or (
+        initial.source_order_id
+        and db.query(SalesOrder.id)
+        .filter_by(source_record_id=initial.source_order_id)
+        .first()
+    ):
+        fail(
+            "Для заказа покупателя оформите отгрузку в разделе «Заказы и отгрузки». Она сама погасит резерв."
+        )
     row, m, retry = locked_change(db, id, body, user, "issued")
     if retry:
         return out(db, row)
