@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.common.module_access import Module as AccessModule
 from app.cycle.models import CycleStatus
 from app.production import readiness
+from app.production.locks import lock_block_material
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.production.schemas import BlockCreate, BlockMaterialCreate, BlockUpdate
 from app.tasks import service as task_service
@@ -306,6 +307,7 @@ def add_block_material(db: Session, block_id: int, payload: BlockMaterialCreate)
 def update_required_quantity(
     db: Session, material: BlockMaterial, quantity_required: float, actor
 ) -> BlockMaterial:
+    material = lock_block_material(db, material.id)
     if quantity_required < 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество не может быть отрицательным")
     diff = quantity_required - float(material.quantity_required)
@@ -320,6 +322,7 @@ def update_required_quantity(
 
 
 def request_material(db: Session, material: BlockMaterial, quantity: float, requested_by) -> MaterialRequest:
+    material = lock_block_material(db, material.id)
     if quantity <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество должно быть положительным")
     if quantity > material.quantity_required:

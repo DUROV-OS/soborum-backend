@@ -121,7 +121,7 @@ def test_manual_issue_required_fields_and_access(api, make_user, db):
     assert float(_reload(db, beam).quantity_in_stock) == 10
 
 
-def test_manual_issue_to_house_keeps_norms(api, make_user, db):
+def test_manual_issue_to_house_requires_techcard(api, make_user, db):
     beam = _material(db, "Брус", 10)
     house = _house(db, "Дом 1")
     bm = _norm(db, _block(db, house, "Каркас", 1), beam, required=5)
@@ -133,9 +133,9 @@ def test_manual_issue_to_house_keeps_norms(api, make_user, db):
         json={"destination_kind": "house", "production_id": house.id, "received_by": "Петров",
               "lines": [{"warehouse_material_id": beam.id, "quantity": 2}]},
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["destination"] == "Дом 1"
-    assert resp.json()["production_id"] == house.id
+    assert resp.status_code == 400, resp.text
+    assert "техкарте" in resp.json()["detail"]
+    assert float(_reload(db, beam).quantity_in_stock) == 10
     bm = _reload(db, bm)
     assert (float(bm.quantity_required), float(bm.quantity_provided)) == (5, 0)
 
@@ -237,3 +237,51 @@ def test_techcard_issue_requires_recipient(api, make_user, db):
     )
     assert resp.status_code == 400
     assert float(_reload(db, beam).quantity_in_stock) == 10
+
+
+def test_partial_issues_allow_any_order_and_never_exceed_remaining_norm(api, make_user, db):
+    house, beam, screws, *_ = _techcard_house(db)
+    keeper = api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT))
+    url = f'/api/warehouse/techcard-issue/{house.id}'
+    def issue(material, qty):
+        return keeper.post(url, json={'received_by': 'Цех', 'lines': [{'warehouse_material_id': material.id, 'quantity': qty}]})
+    assert issue(screws, 2).status_code == 200
+    assert issue(beam, 4).status_code == 200
+    assert issue(beam, 3).status_code == 400  # only 2 remain
+    assert issue(beam, 2).status_code == 200
+    assert issue(beam, 1).status_code == 400
+    assert float(_reload(db, beam).quantity_in_stock) == 4
+    assert float(_reload(db, screws).quantity_in_stock) == 1
+    assert db.query(StockMovement).count() == 3
+
+
+def test_storekeeper_without_task_access_can_partially_issue_a_production_request(api, make_user, db):
+    from app.production.models import MaterialRequest, MaterialRequestStatus
+
+    beam = _material(db, 'Частичная выдача', 10)
+    house = _house(db, 'Заказ')
+    bm = _norm(db, _block(db, house, 'Каркас', 1), beam, required=6)
+    producer = make_user(Module.PRODUCTION, level=AccessLevel.EDIT)
+    keeper = make_user(Module.WAREHOUSE, level=AccessLevel.EDIT)
+    created = api(producer).post(f'/api/production/block-materials/{bm.id}/request', json={'quantity': 6})
+    assert created.status_code == 201, created.text
+    request_id = created.json()['id']
+    client = api(keeper)
+    queue = client.get('/api/warehouse/requests')
+    assert queue.status_code == 200
+    assert [(item['id'], item['quantity'], item['in_stock']) for item in queue.json()] == [(request_id, 6, 10)]
+    assert client.post(f'/api/warehouse/requests/{request_id}/approve', json={'quantity': 7}).status_code == 400
+    assert client.post(f'/api/warehouse/requests/{request_id}/approve', json={'quantity': 2.5}).status_code == 400
+    partial = client.post(f'/api/warehouse/requests/{request_id}/approve', json={'quantity': 2})
+    assert partial.status_code == 200 and partial.json()['quantity'] == 4
+    assert client.get('/api/warehouse/requests').json()[0]['quantity'] == 4
+    bm = _reload(db, bm)
+    assert (float(bm.quantity_requested), float(bm.quantity_provided)) == (4, 2)
+    approved = db.query(MaterialRequest).filter_by(status=MaterialRequestStatus.APPROVED).all()
+    assert len(approved) == 1 and float(approved[0].quantity) == 2
+    assert client.post(f'/api/warehouse/requests/{request_id}/approve', json={'quantity': 5}).status_code == 400
+    assert client.post(f'/api/warehouse/requests/{request_id}/approve').status_code == 200
+    assert client.get('/api/warehouse/requests').json() == []
+    assert client.post(f'/api/warehouse/requests/{request_id}/approve').status_code == 400
+    assert float(_reload(db, beam).quantity_in_stock) == 4
+    assert len(db.query(StockMovement).filter_by(reason='issued').all()) == 2

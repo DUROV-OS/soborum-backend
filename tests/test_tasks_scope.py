@@ -119,3 +119,27 @@ def test_claim_rejects_task_in_section_without_access(db, make_user, api):
     resp = api(worker).post(f"/api/tasks/{tasks['free_production'].id}/claim")
 
     assert resp.status_code == 403
+
+
+def test_responsible_sees_own_tasks_but_not_other_peoples_and_counter_matches(db, make_user, api):
+    from app.dashboard.overview import generate_today
+
+    responsible = make_user(Module.TASKS)
+    worker = make_user(Module.TASKS)
+    own = Task(title="Ответственный без исполнения", status=TaskStatus.IN_PROGRESS, responsible_id=responsible.id)
+    own.assignees = [worker]
+    done = Task(title="Ответственный завершено", status=TaskStatus.DONE, responsible_id=responsible.id)
+    done.assignees = [worker]
+    other = Task(title="Чужая ответственность", status=TaskStatus.IN_PROGRESS, responsible_id=worker.id)
+    other.assignees = [worker]
+    db.add_all([own, done, other]); db.commit()
+    response = api(responsible).get('/api/tasks/?scope=mine&status=open')
+    assert response.status_code == 200
+    assert [item['id'] for item in response.json()] == [own.id]
+    widget = next(w for w in generate_today(db, responsible).widgets if w.section == 'tasks' and w.title.startswith('Открытых задач'))
+    assert int(widget.value) == len(response.json())
+    assert api(responsible).get('/api/tasks/?scope=claimable').json() == []
+    assert api(responsible).get('/api/tasks/?scope=all').status_code == 403
+    assert {item['id'] for item in api(worker).get('/api/tasks/?scope=mine&status=open').json()} == {own.id, other.id}
+    no_access = make_user()
+    assert api(no_access).get('/api/tasks/?scope=mine&status=open').status_code == 403
