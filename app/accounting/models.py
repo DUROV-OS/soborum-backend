@@ -271,6 +271,7 @@ class MoneyMovement(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     request_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
+    purchase_return_id: Mapped[int | None] = mapped_column(ForeignKey("purchase_returns.id"), index=True)
 
     direction: Mapped[MoneyDirection] = mapped_column(
         Enum(MoneyDirection, name="money_direction"), nullable=False

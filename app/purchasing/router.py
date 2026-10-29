@@ -15,8 +15,10 @@ from app.purchasing import service
 from app.purchasing.models import PurchaseReceipt
 from app.purchasing.schemas import Receive, Archive, Payment
 from app.users.models import User
+from app.purchasing.returns import router as returns_router
 
 app = FastAPI(title="Закупки и приёмки")
+app.include_router(returns_router)
 view = require_view(Module.ACCOUNTING)
 edit = require_edit(Module.ACCOUNTING)
 

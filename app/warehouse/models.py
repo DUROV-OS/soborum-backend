@@ -34,6 +34,7 @@ class StockMovementReason(str, enum.Enum):
     TRANSFER_OUT = "transfer_out"
     COUNT_GAIN = "count_gain"
     COUNT_LOSS = "count_loss"
+    PURCHASE_RETURN = "purchase_return"
 
 
 # Причины, которые реально меняют остаток склада, — только они попадают в
@@ -53,6 +54,7 @@ STOCK_OUT_REASONS = (
     StockMovementReason.ISSUED_MANUAL,
     StockMovementReason.TRANSFER_OUT,
     StockMovementReason.COUNT_LOSS,
+    StockMovementReason.PURCHASE_RETURN,
 )
 
 
@@ -65,6 +67,7 @@ class WarehouseOperationKind(str, enum.Enum):
     TRANSFER_OUT = "transfer_out"
     COUNT_GAIN = "count_gain"
     COUNT_LOSS = "count_loss"
+    PURCHASE_RETURN = "purchase_return"
 
 
 class IssueDestinationKind(str, enum.Enum):
