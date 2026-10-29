@@ -229,3 +229,19 @@ def test_source_documents_import_does_not_replay_stock_or_payments(db, make_user
     assert import_native(db, owner.id) == {"orders": 0, "receipts": 0, "suppliers": 0}
     assert order.comment == "Правка сотрудника" and order.opening_paid == 300
     assert db.query(PurchaseReceipt).one().order_id == order.id
+
+
+def test_automatic_review_is_read_only_and_never_infers_trust_or_price(db, api, make_user):
+    client, owner, supplier, material, order = setup(db, api, make_user)
+    before = client.get(f"/api/purchasing/orders/{order['id']}").json()
+    result = client.get(f"/api/purchasing/orders/{order['id']}/automatic-review")
+    assert result.status_code == 200
+    report = result.json()
+    assert report['decision'] == 'manual_review'
+    assert not report['auto_approval_enabled'] and not report['auto_payment_enabled']
+    codes = {item['code'] for item in report['reasons']}
+    assert {'supplier_verification_missing', 'sale_link_missing', 'techcard_link_missing',
+            'price_evidence_missing', 'payment_controls_missing'} <= codes
+    assert client.get(f"/api/purchasing/orders/{order['id']}").json() == before
+    assert api(make_user()).get(f"/api/purchasing/orders/{order['id']}/automatic-review").status_code == 403
+    assert api(owner).get('/api/purchasing/orders/999999/automatic-review').status_code == 404
