@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, JSON, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.common.module_access import AccessLevel, Module
@@ -23,6 +23,9 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole, name="user_role"), nullable=False, default=UserRole.WORKER)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    job_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    workspace_preferences: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     module_access: Mapped[list["UserModuleAccess"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
