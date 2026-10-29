@@ -121,7 +121,7 @@ def test_manual_issue_required_fields_and_access(api, make_user, db):
     assert float(_reload(db, beam).quantity_in_stock) == 10
 
 
-def test_manual_issue_to_house_keeps_norms(api, make_user, db):
+def test_manual_issue_to_house_requires_techcard(api, make_user, db):
     beam = _material(db, "Брус", 10)
     house = _house(db, "Дом 1")
     bm = _norm(db, _block(db, house, "Каркас", 1), beam, required=5)
@@ -133,9 +133,9 @@ def test_manual_issue_to_house_keeps_norms(api, make_user, db):
         json={"destination_kind": "house", "production_id": house.id, "received_by": "Петров",
               "lines": [{"warehouse_material_id": beam.id, "quantity": 2}]},
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["destination"] == "Дом 1"
-    assert resp.json()["production_id"] == house.id
+    assert resp.status_code == 400, resp.text
+    assert "техкарте" in resp.json()["detail"]
+    assert float(_reload(db, beam).quantity_in_stock) == 10
     bm = _reload(db, bm)
     assert (float(bm.quantity_required), float(bm.quantity_provided)) == (5, 0)
 

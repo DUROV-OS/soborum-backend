@@ -477,16 +477,12 @@ def create_manual_issue(
     note: str | None = None,
     occurred_at: datetime | None = None,
 ) -> WarehouseOperation:
-    """Отпуск на объект / в цех / на доработки / в дом без привязки к техкарте:
-    нормативы производства не меняются (0088-b)."""
+    """Ручной отпуск на объект / в цех / на доработки без привязки к дому."""
     received_by = _required_text(received_by, "Укажите, кто получил материал")
-    if destination_kind == IssueDestinationKind.HOUSE:
-        if production_id is None:
-            raise _bad_request("Выберите дом")
-        destination = house_label(get_production_or_404(db, production_id))
-    else:
-        destination = _required_text(destination, "Укажите, куда отпущен материал")
-        production_id = None
+    if destination_kind == IssueDestinationKind.HOUSE or production_id is not None:
+        raise _bad_request("Для дома выдавайте материалы по техкарте или заявке производства")
+    destination = _required_text(destination, "Укажите, куда отпущен материал")
+    production_id = None
     return create_stock_operation(
         db,
         WarehouseOperationKind.ISSUE_MANUAL,
