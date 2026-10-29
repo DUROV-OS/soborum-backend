@@ -67,6 +67,9 @@ class WarehouseMaterialOut(BaseModel):
     unit: str
     is_fractional: bool
     quantity_in_stock: float
+    reserved_quantity: float = 0
+    available_quantity: float = 0
+    reservation_shortage: float = 0
     purchase_price: float
     threshold: float
     kind: str | None = None
@@ -387,6 +390,7 @@ class TechcardPreviewLine(BaseModel):
     requested: float
     to_issue: float
     in_stock: float
+    available_quantity: float = 0
     balance_after: float
     shortage: bool
     blocks: list[TechcardBlockShare]
@@ -424,6 +428,7 @@ class PendingMaterialRequestOut(BaseModel):
     unit: str
     quantity: float
     in_stock: float
+    available_quantity: float = 0
     is_fractional: bool
     requested_by: str
     created_at: datetime

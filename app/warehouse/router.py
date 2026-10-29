@@ -13,6 +13,7 @@ from app.production.models import MaterialRequest, MaterialRequestStatus
 from app.users.models import User
 from app.warehouse import excel, price_import, service as warehouse_service
 from app.warehouse.documents import router as document_router
+from app.warehouse.reservations import router as reservation_router
 from app.warehouse.models import (
     IssueDestinationKind,
     MaterialCategory,
@@ -390,14 +391,34 @@ def get_supply(supply_id: int, db: Session = Depends(get_db), _: User = Depends(
 
 @app.get("/requests", response_model=list[PendingMaterialRequestOut])
 def pending_requests(db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
-    rows = db.query(MaterialRequest).filter(MaterialRequest.status == MaterialRequestStatus.PENDING).order_by(MaterialRequest.created_at, MaterialRequest.id).all()
-    return [PendingMaterialRequestOut(
-        id=row.id, production_id=row.block_material.block.production_id,
-        production_name=row.block_material.block.production.name, block_name=row.block_material.block.name,
-        material_title=row.warehouse_material.title, unit=row.block_material.unit, quantity=row.quantity,
-        in_stock=row.warehouse_material.quantity_in_stock, is_fractional=row.warehouse_material.is_fractional,
-        requested_by=row.requested_by.full_name, created_at=row.created_at,
-    ) for row in rows]
+    rows = (
+        db.query(MaterialRequest)
+        .filter(MaterialRequest.status == MaterialRequestStatus.PENDING)
+        .order_by(MaterialRequest.created_at, MaterialRequest.id)
+        .all()
+    )
+    return [
+        PendingMaterialRequestOut(
+            id=row.id,
+            production_id=row.block_material.block.production_id,
+            production_name=row.block_material.block.production.name,
+            block_name=row.block_material.block.name,
+            material_title=row.warehouse_material.title,
+            unit=row.block_material.unit,
+            quantity=row.quantity,
+            in_stock=row.warehouse_material.quantity_in_stock,
+            is_fractional=row.warehouse_material.is_fractional,
+            available_quantity=max(
+                0,
+                warehouse_service.reservations.available(
+                    db, row.warehouse_material, row.block_material.block.production_id
+                ),
+            ),
+            requested_by=row.requested_by.full_name,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
 
 
 @app.post("/requests/{request_id}/approve", response_model=MaterialRequestOut)
@@ -639,3 +660,4 @@ def unlink_max_chat(supplier_id: int, db: Session = Depends(get_db), _: User = D
 
 
 app.include_router(document_router)
+app.include_router(reservation_router)
