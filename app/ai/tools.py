@@ -86,6 +86,10 @@ def register(name: str, description: str, properties: dict, required: list[str] 
 
 
 def describe_tool_call(tool_name: str, tool_input: dict) -> str:
+    if tool_name == 'schedule_sales_followup':
+        return ('Назначить следующий шаг: '+str(tool_input.get('title',''))+
+            ('; срок: '+str(tool_input['due_at']) if tool_input.get('due_at') else '; срок — по правилу контроля лидов')+
+            '; карточка продаж №'+str(tool_input.get('entry_id','')))
     args = ", ".join(f"{k}={v!r}" for k, v in tool_input.items())
     return f"{tool_name}({args})"
 

@@ -168,6 +168,11 @@ def create(db, kind, entry, user):
     data = validate(db, kind, entry.data)
     if kind == "deal" and not data.get("responsible_user_id"):
         data["responsible_user_id"] = user.id
+    if kind=='task' and data.get('entity_id') and not entry.archived:
+        from app.crm.followup import step_owner
+        parent=db.query(CRMEntity).filter_by(id=data['entity_id']).populate_existing().with_for_update(of=CRMEntity).one()
+        if parent.kind in ('deal','inquiry','contact','company'):
+            data['responsible_user_id']=step_owner(db,parent,user,data.get('responsible_user_id'))
     row = CRMEntity(kind=kind, name=entry.name.strip(), archived=entry.archived, payload=data)
     if not row.name:
         raise HTTPException(422, "Введите название")

@@ -105,6 +105,7 @@ def aware(value):
 
 
 def attention(db, *, now=None, offset=0, limit=50):
+    active_users = {u.id for u in db.query(User).filter_by(is_active=True) if u.has_access(Module.CLIENTS)}
     now = aware(now or datetime.now(timezone.utc))
     rules = settings(db)
     rows = db.query(CRMEntity).filter(CRMEntity.archived.is_(False)).all()
@@ -144,13 +145,19 @@ def attention(db, *, now=None, offset=0, limit=50):
         if row.kind == "inquiry":
             add(row, "inquiry", "Обработать входящее обращение")
             linked = by_entity.get(row.id, [])
-            if linked and not any(t.payload.get("responsible_user_id") for t in linked):
+            if linked and not any(t.payload.get("responsible_user_id") in active_users for t in linked):
                 add(row, "no_owner", "Назначить ответственного за обращение")
         if row.kind == "task" and not row.payload.get("completed") and row.payload.get("due_at"):
             due = aware(row.payload["due_at"])
             if due < now:
                 add(row, "overdue", "Просрочена задача по лиду", due)
         if row.kind != "deal" or row.payload.get("is_unsorted"):
+            if (
+                row.kind == "task"
+                and not row.payload.get("completed")
+                and row.payload.get("responsible_user_id") not in active_users
+            ):
+                add(row, "no_owner", "Назначить исполнителя задачи")
             continue
         stage = stages.get(row.payload.get("stage_id"))
         if stage and stage.payload.get("outcome") in ("won", "lost"):
@@ -159,8 +166,8 @@ def attention(db, *, now=None, offset=0, limit=50):
         if not next_tasks:
             add(row, "no_next_step", "Нет следующего шага")
         elif not any(t.payload.get("due_at") for t in next_tasks):
-            add(row, "no_deadline", "У следующего шага нет срока")
-        if not row.payload.get("responsible_user_id"):
+            add(next_tasks[0], "no_deadline", "У следующего шага нет срока")
+        if row.payload.get("responsible_user_id") not in active_users:
             add(row, "no_owner", "Не назначен ответственный")
         last = activity.get(row.id) or source_activity.get(row.source_id) or aware(row.created_at)
         scheduled = any(t.payload.get("due_at") and aware(t.payload["due_at"]) >= now for t in next_tasks)

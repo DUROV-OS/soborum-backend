@@ -981,6 +981,10 @@ def _compute_kpi_for_period(
     on_time = late = overdue = 0
     for t in tasks:
         duration = durations.get(t.id)
+        if (t.link_meta or {}).get('source_imported') and t.status is TaskStatus.DONE and not (duration and duration.completed_at):
+            # A migrated completion flag does not establish when it happened.
+            # Keep history visible without inventing wage/KPI evidence.
+            continue
         if t.status is TaskStatus.DONE and duration and duration.completed_at:
             if _aware(duration.completed_at) <= _aware(t.deadline):
                 on_time += 1
