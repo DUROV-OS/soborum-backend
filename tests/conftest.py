@@ -1,5 +1,11 @@
 import os
 
+# CI has an isolated PostgreSQL service; preserve its URL before the rest of
+# the suite switches DATABASE_URL to SQLite. Local production databases are
+# never used by the concurrency test.
+if os.getenv("CI") and os.getenv("DATABASE_URL", "").startswith("postgresql"):
+    os.environ["LOCK_TEST_DATABASE_URL"] = os.environ["DATABASE_URL"]
+
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["APP_ENV"] = "dev"
 os.environ["ENABLE_DEMO_SEED"] = "true"

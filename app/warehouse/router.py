@@ -9,6 +9,7 @@ from app.common.module_access import Module as AccessModule
 from app.core.deps import require_edit, require_full, require_view
 from app.db.session import get_db
 from app.production.schemas import MaterialRequestOut
+from app.production.models import MaterialRequest, MaterialRequestStatus
 from app.users.models import User
 from app.warehouse import excel, price_import, service as warehouse_service
 from app.warehouse.models import (
@@ -29,6 +30,8 @@ from app.warehouse.schemas import (
     IssueSuggestionsOut,
     JournalEntryOut,
     ManualIssueCreate,
+    MaterialRequestIssue,
+    PendingMaterialRequestOut,
     LeadTimeQuestionDraft,
     LeadTimeQuestionSend,
     LeadTimeQuestionSent,
@@ -384,10 +387,22 @@ def get_supply(supply_id: int, db: Session = Depends(get_db), _: User = Depends(
     return supply
 
 
+@app.get("/requests", response_model=list[PendingMaterialRequestOut])
+def pending_requests(db: Session = Depends(get_db), _: User = Depends(require_warehouse_view)):
+    rows = db.query(MaterialRequest).filter(MaterialRequest.status == MaterialRequestStatus.PENDING).order_by(MaterialRequest.created_at, MaterialRequest.id).all()
+    return [PendingMaterialRequestOut(
+        id=row.id, production_id=row.block_material.block.production_id,
+        production_name=row.block_material.block.production.name, block_name=row.block_material.block.name,
+        material_title=row.warehouse_material.title, unit=row.block_material.unit, quantity=row.quantity,
+        in_stock=row.warehouse_material.quantity_in_stock, is_fractional=row.warehouse_material.is_fractional,
+        requested_by=row.requested_by.full_name, created_at=row.created_at,
+    ) for row in rows]
+
+
 @app.post("/requests/{request_id}/approve", response_model=MaterialRequestOut)
-def approve_request(request_id: int, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)):
+def approve_request(request_id: int, payload: MaterialRequestIssue | None = None, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)):
     request = warehouse_service.get_request_or_404(db, request_id)
-    request = warehouse_service.approve_request(db, request, user)
+    request = warehouse_service.approve_request(db, request, user, quantity=payload.quantity if payload else None)
     db.commit()
     db.refresh(request)
     return request

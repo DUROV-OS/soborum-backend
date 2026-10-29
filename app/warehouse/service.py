@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_
@@ -10,6 +11,7 @@ from app.common.module_access import Module as AccessModule
 from app.notifications.models import NotificationKind
 from app.notifications.service import notify
 from app.production import readiness
+from app.production.locks import lock_block_material, lock_house_materials
 from app.production.models import BlockMaterial, MaterialRequest, MaterialRequestStatus, Production, ProductionBlock
 from app.tasks import service as task_service
 from app.tasks.models import Task, TaskLinkType, TaskStatus
@@ -475,16 +477,12 @@ def create_manual_issue(
     note: str | None = None,
     occurred_at: datetime | None = None,
 ) -> WarehouseOperation:
-    """Отпуск на объект / в цех / на доработки / в дом без привязки к техкарте:
-    нормативы производства не меняются (0088-b)."""
+    """Ручной отпуск на объект / в цех / на доработки без привязки к дому."""
     received_by = _required_text(received_by, "Укажите, кто получил материал")
-    if destination_kind == IssueDestinationKind.HOUSE:
-        if production_id is None:
-            raise _bad_request("Выберите дом")
-        destination = house_label(get_production_or_404(db, production_id))
-    else:
-        destination = _required_text(destination, "Укажите, куда отпущен материал")
-        production_id = None
+    if destination_kind == IssueDestinationKind.HOUSE or production_id is not None:
+        raise _bad_request("Для дома выдавайте материалы по техкарте или заявке производства")
+    destination = _required_text(destination, "Укажите, куда отпущен материал")
+    production_id = None
     return create_stock_operation(
         db,
         WarehouseOperationKind.ISSUE_MANUAL,
@@ -642,7 +640,9 @@ def issue_by_techcard(
     количества, каждое не больше остатка норматива по материалу. Нехватка на
     складе — 400 от create_stock_operation, ничего не проводится."""
     received_by = _required_text(received_by, "Укажите, кто получил материал")
-    block_materials = _house_block_materials(db, production.id)
+    # Lock the production norms before validating; stock writers use the same
+    # order (block materials, then warehouse materials).
+    block_materials = lock_house_materials(db, production.id)
     to_issue: dict[int, float] = {}
     for bm in block_materials:
         to_issue[bm.warehouse_material_id] = to_issue.get(bm.warehouse_material_id, 0.0) + float(bm.quantity_required)
@@ -817,36 +817,56 @@ def _notify_material_request(db: Session, request: MaterialRequest, title: str) 
     )
 
 
-def approve_request(db: Session, request: MaterialRequest, decided_by: User) -> MaterialRequest:
+def approve_request(db: Session, request: MaterialRequest, decided_by: User, quantity: Decimal | None = None) -> MaterialRequest:
     request = db.query(MaterialRequest).filter_by(id=request.id).populate_existing().with_for_update(of=MaterialRequest).one()
     if request.status != MaterialRequestStatus.PENDING:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
-
-    module_material = request.block_material
+        raise _bad_request("Заявка уже обработана")
+    module_material = lock_block_material(db, request.block_material_id)
     warehouse_material = _lock_materials(db, [request.warehouse_material_id])[request.warehouse_material_id]
     if warehouse_material.is_archived:
         raise _bad_request("Материал находится в архиве")
-    _ensure_enough_stock([(warehouse_material, float(request.quantity))])
+    requested = Decimal(str(request.quantity))
+    issue = requested if quantity is None else Decimal(quantity)
+    if not issue.is_finite() or issue <= 0 or issue > requested:
+        raise _bad_request("Количество выдачи должно быть больше нуля и не больше остатка заявки")
+    if not warehouse_material.is_fractional and issue != issue.to_integral_value():
+        raise _bad_request("Этот материал учитывается только целыми единицами")
+    _ensure_enough_stock([(warehouse_material, float(issue))])
+    if Decimal(str(module_material.quantity_requested)) < issue:
+        raise _bad_request("Остаток заявки не совпадает с нормативом. Обновите данные и обратитесь к руководителю производства")
 
-    module_material.quantity_requested -= request.quantity
-    module_material.quantity_provided += request.quantity
-    warehouse_material.quantity_in_stock -= request.quantity
-
-    request.status = MaterialRequestStatus.APPROVED
-    request.decided_by_id = decided_by.id
-    request.decided_at = datetime.now(timezone.utc)
+    module_material.quantity_requested = float(Decimal(str(module_material.quantity_requested)) - issue)
+    module_material.quantity_provided = float(Decimal(str(module_material.quantity_provided)) + issue)
+    warehouse_material.quantity_in_stock = float(Decimal(str(warehouse_material.quantity_in_stock)) - issue)
+    decided_at = datetime.now(timezone.utc)
+    if issue == requested:
+        request.status = MaterialRequestStatus.APPROVED
+        request.decided_by_id = decided_by.id
+        request.decided_at = decided_at
+        recorded = request
+    else:
+        # Preserve an approved row for every partial issue; the original request
+        # stays pending with the remaining quantity and retains its board task.
+        request.quantity = float(requested - issue)
+        recorded = MaterialRequest(block_material_id=request.block_material_id,
+            warehouse_material_id=request.warehouse_material_id, quantity=float(issue),
+            status=MaterialRequestStatus.APPROVED, requested_by_id=request.requested_by_id,
+            decided_by_id=decided_by.id, decided_at=decided_at)
+        db.add(recorded)
+        if request.task_id:
+            task = db.get(Task, request.task_id)
+            if task:
+                task.title = (f"Заявка на материал «{warehouse_material.title}» "
+                              f"(осталось {_fmt_qty(request.quantity)} {module_material.unit}) "
+                              f"для блока «{module_material.block.name}»")
     db.flush()
     readiness.invalidate_production_caches(db, module_material.block.production_id)
-
-    log_movement(db, warehouse_material, -float(request.quantity), StockMovementReason.ISSUED, decided_by, request.id)
-
-    _notify_material_request(db, request, "Заявка на материал одобрена")
-
-    if request.task_id:
+    log_movement(db, warehouse_material, -float(issue), StockMovementReason.ISSUED, decided_by, recorded.id)
+    _notify_material_request(db, request, "Заявка на материал одобрена" if issue == requested else "Материал по заявке выдан частично")
+    if issue == requested and request.task_id:
         task = db.get(Task, request.task_id)
         if task:
             task_service.force_close(db, task)
-
     sync_shortage_task(db, warehouse_material)
     return request
 
@@ -856,7 +876,7 @@ def reject_request(db: Session, request: MaterialRequest, decided_by: User) -> M
     if request.status != MaterialRequestStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Заявка уже обработана")
 
-    module_material = request.block_material
+    module_material = lock_block_material(db, request.block_material_id)
     warehouse_material = request.warehouse_material
 
     module_material.quantity_requested -= request.quantity
