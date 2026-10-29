@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.clients import intake_auth
+from app.clients.margin import MarginPreviewInput, margin_preview
 from app.clients import reconcile as client_reconcile
 from app.clients import service as client_service
 from app.clients.models import Client, ClientNote, ClientStage
@@ -170,6 +171,12 @@ def _intake_payload(fields: dict) -> dict:
         data["message"] = "\n".join(filter(None, [data.get("message", ""), *extras]))
     data["message"] = data.get("message", "")[:4000]
     return {**data, "utm": utm or None}
+
+
+@app.post("/margin-preview")
+def preview_margin(payload: MarginPreviewInput, _: User = Depends(require_clients_view)):
+    """Advisory calculation for one item; does not approve or save a sale."""
+    return margin_preview(payload)
 
 
 @app.get("/assignees", response_model=list[ClientManagerOut])
