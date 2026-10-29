@@ -1,0 +1,45 @@
+# Explicitly started after the archive migration. No additional public ports.
+# Use: docker compose -f docker-compose.yml -f docker-compose.calls.yml --profile calls ...
+services:
+  call-worker:
+    profiles: [calls]
+    build:
+      context: .
+      dockerfile: Dockerfile.calls
+    restart: unless-stopped
+    cpus: 2
+    mem_limit: 2300m
+    environment:
+      APP_ENV: prod
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgresql+psycopg2://soborbum:${POSTGRES_PASSWORD:-soborbum}@db:5432/soborbum
+      STORAGE_DIR: /app/storage
+      MEGAFON_API_TOKEN: ${MEGAFON_API_TOKEN:-}
+      MEGAFON_DOMAIN: ${MEGAFON_DOMAIN:-}
+      MEGAFON_RECORDING_HOSTS: ${MEGAFON_RECORDING_HOSTS:-}
+      CALL_ANALYSIS_URL: http://call-analysis:11434
+      CALL_ANALYSIS_MODEL: qwen3:1.7b
+      CALL_WHISPER_MODEL: small
+    volumes:
+      - storage_data:/app/storage
+      - call_models:/models
+    depends_on:
+      db:
+        condition: service_healthy
+      call-analysis:
+        condition: service_started
+  call-analysis:
+    profiles: [calls]
+    image: ollama/ollama:0.13.0
+    restart: unless-stopped
+    cpus: 2
+    mem_limit: 2400m
+    environment:
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_CONTEXT_LENGTH: 8192
+    volumes:
+      - call_analysis_models:/root/.ollama
+volumes:
+  call_models:
+  call_analysis_models:
