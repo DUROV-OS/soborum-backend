@@ -245,4 +245,3 @@ def test_automatic_review_is_read_only_and_never_infers_trust_or_price(db, api, 
     assert client.get(f"/api/purchasing/orders/{order['id']}").json() == before
     assert api(make_user()).get(f"/api/purchasing/orders/{order['id']}/automatic-review").status_code == 403
     assert api(owner).get('/api/purchasing/orders/999999/automatic-review').status_code == 404
-
