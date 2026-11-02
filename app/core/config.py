@@ -1,7 +1,7 @@
 import logging
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger("app.core.config")
@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 12
 
     storage_dir: str = "/tmp/soborum-storage"
+
+    # Shared company mailbox. Credentials stay on the server; never in API responses.
+    shared_mail_enabled: bool = False
+    shared_mail_address: str = "sales@durov.house"
+    shared_mail_password: SecretStr = SecretStr("")
+    shared_mail_host: str = "mail.nic.ru"
+    shared_mail_port: int = 993
 
     admin_email: str = "admin@soborbum.local"
     # No default. Empty or a well-known value => bootstrap_admin refuses to create an admin.
