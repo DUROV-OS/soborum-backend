@@ -442,9 +442,14 @@ def accept_inquiry(db, row, entry, user):
     row.archived = True
     row.version += 1
     from app.crm.guard import accepted, close_terminal_followups
+    from app.telephony.service import accept_inquiry as attach_inquiry_calls
+    from app.crm.models import CRMChatLink
 
     accepted(db, row, deal, user)
     close_terminal_followups(db, deal, user)
+    attach_inquiry_calls(db, row, deal, user)
+    for chat in db.query(CRMChatLink).filter_by(entity_id=row.id):
+        chat.entity_id = deal.id
     if old.get("client_id"):
         from app.clients.models import Client
         from app.clients.service import take_lead

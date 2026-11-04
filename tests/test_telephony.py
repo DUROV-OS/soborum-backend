@@ -100,6 +100,28 @@ def test_calls_belong_to_one_application_and_manual_choice_survives_replay(db, a
     assert db.query(PhoneCallAudit).one().details['before']['deal_id'] is None
 
 
+def test_inquiry_acceptance_preserves_call_and_chat_in_target_application(db, make_user):
+    from app.crm import service as crm, communications
+    from app.crm.models import CRMChatLink
+    from app.crm.schemas import Entry
+    user = make_user(admin=True)
+    pipeline = crm.create(db, 'pipeline', Entry(name='Продажи'), user)
+    stage = crm.create(db, 'stage', Entry(name='Новая', data={'pipeline_id': pipeline['id']}), user)
+    inquiry = crm.create(db, 'inquiry', Entry(name='Заявка', data={'phone':'79001112233'}), user)
+    service.ingest(db, payload())
+    call = db.query(PhoneCall).one()
+    assert call.crm_entity_id == inquiry['id']
+    communications.attach(db, inquiry['id'], 456, 'Клиент MAX', user)
+    deal = crm.accept_inquiry(db, db.get(CRMEntity, inquiry['id']), Entry(name='Баня', data={'pipeline_id':pipeline['id'],'stage_id':stage['id']}), user)
+    assert call.deal_id == deal['id'] and call.deal_match_status == 'inquiry'
+    assert db.query(CRMChatLink).one().entity_id == deal['id']
+    assert communications.links(db, deal['id'])['items'][0]['chat_id'] == 456
+    assert communications.links(db, inquiry['id'])['items'][0]['chat_id'] == 456
+    service.ingest(db, payload())
+    assert call.deal_id == deal['id'] and call.deal_match_status == 'inquiry'
+    assert service.listing(db, entity_id=deal['id'])['total'] == 1
+
+
 def test_out_of_order_event_does_not_regress_completed_call(db):
     service.ingest(db,payload())
     service.ingest(db,payload(cmd='event',type='INCOMING',direction='in'))

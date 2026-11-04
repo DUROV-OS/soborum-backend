@@ -18,6 +18,8 @@ def card(db, entity_id, *, editing=False):
 def links(db, entity_id):
     entry = card(db, entity_id)
     ids = {entry.id}
+    if entry.kind == 'inquiry' and entry.payload.get('accepted_deal_id'):
+        ids.add(entry.payload['accepted_deal_id'])
     if entry.kind == 'deal':
         ids.update(entry.payload.get('contact_ids') or [])
         if entry.payload.get('company_id'):

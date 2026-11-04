@@ -54,7 +54,7 @@ def deal_parties(db, entry):
 
 
 def match_deal(db, row):
-    if row.deal_match_status == 'manual':
+    if row.deal_match_status in ('manual', 'inquiry'):
         return
     if row.match_status == 'ambiguous':
         row.deal_id, row.deal_match_status = None, 'ambiguous'
@@ -69,6 +69,14 @@ def match_deal(db, row):
             candidates.append(entry.id)
     row.deal_id = candidates[0] if len(candidates) == 1 else None
     row.deal_match_status = 'matched' if len(candidates) == 1 else 'ambiguous' if candidates else 'unmatched'
+
+
+def accept_inquiry(db, inquiry, deal, user):
+    for row in db.query(PhoneCall).filter_by(crm_entity_id=inquiry.id):
+        if row.deal_match_status != 'manual':
+            before = row.deal_id
+            row.deal_id, row.deal_match_status = deal.id, 'inquiry'
+            audit(db, row, user, 'inquiry_accepted', {'inquiry_id': inquiry.id, 'before_deal_id': before, 'deal_id': deal.id})
 
 
 def ingest(db, body):
