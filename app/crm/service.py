@@ -129,7 +129,8 @@ def validate(db, kind, payload, previous=None):
     return data
 
 
-def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0):
+def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage_id=None):
+    """One filter contract for paginated registers and unpaginated board totals."""
     if kind not in SCHEMAS:
         raise HTTPException(422, "Неизвестный раздел продаж")
     stmt = db.query(CRMEntity).filter_by(kind=kind)
@@ -152,6 +153,11 @@ def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_i
         stmt = stmt.filter(CRMEntity.payload["pipeline_id"].as_integer() == pipeline_id)
     if stage_id is not None:
         stmt = stmt.filter(CRMEntity.payload["stage_id"].as_integer() == stage_id)
+    return stmt
+
+
+def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0):
+    stmt = _entries_query(db, kind, query, archive, pipeline_id, stage_id)
     return {
         "total": stmt.count(),
         "items": [out(r) for r in stmt.order_by(CRMEntity.id.desc()).offset(offset).limit(limit)],
@@ -162,6 +168,89 @@ def func_lower(value):
     from sqlalchemy import func
 
     return func.lower(value)
+
+
+def kanban_summary(db, query="", archive="active", pipeline_id=None):
+    """Commercial budgets of all canonical board cards, independent of page size.
+
+    Pending inquiries represent their hidden unsorted deal once. Website inquiries
+    without a pipeline belong to the default pre-sales New stage, as in the board.
+    No internal economics or arbitrary CRM payload is returned to the caller.
+    """
+    from decimal import Decimal, InvalidOperation
+    import re
+
+    catalog = db.query(CRMEntity).filter(
+        CRMEntity.kind.in_(["pipeline", "stage"]), CRMEntity.archived.is_(False)
+    ).all()
+    pipelines = [row for row in catalog if row.kind == "pipeline"]
+    pipeline_ids = {row.id for row in pipelines}
+    default_pipeline = next(
+        (row.id for row in pipelines if row.name.strip().casefold() == "допродажная воронка"),
+        pipelines[0].id if pipelines else None,
+    )
+    stages = sorted(
+        (row for row in catalog if row.kind == "stage" and row.payload.get("pipeline_id") in pipeline_ids),
+        key=lambda row: (row.payload.get("sort", 0), row.id),
+    )
+    first_stage = {}
+    columns = {}
+    for row in stages:
+        pid = row.payload["pipeline_id"]
+        if row.payload.get("outcome") == "open":
+            first_stage.setdefault(pid, row.id)
+        if pipeline_id is None or pipeline_id == pid:
+            columns[(pid, row.id)] = {
+                "pipeline_id": pid, "stage_id": row.id, "count": 0,
+                "amounts": {}, "unpriced_count": 0,
+            }
+
+    deals = _entries_query(db, "deal", query, archive).all()
+    regular_ids = {row.id for row in deals}
+    inquiries = _entries_query(db, "inquiry", query, archive).all()
+    linked_ids = {row.payload.get("deal_id") for row in inquiries if row.payload.get("deal_id")}
+    linked_deals = {
+        row.id: row for row in db.query(CRMEntity).filter(CRMEntity.kind == "deal", CRMEntity.id.in_(linked_ids))
+    } if linked_ids else {}
+    represented = set(regular_ids)
+    unmapped = 0
+
+    def add(pid, sid, payload):
+        nonlocal unmapped
+        if pipeline_id is not None and pid != pipeline_id:
+            return
+        column = columns.get((pid, sid))
+        if column is None:
+            unmapped += 1
+            return
+        column["count"] += 1
+        currency = payload.get("currency") or "RUB"
+        try:
+            amount = Decimal(str(payload.get("amount", 0)))
+        except (InvalidOperation, ValueError, TypeError):
+            amount = Decimal(0)
+        if not amount.is_finite() or amount <= 0 or not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
+            column["unpriced_count"] += 1
+            return
+        column["amounts"][currency] = column["amounts"].get(currency, Decimal(0)) + amount
+
+    for row in deals:
+        add(row.payload.get("pipeline_id"), row.payload.get("stage_id"), row.payload)
+    for row in inquiries:
+        data = row.payload
+        if data.get("accepted_deal_id"):
+            continue
+        linked = linked_deals.get(data.get("deal_id"))
+        # A stale inquiry pointer must not double the existing deal's budget.
+        if linked and linked.id in represented:
+            continue
+        if linked:
+            represented.add(linked.id)
+        pid = data.get("pipeline_id") if data.get("pipeline_id") is not None else default_pipeline
+        add(pid, first_stage.get(pid), linked.payload if linked else {})
+    for column in columns.values():
+        column["amounts"] = {currency: float(value) for currency, value in sorted(column["amounts"].items())}
+    return {"columns": list(columns.values()), "unmapped_count": unmapped}
 
 
 def create(db, kind, entry, user):

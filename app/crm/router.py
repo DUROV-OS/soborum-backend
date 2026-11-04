@@ -121,6 +121,17 @@ def entries(
     return service.list_entries(db, kind, query, archive, pipeline_id, stage_id, limit, offset)
 
 
+@app.get("/kanban-summary")
+def kanban_summary(
+    query: str = Query("", max_length=300),
+    archive: str = Query("active", pattern="^(active|archived|all)$"),
+    pipeline_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(view),
+):
+    return service.kanban_summary(db, query=query, archive=archive, pipeline_id=pipeline_id)
+
+
 @app.get("/entries/{id}")
 def entry(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
     return service.out(service.get(db, id))
