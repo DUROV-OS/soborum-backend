@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
@@ -49,7 +50,7 @@ def list_tasks(
     scope: TaskScope = TaskScope.MINE,
     assignee_id: int | None = None,
     reviewer_id: int | None = None,
-    responsible_id: int | None = Query(None, ge=0),
+    responsible_id: Annotated[int | None, Query(ge=0)] = None,
     block_id: int | None = None,
     link_type: TaskLinkType | None = None,
     task_status: TaskStatusFilter | None = Query(None, alias="status"),
