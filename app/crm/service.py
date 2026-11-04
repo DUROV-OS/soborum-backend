@@ -57,13 +57,29 @@ def register_client_request(db, client, request, *, archived=False):
     return row
 
 
-def out(row):
+_UNSET = object()
+
+
+def out(row, *, source_fields=None, priority_override=_UNSET):
     from sqlalchemy.orm import object_session
     from app.crm.models import CRMTaskLink
 
     db = object_session(row)
     task_link = db.get(CRMTaskLink, row.id) if db and row.kind == "task" else None
+    if source_fields is None:
+        from app.crm.dates import source_date_expressions, source_date_fields
+
+        values = db.query(*source_date_expressions(db, row.kind)).filter(CRMEntity.id == row.id).one() if db else (None, "unknown")
+        source_fields = source_date_fields(*values)
+    priority = priority_override
+    if priority is _UNSET:
+        from app.tasks.models import Task
+
+        task = db.get(Task, task_link.task_id) if task_link else None
+        priority = task.priority.value if task else None
     return {
+        **source_fields,
+        "priority": priority,
         "board_task_id": task_link.task_id if task_link else None,
         "id": row.id,
         "kind": row.kind,
@@ -126,6 +142,12 @@ def validate(db, kind, payload, previous=None):
         request = db.get(ClientLeadRequest, data["client_request_id"])
         if request is None or request.client_id != data.get("client_id"):
             raise HTTPException(422, "Заявка не принадлежит клиенту")
+    if kind == "inquiry" and data.get("is_spam") and data.get("accepted_deal_id"):
+        raise HTTPException(422, "Принятую в работу заявку нельзя пометить как спам")
+    if kind == "inquiry" and data.get("is_spam") and data.get("deal_id"):
+        linked = db.get(CRMEntity, data["deal_id"])
+        if linked and linked.kind == "deal" and not linked.payload.get("is_unsorted"):
+            raise HTTPException(422, "Заявка уже связана с обычной сделкой; отметка спама недоступна")
     return data
 
 
@@ -151,15 +173,41 @@ def _effective_owner_expression(kind):
     return func.coalesce(linked_owner, direct_owner)
 
 
-def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, owner_id=None):
+def _task_priority_expression():
+    from sqlalchemy import select
+    from app.crm.models import CRMTaskLink
+    from app.tasks.models import Task
+
+    return (select(Task.priority).join(CRMTaskLink, CRMTaskLink.task_id == Task.id)
+            .where(CRMTaskLink.entity_id == CRMEntity.id).correlate(CRMEntity).scalar_subquery())
+
+
+def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, owner_id=None,
+                   date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal"):
     """One filter contract for paginated registers and unpaginated board totals."""
     if kind not in SCHEMAS:
         raise HTTPException(422, "Неизвестный раздел продаж")
+    from app.crm.dates import date_bounds, source_date_expressions
+
+    start, end = date_bounds(date_from, date_to, date_unknown)
+    if priority is not None and (kind != "task" or priority not in ("low", "medium", "high")):
+        raise HTTPException(422, "Приоритет доступен только для задач: low, medium, high")
+    if spam not in ("normal", "spam", "all"):
+        raise HTTPException(422, "Неизвестный фильтр спама")
     stmt = db.query(CRMEntity).filter_by(kind=kind)
-    if kind == "deal":
+    if kind == "inquiry" and spam != "all":
         from sqlalchemy import func
 
+        flagged = func.coalesce(CRMEntity.payload["is_spam"].as_boolean(), False)
+        stmt = stmt.filter(flagged.is_(spam == "spam"))
+        if spam == "spam":
+            stmt = stmt.filter(func.coalesce(CRMEntity.payload["accepted_deal_id"].as_integer(), 0) == 0)
+    if kind == "deal":
+        from sqlalchemy import func, false
+
         stmt = stmt.filter(func.coalesce(CRMEntity.payload["is_unsorted"].as_boolean(), False).is_(False))
+        if spam == "spam":
+            stmt = stmt.filter(false())
     if archive != "all":
         stmt = stmt.filter(CRMEntity.archived.is_(archive == "archived"))
     if query:
@@ -179,17 +227,39 @@ def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage
         from sqlalchemy import func
 
         stmt = stmt.filter(func.coalesce(_effective_owner_expression(kind), 0) == owner_id)
+    if date_unknown or start is not None or end is not None:
+        epoch, _ = source_date_expressions(db, kind)
+        if date_unknown:
+            stmt = stmt.filter(epoch.is_(None))
+        if start is not None:
+            stmt = stmt.filter(epoch >= start)
+        if end is not None:
+            stmt = stmt.filter(epoch < end)
+    if priority is not None:
+        from app.tasks.models import TaskPriority
+
+        stmt = stmt.filter(_task_priority_expression() == TaskPriority(priority))
     return stmt
 
 
-def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0, owner_id=None):
-    stmt = _entries_query(db, kind, query, archive, pipeline_id, stage_id, owner_id)
+def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0, owner_id=None,
+                 date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal"):
+    from sqlalchemy import literal
+    from app.crm.dates import source_date_expressions, source_date_fields
+
+    stmt = _entries_query(db, kind, query, archive, pipeline_id, stage_id, owner_id,
+                          date_from, date_to, date_unknown, priority, spam)
+    epoch, origin = source_date_expressions(db, kind)
+    order = [epoch.desc().nulls_last(), CRMEntity.id.desc()] if kind in ("deal", "inquiry") else [CRMEntity.id.desc()]
+    priority_column = _task_priority_expression() if kind == "task" else literal(None)
     return {
         "total": stmt.count(),
         "items": [
-            {**out(row), "effective_owner_id": effective_owner or None}
-            for row, effective_owner in stmt.add_columns(_effective_owner_expression(kind))
-            .order_by(CRMEntity.id.desc()).offset(offset).limit(limit)
+            {**out(row, source_fields=source_date_fields(created, source_kind), priority_override=task_priority),
+             "effective_owner_id": effective_owner or None}
+            for row, effective_owner, created, source_kind, task_priority in stmt.add_columns(
+                _effective_owner_expression(kind), epoch, origin, priority_column)
+            .order_by(*order).offset(offset).limit(limit)
         ],
     }
 
@@ -200,7 +270,8 @@ def func_lower(value):
     return func.lower(value)
 
 
-def kanban_summary(db, query="", archive="active", pipeline_id=None, owner_id=None):
+def kanban_summary(db, query="", archive="active", pipeline_id=None, owner_id=None,
+                   date_from=None, date_to=None, date_unknown=False, spam="normal"):
     """Commercial budgets of all canonical board cards, independent of page size.
 
     Pending inquiries represent their hidden unsorted deal once. Website inquiries
@@ -235,9 +306,10 @@ def kanban_summary(db, query="", archive="active", pipeline_id=None, owner_id=No
                 "amounts": {}, "unpriced_count": 0,
             }
 
-    deals = _entries_query(db, "deal", query, archive, owner_id=owner_id).all()
+    date_filter = {"date_from": date_from, "date_to": date_to, "date_unknown": date_unknown, "spam": spam}
+    deals = _entries_query(db, "deal", query, archive, owner_id=owner_id, **date_filter).all()
     regular_ids = {row.id for row in deals}
-    inquiries = _entries_query(db, "inquiry", query, archive, owner_id=owner_id).all()
+    inquiries = _entries_query(db, "inquiry", query, archive, owner_id=owner_id, **date_filter).all()
     linked_ids = {row.payload.get("deal_id") for row in inquiries if row.payload.get("deal_id")}
     linked_deals = {
         row.id: row for row in db.query(CRMEntity).filter(CRMEntity.kind == "deal", CRMEntity.id.in_(linked_ids))
@@ -327,6 +399,9 @@ def patch(db, id, payload, user):
         if payload.data is not None
         else row.payload
     )
+    if row.kind == "inquiry" and bool(data.get("is_spam")) != bool(row.payload.get("is_spam")):
+        if row.payload.get("accepted_deal_id") or row.archived:
+            raise HTTPException(422, "Отметка спама доступна только для непринятой действующей заявки")
     values = {"payload": data, "version": row.version + 1, "updated_at": datetime.now(timezone.utc)}
     if payload.name is not None:
         if not payload.name.strip():
@@ -506,6 +581,8 @@ def accept_inquiry(db, row, entry, user):
     row = db.query(CRMEntity).filter_by(id=row.id).populate_existing().with_for_update().one()
     if row.payload.get("accepted_deal_id"):
         return out(get(db, row.payload["accepted_deal_id"], "deal"))
+    if row.payload.get("is_spam"):
+        raise HTTPException(422, "Сначала уберите отметку «Спам», затем примите заявку в работу")
     if row.archived:
         raise HTTPException(409, "Заявка находится в архиве")
     if not entry.name.strip():

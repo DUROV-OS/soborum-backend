@@ -31,6 +31,7 @@ class DealData(BaseModel):
 
 class InquiryData(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    is_spam: bool = False
     pipeline_id: int | None = None
     source_name: str = Field("", max_length=1000)
     contact_name: str = Field("", max_length=1000)

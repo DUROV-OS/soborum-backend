@@ -101,3 +101,19 @@ def test_export_requires_clients_access(api, make_user):
 
     viewer = api(make_user(Module.CLIENTS, level=AccessLevel.VIEW))
     assert viewer.get("/api/partners/export.xlsx").status_code == 200
+
+
+def test_export_can_be_edited_and_saved_without_changing_database(api, make_user):
+    client = api(make_user(Module.CLIENTS, level=AccessLevel.EDIT))
+    partner = client.post("/api/partners/", json=_partner(comment="Исходный комментарий")).json()
+    response = client.get("/api/partners/export.xlsx")
+    workbook = load_workbook(io.BytesIO(response.content))
+    sheet = workbook.active
+    assert not sheet.protection.sheet
+    assert not workbook.security.lockStructure
+    sheet["H2"] = "Комментарий изменён в Excel"
+    edited_file = io.BytesIO()
+    workbook.save(edited_file)
+    edited_file.seek(0)
+    assert load_workbook(edited_file).active["H2"].value == "Комментарий изменён в Excel"
+    assert client.get(f"/api/partners/{partner['id']}").json()["comment"] == "Исходный комментарий"

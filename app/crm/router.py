@@ -1,3 +1,4 @@
+from datetime import date
 from fastapi import FastAPI, Depends, Query
 from fastapi.responses import FileResponse
 from fastapi import HTTPException
@@ -9,6 +10,7 @@ from app.users.models import User
 from app.crm import service
 from app.crm.models import CRMEntity
 from app.crm.schemas import Entry, Patch, Note
+from app.crm import chat_links
 from app.moysklad.models import SourceRecord
 from app.moysklad.service import attachment_path
 
@@ -16,6 +18,16 @@ app = FastAPI(title="Продажи — CRM Соборума")
 view = require_view(Module.CLIENTS)
 edit = require_edit(Module.CLIENTS)
 full = require_full(Module.CLIENTS)
+
+
+@app.get('/entries/{entity_id}/chat-links')
+def entry_chat_links(entity_id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    return chat_links.list_links(db, entity_id)
+
+
+@app.post('/chat-links/from-max', status_code=201)
+def link_card_from_max(payload: chat_links.LinkFromMax, db: Session = Depends(get_db), user: User = Depends(edit)):
+    return chat_links.create_link(db, payload, user)
 
 
 @app.get('/attention')
@@ -114,12 +126,18 @@ def entries(
     pipeline_id: int | None = None,
     stage_id: int | None = None,
     owner_id: int | None = Query(None, ge=0),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    date_unknown: bool = False,
+    priority: str | None = Query(None, pattern="^(low|medium|high)$"),
+    spam: str = Query("normal", pattern="^(normal|spam|all)$"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(view),
 ):
-    return service.list_entries(db, kind, query, archive, pipeline_id, stage_id, limit, offset, owner_id=owner_id)
+    return service.list_entries(db, kind, query, archive, pipeline_id, stage_id, limit, offset, owner_id=owner_id,
+                                date_from=date_from, date_to=date_to, date_unknown=date_unknown, priority=priority, spam=spam)
 
 
 @app.get("/kanban-summary")
@@ -128,10 +146,15 @@ def kanban_summary(
     archive: str = Query("active", pattern="^(active|archived|all)$"),
     pipeline_id: int | None = None,
     owner_id: int | None = Query(None, ge=0),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    date_unknown: bool = False,
+    spam: str = Query("normal", pattern="^(normal|spam|all)$"),
     db: Session = Depends(get_db),
     user: User = Depends(view),
 ):
-    return service.kanban_summary(db, query=query, archive=archive, pipeline_id=pipeline_id, owner_id=owner_id)
+    return service.kanban_summary(db, query=query, archive=archive, pipeline_id=pipeline_id, owner_id=owner_id,
+                                  date_from=date_from, date_to=date_to, date_unknown=date_unknown, spam=spam)
 
 
 @app.get("/entries/{id}")

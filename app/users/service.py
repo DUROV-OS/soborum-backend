@@ -45,6 +45,8 @@ def create_user(
     full_name: str,
     role: UserRole,
     module_access: dict[Module, AccessLevel],
+    work_phone: str | None = None,
+    telephony_extension: str | None = None,
 ) -> User:
     user = User(
         email=email,
@@ -52,6 +54,8 @@ def create_user(
         full_name=full_name,
         role=role,
         is_active=True,
+        work_phone=work_phone,
+        telephony_extension=telephony_extension,
     )
     db.add(user)
     db.flush()

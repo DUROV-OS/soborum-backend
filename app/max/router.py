@@ -19,6 +19,9 @@ from app.max import realtime
 from app.max import service as max_service
 from app.partners.models import Partner, PartnerChatLink
 from app.users.models import User
+from app.common.module_access import Module
+from app.crm.chat_models import CRMChatLink
+from app.crm.models import CRMEntity
 
 
 class SendMessageIn(BaseModel):
@@ -56,7 +59,7 @@ app = FastAPI(
 def list_chats(
     limit: int | None = None,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     """Список чатов с последним сообщением в каждом. ``limit`` — сколько
     самых свежих вернуть (по умолчанию все). Каждый чат дополнительно
@@ -80,6 +83,12 @@ def list_chats(
             PartnerChatLink.max_chat_id, Partner.id, Partner.name
         ).join(Partner, Partner.id == PartnerChatLink.partner_id)
     }
+    linked_crm = {
+        chat_id: (entity_id, kind, name)
+        for chat_id, entity_id, kind, name in db.query(
+            CRMChatLink.max_chat_id, CRMEntity.id, CRMEntity.kind, CRMEntity.name
+        ).join(CRMEntity, CRMEntity.id == CRMChatLink.entity_id)
+    } if user.has_access(Module.CLIENTS) else {}
     for chat in result["chats"]:
         client_id, client_name = linked_clients.get(chat["id"], (None, None))
         chat["linkedClientId"] = client_id
@@ -87,6 +96,10 @@ def list_chats(
         partner_id, partner_name = linked_partners.get(chat["id"], (None, None))
         chat["linkedPartnerId"] = partner_id
         chat["linkedPartnerName"] = partner_name
+        crm_id, crm_kind, crm_name = linked_crm.get(chat['id'], (None, None, None))
+        chat['linkedCrmId'] = crm_id
+        chat['linkedCrmKind'] = crm_kind
+        chat['linkedCrmName'] = crm_name
     return result
 
 

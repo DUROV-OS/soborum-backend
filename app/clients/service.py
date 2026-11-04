@@ -790,6 +790,8 @@ def create_chat_link(db: Session, client: Client, payload: ClientChatLinkCreate)
     """Привязать ещё один чат MAX к клиенту (0053) — один клиент может иметь
     несколько чатов (например, отдельно с ним и с его помощником), но каждый
     чат по-прежнему принадлежит не более чем одному клиенту."""
+    from app.max.chat_link_guard import guard_legacy_link
+    guard_legacy_link(db, payload.max_chat_id)
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название привязки обязательно")
