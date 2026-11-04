@@ -20,7 +20,10 @@ def phone(value):
 
 
 def match(db, row):
-    if row.match_status == 'manual' or not row.phone:
+    if row.match_status == 'manual':
+        match_deal(db, row)
+        return
+    if not row.phone:
         return
     clients = [c.id for c in db.query(Client).all() if phone(c.phone) == row.phone]
     entries = [e.id for e in db.query(CRMEntity).filter(
@@ -34,6 +37,38 @@ def match(db, row):
         row.client_id = clients[0] if clients else None
         row.crm_entity_id = entries[0] if entries else None
         row.match_status = 'matched' if clients or entries else 'unmatched'
+    match_deal(db, row)
+
+
+def deal_parties(db, entry):
+    ids = set(entry.payload.get('contact_ids') or [])
+    if entry.payload.get('company_id'):
+        ids.add(entry.payload['company_id'])
+    parties = db.query(CRMEntity).filter(CRMEntity.id.in_(ids)).all() if ids else []
+    numbers = {phone(p.payload.get('phone')) for p in parties}
+    client_id = entry.payload.get('client_id')
+    client = db.get(Client, client_id) if client_id else None
+    if client:
+        numbers.add(phone(client.phone))
+    return ids, numbers - {''}, client_id
+
+
+def match_deal(db, row):
+    if row.deal_match_status == 'manual':
+        return
+    if row.match_status == 'ambiguous':
+        row.deal_id, row.deal_match_status = None, 'ambiguous'
+        return
+    # All non-archived applications count, including won/lost ones: a shared
+    # number cannot identify which application a historical conversation concerns.
+    candidates = []
+    for entry in db.query(CRMEntity).filter_by(kind='deal', archived=False):
+        ids, numbers, client_id = deal_parties(db, entry)
+        if (row.phone in numbers or row.crm_entity_id in ids
+                or (client_id is not None and row.client_id == client_id)):
+            candidates.append(entry.id)
+    row.deal_id = candidates[0] if len(candidates) == 1 else None
+    row.deal_match_status = 'matched' if len(candidates) == 1 else 'ambiguous' if candidates else 'unmatched'
 
 
 def ingest(db, body):
@@ -97,12 +132,12 @@ def get(db, id):
 def output(row):
     return {key: getattr(row, key) for key in (
         'id', 'phone', 'direction', 'employee', 'started_at', 'duration', 'status',
-        'client_id', 'crm_entity_id', 'match_status', 'audio_ready', 'processing',
+        'client_id', 'crm_entity_id', 'match_status', 'deal_id', 'deal_match_status', 'audio_ready', 'processing',
         'error', 'transcript', 'segments', 'analysis', 'reviewed_at', 'reviewed_by',
     )}
 
 
-def listing(db, client_id=None, entity_id=None, offset=0, limit=50, unmatched=False):
+def listing(db, client_id=None, entity_id=None, offset=0, limit=50, unmatched=False, related=False):
     query = db.query(PhoneCall)
     if client_id:
         if not db.get(Client, client_id):
@@ -112,18 +147,23 @@ def listing(db, client_id=None, entity_id=None, offset=0, limit=50, unmatched=Fa
         entry = db.get(CRMEntity, entity_id)
         if not entry:
             raise HTTPException(404, 'Карточка не найдена')
-        ids = {entity_id}
-        linked_client = entry.payload.get('client_id')
         if entry.kind == 'deal':
-            ids.update(entry.payload.get('contact_ids') or [])
-            if entry.payload.get('company_id'):
-                ids.add(entry.payload['company_id'])
-        clauses = [PhoneCall.crm_entity_id.in_(ids)]
-        if linked_client:
-            clauses.append(PhoneCall.client_id == linked_client)
-        query = query.filter(or_(*clauses))
+            if related:
+                ids, numbers, linked_client = deal_parties(db, entry)
+                clauses = [PhoneCall.crm_entity_id.in_(ids), PhoneCall.phone.in_(numbers)]
+                if linked_client:
+                    clauses.append(PhoneCall.client_id == linked_client)
+                query = query.filter(or_(*clauses), or_(PhoneCall.deal_id.is_(None), PhoneCall.deal_id != entry.id))
+            else:
+                query = query.filter(PhoneCall.deal_id == entry.id)
+        else:
+            clauses = [PhoneCall.crm_entity_id == entity_id]
+            linked_client = entry.payload.get('client_id')
+            if linked_client:
+                clauses.append(PhoneCall.client_id == linked_client)
+            query = query.filter(or_(*clauses))
     if unmatched:
-        query = query.filter(PhoneCall.match_status.in_(['unmatched', 'ambiguous']))
+        query = query.filter(or_(PhoneCall.match_status.in_(['unmatched', 'ambiguous']), PhoneCall.deal_match_status == 'ambiguous'))
     total = query.count()
     return {'total': total, 'items': [output(r) for r in query.order_by(
         PhoneCall.started_at.desc(), PhoneCall.id.desc()).offset(offset).limit(limit)]}

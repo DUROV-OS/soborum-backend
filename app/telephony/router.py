@@ -46,9 +46,9 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
 
 @router.get('/api/crm/calls')
 def calls(client_id: int | None = Query(None, ge=1), entity_id: int | None = Query(None, ge=1),
-          unmatched: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+          unmatched: bool = False, related: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
           db: Session = Depends(get_db), user: User = Depends(view)):
-    return service.listing(db, client_id, entity_id, offset, limit, unmatched)
+    return service.listing(db, client_id, entity_id, offset, limit, unmatched, related)
 
 
 @router.get('/api/crm/calls/{id}/audio')
@@ -88,8 +88,11 @@ def link(id: int, body: Link, db: Session = Depends(get_db), user: User = Depend
         entry = db.get(CRMEntity, body.crm_entity_id)
         if not entry or entry.kind not in ('contact','company','deal','inquiry') or entry.archived:
             raise HTTPException(422, 'Нужна действующая карточка клиента или сделки')
-    before = {'client_id': row.client_id, 'crm_entity_id': row.crm_entity_id}
-    row.client_id, row.crm_entity_id, row.match_status = body.client_id, body.crm_entity_id, 'manual'
+    before = {'client_id': row.client_id, 'crm_entity_id': row.crm_entity_id, 'deal_id': row.deal_id}
+    if body.crm_entity_id and entry.kind == 'deal':
+        row.deal_id, row.deal_match_status = entry.id, 'manual'
+    else:
+        row.client_id, row.crm_entity_id, row.match_status = body.client_id, body.crm_entity_id, 'manual'
     service.audit(db, row, user, 'linked', {'before': before, 'after': body.model_dump()})
     db.commit()
     return service.output(row)

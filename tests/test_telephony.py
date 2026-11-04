@@ -72,6 +72,34 @@ def test_recording_permissions_review_and_unavailable_audio(db,api,make_user,tmp
     assert owner.post(f'/api/crm/calls/{row.id}/review').json()['reviewed_at']
 
 
+def test_calls_belong_to_one_application_and_manual_choice_survives_replay(db, api, make_user):
+    contact = CRMEntity(kind='contact', name='Клиент', payload={'phone': '79001112233'})
+    db.add(contact); db.flush()
+    first = CRMEntity(kind='deal', name='Баня', payload={'contact_ids': [contact.id]})
+    db.add(first); db.commit()
+    service.ingest(db, payload())
+    row = db.query(PhoneCall).one()
+    assert row.deal_id == first.id
+    assert service.listing(db, entity_id=first.id)['total'] == 1
+    second = CRMEntity(kind='deal', name='Дом', payload={'contact_ids': [contact.id]})
+    db.add(second); db.commit()
+    service.ingest(db, payload())
+    assert row.deal_id is None and row.deal_match_status == 'ambiguous'
+    assert service.listing(db, entity_id=first.id)['total'] == 0
+    assert service.listing(db, entity_id=second.id)['total'] == 0
+    assert service.listing(db, entity_id=first.id, related=True)['total'] == 1
+    client = api(make_user(admin=True))
+    assert client.post(f'/api/crm/calls/{row.id}/link', json={'crm_entity_id': second.id}).status_code == 200
+    service.ingest(db, payload())
+    assert row.deal_id == second.id and row.deal_match_status == 'manual'
+    assert row.crm_entity_id == contact.id
+    assert service.listing(db, entity_id=first.id)['total'] == 0
+    assert service.listing(db, entity_id=second.id)['total'] == 1
+    assert service.listing(db, entity_id=contact.id)['total'] == 1
+    assert service.listing(db, entity_id=second.id, related=True)['total'] == 0
+    assert db.query(PhoneCallAudit).one().details['before']['deal_id'] is None
+
+
 def test_out_of_order_event_does_not_regress_completed_call(db):
     service.ingest(db,payload())
     service.ingest(db,payload(cmd='event',type='INCOMING',direction='in'))

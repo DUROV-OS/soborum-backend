@@ -19,6 +19,8 @@ class PhoneCall(Base):
     status: Mapped[str] = mapped_column(String(40), default='unknown')
     client_id: Mapped[int | None] = mapped_column(ForeignKey('clients.id', ondelete='SET NULL'), index=True, nullable=True)
     crm_entity_id: Mapped[int | None] = mapped_column(ForeignKey('crm_entities.id', ondelete='SET NULL'), index=True, nullable=True)
+    deal_id: Mapped[int | None] = mapped_column(ForeignKey('crm_entities.id', ondelete='SET NULL'), index=True, nullable=True)
+    deal_match_status: Mapped[str] = mapped_column(String(30), default='unmatched')
     match_status: Mapped[str] = mapped_column(String(30), default='unmatched')
     recording_url: Mapped[str] = mapped_column(Text, default='')
     audio_ready: Mapped[bool] = mapped_column(default=False)

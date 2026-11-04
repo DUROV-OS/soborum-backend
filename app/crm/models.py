@@ -1,7 +1,7 @@
 """Local sales workspace. Source snapshots remain separate from editable data."""
 
 from datetime import datetime
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint, Boolean, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -43,3 +43,11 @@ class CRMSettings(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     response_hours: Mapped[int] = mapped_column(Integer, default=24)
     idle_days: Mapped[int] = mapped_column(Integer, default=3)
+
+
+class CRMChatLink(Base):
+    __tablename__ = 'crm_chat_links'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey('crm_entities.id', ondelete='CASCADE'), index=True)
+    max_chat_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    label: Mapped[str] = mapped_column(String(200))
