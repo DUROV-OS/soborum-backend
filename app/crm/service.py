@@ -129,7 +129,29 @@ def validate(db, kind, payload, previous=None):
     return data
 
 
-def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage_id=None):
+def _effective_owner_expression(kind):
+    """Match the record card: the linked commercial owner takes precedence."""
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import aliased
+
+    direct_owner = CRMEntity.payload["responsible_user_id"].as_integer()
+    if kind != "inquiry":
+        return direct_owner
+    linked_deal = aliased(CRMEntity)
+    linked_id = func.coalesce(
+        func.nullif(CRMEntity.payload["accepted_deal_id"].as_integer(), 0),
+        CRMEntity.payload["deal_id"].as_integer(),
+    )
+    linked_owner = (
+        select(linked_deal.payload["responsible_user_id"].as_integer())
+        .where(linked_deal.kind == "deal", linked_deal.id == linked_id)
+        .correlate(CRMEntity)
+        .scalar_subquery()
+    )
+    return func.coalesce(linked_owner, direct_owner)
+
+
+def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, owner_id=None):
     """One filter contract for paginated registers and unpaginated board totals."""
     if kind not in SCHEMAS:
         raise HTTPException(422, "Неизвестный раздел продаж")
@@ -153,14 +175,22 @@ def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage
         stmt = stmt.filter(CRMEntity.payload["pipeline_id"].as_integer() == pipeline_id)
     if stage_id is not None:
         stmt = stmt.filter(CRMEntity.payload["stage_id"].as_integer() == stage_id)
+    if owner_id is not None:
+        from sqlalchemy import func
+
+        stmt = stmt.filter(func.coalesce(_effective_owner_expression(kind), 0) == owner_id)
     return stmt
 
 
-def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0):
-    stmt = _entries_query(db, kind, query, archive, pipeline_id, stage_id)
+def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0, owner_id=None):
+    stmt = _entries_query(db, kind, query, archive, pipeline_id, stage_id, owner_id)
     return {
         "total": stmt.count(),
-        "items": [out(r) for r in stmt.order_by(CRMEntity.id.desc()).offset(offset).limit(limit)],
+        "items": [
+            {**out(row), "effective_owner_id": effective_owner or None}
+            for row, effective_owner in stmt.add_columns(_effective_owner_expression(kind))
+            .order_by(CRMEntity.id.desc()).offset(offset).limit(limit)
+        ],
     }
 
 
@@ -170,7 +200,7 @@ def func_lower(value):
     return func.lower(value)
 
 
-def kanban_summary(db, query="", archive="active", pipeline_id=None):
+def kanban_summary(db, query="", archive="active", pipeline_id=None, owner_id=None):
     """Commercial budgets of all canonical board cards, independent of page size.
 
     Pending inquiries represent their hidden unsorted deal once. Website inquiries
@@ -205,9 +235,9 @@ def kanban_summary(db, query="", archive="active", pipeline_id=None):
                 "amounts": {}, "unpriced_count": 0,
             }
 
-    deals = _entries_query(db, "deal", query, archive).all()
+    deals = _entries_query(db, "deal", query, archive, owner_id=owner_id).all()
     regular_ids = {row.id for row in deals}
-    inquiries = _entries_query(db, "inquiry", query, archive).all()
+    inquiries = _entries_query(db, "inquiry", query, archive, owner_id=owner_id).all()
     linked_ids = {row.payload.get("deal_id") for row in inquiries if row.payload.get("deal_id")}
     linked_deals = {
         row.id: row for row in db.query(CRMEntity).filter(CRMEntity.kind == "deal", CRMEntity.id.in_(linked_ids))

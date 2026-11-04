@@ -113,12 +113,13 @@ def entries(
     archive: str = Query("active", pattern="^(active|archived|all)$"),
     pipeline_id: int | None = None,
     stage_id: int | None = None,
+    owner_id: int | None = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(view),
 ):
-    return service.list_entries(db, kind, query, archive, pipeline_id, stage_id, limit, offset)
+    return service.list_entries(db, kind, query, archive, pipeline_id, stage_id, limit, offset, owner_id=owner_id)
 
 
 @app.get("/kanban-summary")
@@ -126,10 +127,11 @@ def kanban_summary(
     query: str = Query("", max_length=300),
     archive: str = Query("active", pattern="^(active|archived|all)$"),
     pipeline_id: int | None = None,
+    owner_id: int | None = Query(None, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(view),
 ):
-    return service.kanban_summary(db, query=query, archive=archive, pipeline_id=pipeline_id)
+    return service.kanban_summary(db, query=query, archive=archive, pipeline_id=pipeline_id, owner_id=owner_id)
 
 
 @app.get("/entries/{id}")
