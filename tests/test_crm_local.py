@@ -69,6 +69,39 @@ def test_local_sales_workflow_and_conflict(db, make_user):
     assert task["data"]["completed"]
 
 
+def test_kanban_cross_pipeline_keeps_identity_links_and_audit(db, make_user, api):
+    owner = make_user(admin=True)
+    source, first, _ = pipeline(db, owner)
+    target, next_stage, _ = pipeline(db, owner)
+    contact = service.create(db, "contact", Entry(name="Контакт переноса"), owner)
+    deal = service.create(db, "deal", Entry(name="Перенос дома", data={
+        "pipeline_id": source["id"], "stage_id": first["id"],
+        "amount": 4500000, "contact_ids": [contact["id"]],
+    }), owner)
+    manager = make_user(Module.CLIENTS, level=AccessLevel.FULL)
+    manager.job_role = "manager"
+    db.commit()
+    client = api(manager)
+    path = f'/api/crm/entries/{deal["id"]}'
+    # A stage from another funnel cannot be assigned by itself.
+    invalid = client.patch(path, json={"version": deal["version"], "data": {"stage_id": next_stage["id"]}})
+    assert invalid.status_code == 422
+    payload = {"version": deal["version"], "data": {"pipeline_id": target["id"], "stage_id": next_stage["id"]}}
+    response = client.patch(path, json=payload)
+    assert response.status_code == 200
+    moved = response.json()
+    assert moved["id"] == deal["id"] and moved["version"] == deal["version"] + 1
+    assert moved["data"]["contact_ids"] == [contact["id"]]
+    assert moved["data"]["amount"] == 4500000
+    assert service.list_entries(db, "deal", pipeline_id=source["id"])["total"] == 0
+    assert service.list_entries(db, "deal", pipeline_id=target["id"], stage_id=next_stage["id"])["total"] == 1
+    events = client.get(path + "/history").json()["items"]
+    assert any(event["details"].get("before", {}).get("data", {}).get("pipeline_id") == source["id"] for event in events)
+    assert client.patch(path, json=payload).status_code == 409
+    viewer = api(make_user(Module.CLIENTS, level=AccessLevel.VIEW))
+    assert viewer.patch(path, json={**payload, "version": moved["version"]}).status_code == 403
+
+
 def test_permissions_validation_and_archive(db, make_user, api):
     owner = make_user(admin=True)
     p, s, l = pipeline(db, owner)
