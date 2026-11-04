@@ -142,6 +142,10 @@ def delete_production(db: Session, production: Production) -> None:
     `ondelete=CASCADE` в БД). Отказ 409, если цикл ещё не завершён или есть незавершённые
     заявки на материалы/задачи по его блокам — по умолчанию запрет, а не тихий каскад
     (см. спеку 0030-b)."""
+    from app.warehouse.reservation_models import StockReservation
+
+    if db.query(StockReservation.id).filter_by(production_id=production.id).first():
+        raise HTTPException(409, "Нельзя удалить производство: есть история складских резервов")
     if production.cycle.status != CycleStatus.COMPLETED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

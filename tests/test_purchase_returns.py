@@ -15,6 +15,31 @@ from app.accounting.schemas import MoneyMovementUpdate
 from app.purchasing.models import PurchaseReturn
 
 
+def test_historical_receipt_prevents_order_repricing_even_when_source_shipped_flag_is_zero(
+    db, api, make_user
+):
+    from app.accounting.models import SupplierOrder, SupplierOrderStatus
+    from app.accounting.schemas import SupplierOrderUpdate, SupplierOrderItem
+    from fastapi import HTTPException
+    import pytest
+
+    client, owner, supplier, material, order, receipt = setup(db, api, make_user)
+    source_order = db.get(SupplierOrder, order["id"])
+    source_order.status = SupplierOrderStatus.ORDERED
+    source_order.items = [
+        {**line, "received_quantity": 0} for line in source_order.items
+    ]
+    db.commit()
+    with pytest.raises(HTTPException):
+        accounting.update_supplier_order(
+            db,
+            source_order,
+            SupplierOrderUpdate(
+                items=[SupplierOrderItem(material="Брус", quantity=10, unit_price=1)]
+            ),
+        )
+
+
 def setup(db, api, make_user, paid=0):
     owner = make_user(admin=True)
     client = api(owner)

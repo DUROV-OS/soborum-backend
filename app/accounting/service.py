@@ -1678,7 +1678,12 @@ def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrder
 
     payload = data.model_dump(exclude_unset=True)
     if "items" in payload:
-        if any(i.get("received_quantity", 0) for i in order.items):
+        from app.purchasing.models import PurchaseReceipt
+
+        if (
+            any(i.get("received_quantity", 0) for i in order.items)
+            or db.query(PurchaseReceipt.id).filter_by(order_id=order.id, status="posted").first()
+        ):
             raise _conflict("После приёмки состав заказа не меняется")
         if any(i.received_quantity for i in data.items):
             raise _bad_request("Количество полученного заполняется приёмками")

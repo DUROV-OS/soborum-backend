@@ -96,6 +96,27 @@ def order(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
     return service.out(db, service.get_order(db, id))
 
 
+@app.get("/orders/{id}/automatic-review")
+def automatic_review(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    """Read-only readiness check. Unverified fields must never become approval."""
+    row = service.get_order(db, id)
+    reasons = [
+        {"code": "supplier_verification_missing", "message": "Статус проверенного поставщика не подтверждён в системе."},
+        {"code": "sale_link_missing", "message": "Связь заказа с согласованной продажей не подтверждена."},
+        {"code": "techcard_link_missing", "message": "Связь с действующей техкартой и нормативом не подтверждена."},
+        {"code": "price_evidence_missing", "message": "Предыдущая и текущая сопоставимые цены не подтверждены документами."},
+        {"code": "payment_controls_missing", "message": "Лимиты и банковские проверки для автоматической оплаты не настроены."},
+    ]
+    if not row.items:
+        reasons.append({"code": "no_items", "message": "В заказе нет позиций."})
+    if row.archived:
+        reasons.append({"code": "archived", "message": "Заказ находится в архиве."})
+    if any(not item.get("warehouse_material_id") or not item.get("unit") for item in row.items):
+        reasons.append({"code": "item_mapping_missing", "message": "Для некоторых позиций не указан товар склада или единица измерения."})
+    return {"order_id": row.id, "decision": "manual_review", "auto_approval_enabled": False, "auto_payment_enabled": False,
+            "reasons": reasons}
+
+
 @app.post("/orders", status_code=201)
 def create(body: SupplierOrderCreate, db: Session = Depends(get_db), user: User = Depends(edit)):
     for item in body.items:
