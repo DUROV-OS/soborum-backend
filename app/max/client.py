@@ -109,6 +109,14 @@ class MaxSession:
     # -- жизненный цикл ---------------------------------------------------
 
     def open(self) -> "MaxSession":
+        try:
+            return self._open_authenticated()
+        except Exception:
+            self.login = {}
+            self.close()
+            raise
+
+    def _open_authenticated(self) -> "MaxSession":
         self.ws = websocket.WebSocket()
         self.ws.settimeout(15)
         self.ws.connect(WS_URL, origin=ORIGIN, header=[f"User-Agent: {UA}"])
@@ -123,7 +131,9 @@ class MaxSession:
             },
             "deviceId": self.device_id,
         })
-        self._wait(6, s)
+        hello = self._wait(6, s)
+        if hello.get("cmd") != 1 or (hello.get("payload") or {}).get("error"):
+            raise HTTPException(502, "MAX не подтвердил соединение; повторите позже")
 
         # chatsSync=0 -> сервер возвращает полный текущий список чатов
         s = self._send(19, {
@@ -135,7 +145,15 @@ class MaxSession:
             "presenceSync": -1,
             "draftsSync": 0,
         })
-        self.login = self._wait(19, s).get("payload", {}) or {}
+        frame = self._wait(19, s)
+        payload = frame.get("payload")
+        if frame.get("cmd") == 3 or (isinstance(payload, dict) and payload.get("error")):
+            raise HTTPException(502, "Рабочий аккаунт MAX требует повторного входа владельцем")
+        if frame.get("cmd") != 1 or not isinstance(payload, dict) or not isinstance(payload.get("profile"), dict):
+            raise HTTPException(502, "MAX не подтвердил аккаунт; подключение остановлено")
+        self.login = payload
+        if not self.viewer_id().isdigit() or int(self.viewer_id()) <= 0:
+            raise HTTPException(502, "MAX не подтвердил аккаунт; подключение остановлено")
         return self
 
     def close(self) -> None:
@@ -406,7 +424,7 @@ def session():
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Не удалось подключиться к MAX: {exc}",
+            detail="Не удалось подключиться к MAX; повторите позже",
         ) from exc
     try:
         yield s
