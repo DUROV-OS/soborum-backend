@@ -50,6 +50,10 @@ def create_chat_link(db: Session, partner: Partner, payload: PartnerChatLinkCrea
     if not label:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название привязки обязательно")
 
+    from app.crm.models import CRMChatLink
+    if db.query(CRMChatLink).filter_by(max_chat_id=payload.max_chat_id).first():
+        raise HTTPException(status_code=409, detail="Чат уже привязан к карточке продаж")
+
     taken_client_link = db.query(ClientChatLink).filter(ClientChatLink.max_chat_id == payload.max_chat_id).first()
     if taken_client_link:
         taken_client = db.get(Client, taken_client_link.client_id)

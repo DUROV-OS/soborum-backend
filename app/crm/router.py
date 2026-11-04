@@ -2,11 +2,14 @@ from fastapi import FastAPI, Depends, Query
 from fastapi.responses import FileResponse
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, Field, ConfigDict
 from app.core.deps import require_view, require_edit, require_full
 from app.common.module_access import Module
 from app.db.session import get_db
 from app.users.models import User
 from app.crm import service
+from app.crm import communications
+from app.max import service as max_service
 from app.crm.models import CRMEntity
 from app.crm.schemas import Entry, Patch, Note
 from app.moysklad.models import SourceRecord
@@ -16,6 +19,49 @@ app = FastAPI(title="Продажи — CRM Соборума")
 view = require_view(Module.CLIENTS)
 edit = require_edit(Module.CLIENTS)
 full = require_full(Module.CLIENTS)
+
+
+class ChatLinkInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    chat_id: int
+    label: str = Field(min_length=1, max_length=200)
+
+
+class ChatMessageInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@app.get('/entries/{id}/chats')
+def card_chats(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    return communications.links(db, id)
+
+
+@app.post('/entries/{id}/chats')
+def attach_chat(id: int, body: ChatLinkInput, db: Session = Depends(get_db), user: User = Depends(edit)):
+    # Resolve the chosen chat before saving; no message is sent by attachment.
+    communications.card(db, id, editing=True)
+    max_service.get_chat(body.chat_id, limit=1)
+    return communications.attach(db, id, body.chat_id, body.label, user)
+
+
+@app.delete('/entries/{id}/chats/{link_id}')
+def detach_chat(id: int, link_id: int, db: Session = Depends(get_db), user: User = Depends(edit)):
+    return communications.detach(db, id, link_id, user)
+
+
+@app.get('/entries/{id}/chats/{chat_id}/messages')
+def card_messages(id: int, chat_id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    communications.require_chat(db, id, chat_id)
+    return max_service.get_chat(chat_id, limit=80)
+
+
+@app.post('/entries/{id}/chats/{chat_id}/messages', status_code=201)
+def send_card_message(id: int, chat_id: int, body: ChatMessageInput, db: Session = Depends(get_db), user: User = Depends(edit)):
+    communications.require_chat(db, id, chat_id, editing=True)
+    if not body.text.strip():
+        raise HTTPException(422, 'Введите сообщение')
+    return max_service.send_message(chat_id, body.text.strip())
 
 
 @app.get('/attention')
@@ -38,7 +84,6 @@ def settings(db: Session = Depends(get_db), user: User = Depends(view)):
     return settings(db)
 
 
-from pydantic import BaseModel,Field,ConfigDict
 class GuardSettings(BaseModel):
     model_config=ConfigDict(extra='forbid')
     response_hours:int=Field(ge=1,le=168)

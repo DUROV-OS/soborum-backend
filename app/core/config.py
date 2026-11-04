@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 12
 
     storage_dir: str = "/tmp/soborum-storage"
+    # Disabled until a dedicated inbound CRM token and verified recording hosts are configured.
+    megafon_crm_token: str = ""
+    megafon_api_token: str = ""
+    megafon_domain: str = ""
+    megafon_recording_hosts: str = ""
+    call_whisper_model: str = "small"
+    call_analysis_url: str = "http://127.0.0.1:11434"
+    call_analysis_model: str = "qwen3:1.7b"
 
     admin_email: str = "admin@soborbum.local"
     # No default. Empty or a well-known value => bootstrap_admin refuses to create an admin.
