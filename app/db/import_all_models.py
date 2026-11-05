@@ -30,3 +30,4 @@ from app.crm import models as _crm_models  # noqa: F401
 from app.crm import chat_models as _crm_chat_models  # noqa: F401
 from app.purchasing import models as _purchasing_models  # noqa: F401
 from app.sales import models as _sales_models  # noqa: F401
+from app.costing import models as _costing_models  # noqa: F401
