@@ -43,6 +43,9 @@ app = FastAPI(
     version="0.4.0",
 )
 
+from app.production.library_router import router as library_router
+app.include_router(library_router)
+
 require_production_view = require_view(AccessModule.PRODUCTION)
 require_production_edit = require_edit(AccessModule.PRODUCTION)
 require_production_full = require_full(AccessModule.PRODUCTION)

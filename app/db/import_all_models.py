@@ -20,6 +20,7 @@ from app.notifications import models as _notifications_models  # noqa: F401
 from app.partners import models as _partners_models  # noqa: F401
 from app.production import models as _production_models  # noqa: F401
 from app.production import stage_templates as _production_stage_templates  # noqa: F401
+from app.production import library_models as _production_library_models  # noqa: F401
 from app.tasks import models as _tasks_models  # noqa: F401
 from app.users import models as _users_models  # noqa: F401
 from app.warehouse import models as _warehouse_models  # noqa: F401
