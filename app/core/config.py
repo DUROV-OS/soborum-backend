@@ -199,8 +199,8 @@ class Settings(BaseSettings):
     # web.max.ru. Без него раздел /api/max отдаёт 503.
     max_token: str = ""
     # Кому агент предлагает сообщения в MAX (0112). 0 — сценарий выключен.
-    agent_max_chat_id: int = 27580426
-    agent_max_recipient: str = "Арсений Щекин"
+    agent_max_chat_id: int = 0
+    agent_max_recipient: str = ""
     # Сервисный токен read-only экспорта заявок «Пожелания» для агента (0109).
     # Пуст — экспорт выключен, маршруты /api/feedback/export/* отвечают 404.
     feedback_export_token: str = ""
