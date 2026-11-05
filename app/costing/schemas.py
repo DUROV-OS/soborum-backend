@@ -128,6 +128,10 @@ class ModuleGeometry(Strict):
 
 
 class ItemData(Strict):
+    source_recipe_id: int | None = Field(None, gt=0)
+    source_recipe_version: int | None = Field(None, gt=0)
+    warehouse_product_id: int | None = Field(None, gt=0)
+    house_model_key: str | None = Field(None, max_length=64)
     code: str = Field("", max_length=120)
     category: str = Field("", max_length=120)
     model: str = Field("", max_length=120)
@@ -179,6 +183,9 @@ class EstimateInput(Strict):
     title: str = Field(min_length=1, max_length=255)
     number: str = Field("", max_length=120)
     client_id: int | None = Field(None, gt=0)
+    crm_deal_id: int | None = Field(None, gt=0)
+    sales_order_id: int | None = Field(None, gt=0)
+    sales_order_line: int | None = Field(None, ge=0, le=499)
     template_id: int = Field(gt=0)
     quantity: Quantity = Decimal(1)
     selections: list[Selection] = Field(default_factory=list, max_length=100)

@@ -93,3 +93,38 @@ def test_postgres_concurrent_stale_edits_never_overwrite(pg):
     with Session(engine) as db:
         assert db.query(CostingRevision).filter_by(estimate_id=original["id"]).count() == 2
         assert db.query(CostingRevision).filter_by(estimate_id=original["id"], number=1).one().snapshot["input"]["note"] == ""
+
+
+def test_postgres_concurrent_order_bridge_creates_one_native_order(pg):
+    from app.accounting.models import Counterparty, Organization
+    from app.accounting.seed import ensure_organizations_seed
+    from app.costing.models import CostingItem, CostingOrderLink
+    from app.costing.integration import create_order, NewOrder
+    from app.costing.router import approve
+    from app.costing.schemas import VersionAction
+    from app.sales.models import SalesOrder
+    from app.warehouse.models import WarehouseMaterial, Warehouse, MaterialCategory
+    engine, uid, template = pg
+    with Session(engine) as db:
+        ensure_organizations_seed(db)
+        product=WarehouseMaterial(title='Тест связанного заказа',code='COST-'+str(uuid4()),warehouse=Warehouse.TECHNOLOGY,
+            category=MaterialCategory.NONE,unit='шт',is_fractional=False,quantity_in_stock=0,purchase_price=0,threshold=0)
+        buyer=Counterparty(name='Тестовый покупатель '+str(uuid4()),is_active=True)
+        db.add_all([product,buyer]);db.flush()
+        item=db.get(CostingItem,template['id']);item.content={**item.content,'warehouse_product_id':product.id};db.commit()
+        quote=save_estimate(db,db.get(User,uid),payload(template))
+        approve(quote['id'],VersionAction(version=1,request_id=uuid4(),reason='Тест'),db,db.get(User,uid))
+        buyer_id,org_id=buyer.id,db.query(Organization).first().id
+    barrier=Barrier(2)
+    def run():
+        with Session(engine) as db:
+            body=NewOrder(version=1,request_id=uuid4(),reason='Параллельный тест',counterparty_id=buyer_id,organization_id=org_id)
+            barrier.wait(timeout=10)
+            return create_order(quote['id'],body,db,db.get(User,uid))['order_id']
+    with ThreadPoolExecutor(2) as pool:
+        a,b=pool.submit(run),pool.submit(run)
+        ids=[a.result(timeout=30),b.result(timeout=30)]
+    assert ids[0]==ids[1]
+    with Session(engine) as db:
+        assert db.query(CostingOrderLink).filter_by(estimate_id=quote['id']).count()==1
+        assert db.query(SalesOrder).filter_by(counterparty_id=buyer_id).count()==1

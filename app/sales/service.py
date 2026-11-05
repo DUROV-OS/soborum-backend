@@ -286,7 +286,7 @@ def normalize_lines(db, entries):
     return lines, total
 
 
-def create_order(db, body, user):
+def create_order(db, body, user, *, commit=True):
     advisory(db, "sales-order:" + str(body.request_id))
     params = body.model_dump(mode="json")
     old = db.query(SalesOrder).filter_by(request_id=str(body.request_id)).first()
@@ -313,13 +313,18 @@ def create_order(db, body, user):
     db.flush()
     row.number = "ЗП-" + str(row.id)
     event(db, row, user, "order_created", params)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return order_out(db, row, True)
 
 
 def frozen(db, order):
+    from app.costing.models import CostingOrderLink
     return bool(
         order.source_id
+        or db.query(CostingOrderLink.id).filter(CostingOrderLink.order_id==order.id,CostingOrderLink.recipe_id.isnot(None)).first()
         or db.query(SalesShipment.id).filter_by(order_id=order.id).first()
         or db.query(StockReservation.id).filter_by(sales_order_id=order.id).first()
     )
@@ -345,6 +350,9 @@ def edit_order(db, id, body, user):
         if body.lines is None:
             fail("Добавьте строки заказа", 422)
         fields["lines"], row.total = normalize_lines(db, body.lines)
+        from app.costing.models import CostingOrderLink
+        if db.query(CostingOrderLink.id).filter_by(order_id=row.id).first():
+            row.status = "draft"
     for k, v in fields.items():
         if k not in {"expected_at"} and v is None:
             fail("Поле не может быть пустым: " + k, 422)
@@ -362,6 +370,8 @@ def confirm_order(db, id, body, user):
     if row.version != body.version or row.archived or row.status != "draft":
         fail("Подтвердить можно только действующий черновик. Обновите заказ.")
     parties(db, row.counterparty_id, row.organization_id)
+    from app.costing.integration import guard_order
+    guard_order(db,row)
     row.status = "confirmed"
     row.version += 1
     event(db, row, user, "order_confirmed", {})
@@ -403,6 +413,10 @@ def cancel_order(db, id, body, user):
         fail("Заказ изменён, отменён или архивирован")
     if not body.note.strip():
         fail("Укажите причину отмены", 422)
+    from app.costing.models import CostingOrderLink
+    from app.moysklad.recipes import ManufactureRun
+    if db.query(ManufactureRun.id).join(CostingOrderLink, CostingOrderLink.recipe_id == ManufactureRun.recipe_id).filter(CostingOrderLink.order_id == row.id).first():
+        fail("По заказу уже выполнен производственный выпуск. Сначала оформите его корректировку.")
     if (
         order_holds(db, row)
         or any(shipped(db, row).values())

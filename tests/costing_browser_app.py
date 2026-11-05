@@ -18,6 +18,8 @@ from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.common.module_access import Module, AccessLevel
 from app.costing.router import app as costing_app
+from app.sales.router import app as sales_app
+from app.moysklad.recipes import router as recipes_router
 from app.users.models import User, UserRole, UserModuleAccess
 
 temporary = TemporaryDirectory(prefix="durov-costing-browser-")
@@ -45,14 +47,43 @@ app.dependency_overrides[get_db] = database
 app.dependency_overrides[get_current_user] = user
 costing_app.dependency_overrides.update(app.dependency_overrides)
 app.mount("/api/costing", costing_app)
+sales_app.dependency_overrides.update(app.dependency_overrides)
+app.mount('/api/sales', sales_app)
+recipes_app = FastAPI()
+recipes_app.dependency_overrides.update(app.dependency_overrides)
+recipes_app.include_router(recipes_router)
+app.mount('/api/moysklad', recipes_app)
 
 
 @app.post("/api/costing-test/reset")
 def reset():
-    tables = [t for t in Base.metadata.sorted_tables if t.name.startswith("costing_")]
+    tables = [t for t in Base.metadata.sorted_tables if t.name not in ('users','user_module_access')]
     Base.metadata.drop_all(engine, tables=tables)
     Base.metadata.create_all(engine, tables=tables)
     return {"isolated_database_reset": True}
+
+
+@app.post('/api/costing-test/native')
+def seed_native():
+    from app.accounting.models import Counterparty, Organization
+    from app.accounting.seed import ensure_organizations_seed
+    from app.crm.models import CRMEntity
+    from app.moysklad.recipes import Recipe
+    from app.warehouse.models import WarehouseMaterial, Warehouse, MaterialCategory
+    with Session(engine) as db:
+        ensure_organizations_seed(db)
+        raw = WarehouseMaterial(title='Доска связанного заказа', code='LINK-RAW', warehouse=Warehouse.TECHNOLOGY,
+            category=MaterialCategory.NONE, unit='м3', is_fractional=True, quantity_in_stock=100, purchase_price=50, threshold=0)
+        product = WarehouseMaterial(title='Дом связанного заказа', code='LINK-HOUSE', warehouse=Warehouse.TECHNOLOGY,
+            category=MaterialCategory.NONE, unit='шт', is_fractional=False, quantity_in_stock=0, purchase_price=0, threshold=0)
+        buyer = Counterparty(name='Связанный покупатель', is_active=True)
+        deal = CRMEntity(kind='deal', name='Связанная сделка', payload={})
+        db.add_all([raw, product, buyer, deal]); db.flush()
+        recipe = Recipe(title='Техкарта связанного дома', version=1, archived=False, content={'inputs':[
+            {'material_id':raw.id,'title':raw.title,'unit':raw.unit,'quantity':'2'}], 'outputs':[
+            {'material_id':product.id,'title':product.title,'unit':product.unit,'quantity':'1'}], 'stages':[],'warnings':[]})
+        db.add(recipe); db.commit()
+        return {'recipe_id':recipe.id,'deal_id':deal.id,'buyer_id':buyer.id,'organization_id':db.query(Organization).first().id}
 
 
 @app.get("/api/auth/me")

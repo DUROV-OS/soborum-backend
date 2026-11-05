@@ -202,6 +202,8 @@ def items(kind: str = Query("template", pattern="^(template|addon|package)$"), q
 
 def validate_item(db, body):
     data = body.content
+    from app.costing.integration import validate_item_sources
+    validate_item_sources(db,data)
     settings = s.settings_out(db)["content"]
     if body.kind != "package" and data.profile not in {p["name"] for p in settings["profiles"]}:
         s.fail("Выберите действующий профиль расходов")
@@ -298,6 +300,7 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
         calc = s.inspect_item(item, source)
         data = item["content"]
         result.append({"id": item["id"], "title": item["title"], "kind": item["kind"], "version": item["version"],
+                       "warehouse_product_id":data.get('warehouse_product_id'),"house_model_key":data.get('house_model_key'),
                        "code": data["code"], "category": data["category"], "model": data["model"], "unit": data["unit"],
                        "area": str(s.geometry(data)) if s.geometry(data) else None,
                        "mode": data["mode"], "image": data["image"], "price": calc["price"],
@@ -436,6 +439,8 @@ def assistant(db: Session = Depends(get_db), user: User = Depends(cost_view)):
 
 
 def check_client(db, payload, user):
+    from app.costing.integration import validate_context
+    validate_context(db,payload,user)
     if payload.client_id:
         client = db.get(Client, payload.client_id)
         if not client or (not s.cost_access(user) and client.manager_id != user.id):
@@ -500,6 +505,7 @@ def save_estimate(db, user, body, id=None, refresh=False):
         row = CostingEstimate(actor_id=user.id, version=1, status="draft", archived=False, title=body.title)
         db.add(row)
     row.title, row.number, row.client_id, row.status = body.title, body.number, body.client_id, "draft"
+    row.crm_deal_id, row.sales_order_id, row.sales_order_line = body.crm_deal_id, body.sales_order_id, body.sales_order_line
     db.flush()
     revision = CostingRevision(estimate_id=row.id, number=row.version, actor_id=user.id, reason=body.reason,
                               request_id=str(body.request_id), request_data=request_data, snapshot=snapshot)
@@ -547,8 +553,8 @@ def copy_estimate(id: int, body: VersionAction, db: Session = Depends(get_db), u
         return s.estimate_out(db, s.get_estimate(db, replay.estimate_id, user), user)
     snapshot = deepcopy(s.get_revision(db, original).snapshot)
     title = (original.title[:240] + " — копия")
-    snapshot["input"].update(title=title, number="", version=None, request_id=str(body.request_id), reason=body.reason)
-    row = CostingEstimate(title=title, number="", client_id=original.client_id, actor_id=user.id, version=1, status="draft", archived=False)
+    snapshot["input"].update(title=title, number="", version=None, request_id=str(body.request_id), reason=body.reason,sales_order_id=None,sales_order_line=None)
+    row = CostingEstimate(title=title, number="", client_id=original.client_id,crm_deal_id=original.crm_deal_id, actor_id=user.id, version=1, status="draft", archived=False)
     db.add(row)
     db.flush()
     db.add(CostingRevision(estimate_id=row.id, number=1, actor_id=user.id, reason=body.reason, request_id=str(body.request_id),
@@ -561,12 +567,17 @@ def copy_estimate(id: int, body: VersionAction, db: Session = Depends(get_db), u
 @app.get("/estimates")
 def estimates(query: str = "", archive: str = Query("active", pattern="^(active|archived|all)$"),
               date_from: str = "", date_to: str = "", client_id: int | None = None,
+              crm_deal_id: int | None = None, sales_order_id: int | None = None,
               offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db), user: User = Depends(view)):
     q = s.estimate_query(db, user)
     if archive != "all":
         q = q.filter(CostingEstimate.archived.is_(archive == "archived"))
     if client_id is not None:
         q = q.filter(CostingEstimate.client_id == client_id)
+    if crm_deal_id is not None:
+        q = q.filter(CostingEstimate.crm_deal_id == crm_deal_id)
+    if sales_order_id is not None:
+        q = q.filter(CostingEstimate.sales_order_id == sales_order_id)
     if query:
         from sqlalchemy import or_
         q = q.filter(or_(CostingEstimate.title.contains(query, autoescape=True), CostingEstimate.number.contains(query, autoescape=True)))
@@ -665,3 +676,7 @@ def export_estimate(id: int, format: str, revision: int | None = Query(None, ge=
     data = s.estimate_out(db, row, user, revision)
     raw, content_type = estimate_document(data, format, internal, no_prices)
     return Response(raw, media_type=content_type, headers={"Content-Disposition": f'attachment; filename="estimate-{id}-v{data["revision"]}.{format}"'})
+
+
+from app.costing.integration import router as integration_router
+app.include_router(integration_router)

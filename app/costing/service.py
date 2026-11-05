@@ -423,6 +423,11 @@ def estimate_out(db, row, user, number=None):
     # Whitelist for commercial users. No recursively redacted financial JSON.
     inp = snap["input"]
     result["input"] = {k: inp.get(k) for k in ("title", "number", "client_id", "template_id", "quantity", "selections", "discount", "discount_amount", "sale_price", "note")}
+    result['context']={'client_id':row.client_id,'crm_deal_id':row.crm_deal_id,'sales_order_id':row.sales_order_id,'sales_order_line':row.sales_order_line}
+    result['input'].update(crm_deal_id=row.crm_deal_id,sales_order_id=row.sales_order_id,sales_order_line=row.sales_order_line)
+    template=snap['sources']['items'][str(inp['template_id'])]['content']
+    source_fields=('source_recipe_id','source_recipe_version','warehouse_product_id','house_model_key') if cost_access(user) else ('warehouse_product_id','house_model_key')
+    result['source']={k:template.get(k) for k in source_fields}
     if cost_access(user):
         result.update({"result": snap["result"], "bom": snap["bom"], "profile": snap["profile"], "expenses": snap["expenses"],
                        "priced_on": snap["sources"]["priced_on"],

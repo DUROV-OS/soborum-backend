@@ -309,7 +309,7 @@ def test_fractional_commercial_lines_sum_to_invoice_total(setup):
 def test_costing_migration_matches_models(db):
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
-    from sqlalchemy import create_engine, inspect
+    from sqlalchemy import create_engine, inspect, text
     from app.db.base import Base
     import importlib.util
     from pathlib import Path
@@ -318,13 +318,22 @@ def test_costing_migration_matches_models(db):
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine,tables=[t for t in Base.metadata.sorted_tables if not t.name.startswith('costing_')])
+    link_spec=importlib.util.spec_from_file_location('costing_link_migration_test',filename.with_name('ce0511202602_costing_links.py'))
+    link_migration=importlib.util.module_from_spec(link_spec)
+    link_spec.loader.exec_module(link_migration)
     with engine.begin() as connection:
         with Operations.context(MigrationContext.configure(connection)):
             migration.upgrade()
+            connection.execute(text("INSERT INTO costing_estimates (id,actor_id,title,number,version,status,archived) VALUES (1,1,'Historical quote','OLD-1',3,'approved',false)"))
+            link_migration.upgrade()
+            assert connection.execute(text('SELECT title,version,crm_deal_id,sales_order_id FROM costing_estimates')).one() == ('Historical quote',3,None,None)
             inspector = inspect(connection)
             for name, table in Base.metadata.tables.items():
                 if name.startswith("costing_"):
                     assert set(table.columns.keys()) == {c["name"] for c in inspector.get_columns(name)}
+            link_migration.downgrade()
+            assert connection.execute(text('SELECT title,version,status FROM costing_estimates')).one() == ('Historical quote',3,'approved')
             migration.downgrade()
             assert not any(n.startswith("costing_") for n in inspect(connection).get_table_names())
     engine.dispose()

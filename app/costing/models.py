@@ -42,6 +42,9 @@ class CostingEstimate(Base):
     __tablename__ = "costing_estimates"
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), index=True)
+    crm_deal_id: Mapped[int | None] = mapped_column(ForeignKey("crm_entities.id"), index=True)
+    sales_order_id: Mapped[int | None] = mapped_column(ForeignKey("sales_orders.id"), index=True)
+    sales_order_line: Mapped[int | None] = mapped_column()
     actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     number: Mapped[str] = mapped_column(String(120), default="")
@@ -83,4 +86,19 @@ class CostingPriceVersion(Base):
     title: Mapped[str] = mapped_column(String(255))
     actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     snapshot: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CostingOrderLink(Base):
+    """One approved estimate revision for one commercial order line."""
+    __tablename__ = "costing_order_links"
+    __table_args__ = (UniqueConstraint("order_id", "line_index", name="uq_costing_order_line"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("sales_orders.id"), index=True)
+    line_index: Mapped[int] = mapped_column()
+    estimate_id: Mapped[int] = mapped_column(ForeignKey("costing_estimates.id"), index=True)
+    revision_id: Mapped[int] = mapped_column(ForeignKey("costing_revisions.id"))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    recipe_id: Mapped[int | None] = mapped_column(ForeignKey("local_recipes.id"))
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
