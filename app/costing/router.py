@@ -305,6 +305,22 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
     return result
 
 
+@app.get("/items/{id}/export/{format}")
+def export_item(id: int, format: str, no_prices: bool = False, db: Session = Depends(get_db), user: User = Depends(cost_view)):
+    from app.costing.exports import estimate_document
+    item = s.item_out(existing(db, CostingItem, id))
+    if item["kind"] == "package":
+        s.fail("Для пакета используйте прайс или клиентскую смету")
+    source = s.sources(db)
+    calculation = s.inspect_item(item, source)
+    data = {"id": id, "revision": item["version"], "number": item["content"]["code"], "title": item["title"],
+            "company": source["settings"]["company"], "logo": source["settings"]["logo"], "note": item["content"]["note"],
+            "bom": calculation["lines"], "commercial": [], "price": calculation["price"], "list_price": calculation["price"],
+            "discount_amount": "0.00", "result": calculation}
+    raw, content_type = estimate_document(data, format, True, no_prices)
+    return Response(raw, media_type=content_type, headers={"Content-Disposition": f'attachment; filename="item-{id}-v{item["version"]}.{format}"'})
+
+
 @app.post("/prices")
 def save_prices(body: PriceChanges, db: Session = Depends(get_db), user: User = Depends(cost_edit)):
     s.lock(db)

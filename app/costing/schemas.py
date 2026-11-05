@@ -93,6 +93,15 @@ class MaterialInput(Strict):
 class MaterialLine(Strict):
     material_id: int = Field(gt=0)
     quantity: Quantity
+    pieces: int = Field(1, ge=1, le=1000000)
+    price: Money | None = None
+    price_reason: str = Field("", max_length=500)
+
+    @model_validator(mode="after")
+    def explicit_price(self):
+        if self.price is not None and not self.price_reason:
+            raise ValueError("Укажите основание ручной цены строки")
+        return self
 
 
 class PackageLine(Strict):
@@ -175,12 +184,19 @@ class EstimateInput(Strict):
     selections: list[Selection] = Field(default_factory=list, max_length=100)
     discount: Percent = Decimal(0)
     sale_price: Money | None = None
+    discount_amount: Money | None = None
     lines: list[MaterialLine] | None = Field(None, max_length=1000)
     profile: Profile | None = None
     expenses: Expenses | None = None
     note: str = Field("", max_length=4000)
     image: str | None = Field(None, max_length=7100000)
     reason: str = Field("Изменение сметы", min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_lines(self):
+        if self.lines is not None and len({l.material_id for l in self.lines}) != len(self.lines):
+            raise ValueError("Объедините повторяющиеся материалы в одну строку")
+        return self
 
     @field_validator("image")
     @classmethod

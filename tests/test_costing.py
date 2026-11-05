@@ -328,3 +328,54 @@ def test_costing_migration_matches_models(db):
             migration.downgrade()
             assert not any(n.startswith("costing_") for n in inspect(connection).get_table_names())
     engine.dispose()
+
+
+def test_source_calculation_profile_and_rounding(setup):
+    api, mat, template, _ = setup
+    settings = api.get(PREFIX + "/settings").json()
+    settings["content"]["profiles"][0]["margin"] = "30"
+    api.put(PREFIX + "/settings", json=settings)
+    data = {k: v for k, v in mat.items() if k != "id"}
+    data["price"] = "724216.50"
+    api.put(f'{PREFIX}/materials/{mat["id"]}', json=data)
+    templates = api.get(PREFIX + "/items").json()
+    assert templates[0]["calculation"]["recommended"] == "1420000.00"
+    response = api.post(PREFIX + "/estimates", json=request(template, sale_price="1950000"))
+    assert response.status_code == 201, response.text
+    result = response.json()["result"]
+    assert result["profit"] == "855283.50" and result["margin_percent"] == "43.86"
+    assert [r["amount"] for r in result["revenue_expenses"]] == ["195000.00", "58500.00", "117000.00"]
+
+
+def test_volume_pieces_and_context_price_replacement(setup):
+    api, mat, template, _ = setup
+    premium = material(api, "Другой материал", "80")
+    addon = item(api, premium, "addon", "100", [{"material_id": mat["id"], "quantity": "1", "pieces": 2}])
+    body = request(template, lines=[{"material_id": mat["id"], "quantity": "1", "pieces": 2, "price": "30", "price_reason": "Цена этой комплектации"}],
+                   selections=[{"item_id": addon["id"], "quantity": "1"}])
+    result = api.post(PREFIX + "/estimates", json=body).json()
+    assert result["result"]["base_cost"] == "80.00"
+    assert len(result["bom"]) == 1 and result["bom"][0]["material_id"] == premium["id"]
+    assert Decimal(result["bom"][0]["amount"]) == 80
+
+
+def test_same_material_different_prices_never_merge_wrong_amounts(setup):
+    api, mat, template, _ = setup
+    addon = item(api, mat, "addon", "100")
+    body = request(template, lines=[{"material_id": mat["id"], "quantity": "2.5", "pieces": 4, "price": "30", "price_reason": "Отдельный прайс"}], selections=[{"item_id": addon["id"], "quantity": "1"}])
+    result = api.post(PREFIX + "/estimates", json=body).json()
+    assert len(result["bom"]) == 2
+    assert sum(Decimal(l["amount"]) for l in result["bom"]) == Decimal("351")
+    assert result["result"]["base_cost"] == "351.00"
+
+
+def test_ruble_discount_and_template_exports(setup):
+    api, mat, template, _ = setup
+    body = request(template, discount_amount="12.34")
+    result = api.post(PREFIX + "/estimates", json=body).json()
+    assert result["price"] == "87.66" and result["discount_amount"] == "12.34"
+    body.update(request_id=str(uuid4()), discount="1")
+    assert api.post(PREFIX + "/estimates", json=body).status_code == 422
+    for format in ("xlsx", "pdf", "html"):
+        response = api.get(f'{PREFIX}/items/{template["id"]}/export/{format}')
+        assert response.status_code == 200, response.text[:200]

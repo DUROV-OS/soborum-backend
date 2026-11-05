@@ -127,9 +127,12 @@ def materials_cost(lines, materials, today):
         mat = materials.get(str(line["material_id"]))
         if mat is None:
             fail("Материал не найден: " + str(line["material_id"]))
-        quantity = decimal(line["quantity"])
-        price = decimal(mat["price"]) if mat["price"] is not None else None
-        if price is None or mat["effective_on"] > today:
+        volume = decimal(line["quantity"])
+        quantity = volume * line.get("pieces", 1)
+        manual = line.get("price") is not None
+        raw_price = line["price"] if manual else mat["price"]
+        price = decimal(raw_price) if raw_price is not None else None
+        if price is None or (not manual and mat["effective_on"] > today):
             missing.append("Нет действующей цены: " + mat["name"])
             price = None
         if mat["archived"]:
@@ -137,7 +140,8 @@ def materials_cost(lines, materials, today):
         amount = price * quantity if price is not None else None
         if amount is not None:
             total += amount
-        detail.append({**line, "name": mat["name"], "category": mat["category"], "unit": mat["unit"],
+        detail.append({**line, "quantity": str(quantity), "volume": str(volume), "pieces": line.get("pieces", 1),
+                       "manual_price": manual, "name": mat["name"], "category": mat["category"], "unit": mat["unit"],
                        "price": str(price) if price is not None else None, "amount": money(amount), "material_version": mat["version"]})
     return total, missing, detail
 
@@ -270,7 +274,8 @@ def build_snapshot(db, payload: EstimateInput, previous=None, refresh=False):
     missing = list(base["missing"])
     consumed = {}
     available = {}
-    for line in item["content"]["lines"]:
+    base_materials = {str(line["material_id"]): line for line in base["lines"]}
+    for line in base["lines"]:
         key = str(line["material_id"])
         available[key] = available.get(key, ZERO) + decimal(line["quantity"])
     parts = [(base, D(1), D(1), "base")]
@@ -289,16 +294,26 @@ def build_snapshot(db, payload: EstimateInput, previous=None, refresh=False):
         for addon, quantity, factor, package in rows:
             if not addon or addon["kind"] != "addon" or addon["archived"]:
                 fail("Пакет содержит недействующий доп")
-            p = component(addon, source["settings"], source["materials"], source["priced_on"])
+            # A replacement refunds the actual base line's price, including a
+            # manually priced client line, rather than a different catalog price.
+            p = component(addon, source["settings"], source["materials"], source["priced_on"], replacement=False)
             if chosen["kind"] == "package":
                 frozen = chosen["content"].get("package_prices", {}).get(str(addon["id"]))
                 if frozen is not None:
                     p["retail"] = decimal(frozen)
             for replacement in addon["content"]["replacements"]:
                 key = str(replacement["material_id"])
-                consumed[key] = consumed.get(key, ZERO) + decimal(replacement["quantity"]) * quantity
+                replace_quantity = decimal(replacement["quantity"]) * replacement.get("pieces", 1)
+                consumed[key] = consumed.get(key, ZERO) + replace_quantity * quantity
                 if consumed[key] > available.get(key, ZERO):
                     fail("Допы заменяют больше базового материала, чем есть в смете")
+                original = base_materials[key]
+                credit = replace_quantity * decimal(original["price"]) if original["price"] is not None else ZERO
+                p["materials"] -= credit
+                p["base_cost"] -= credit
+                p["replacement_lines"].append({**original, "quantity": str(replace_quantity), "amount": money(credit)})
+            if p["base_cost"] < 0:
+                p["missing"].append("Вычет превышает стоимость допа; требуется отдельный расчёт изменения комплектации")
             p["package"] = package
             parts.append((p, quantity, factor, "addon"))
             missing += p["missing"]
@@ -317,11 +332,16 @@ def build_snapshot(db, payload: EstimateInput, previous=None, refresh=False):
                            "quantity": str(count * payload.quantity), "unit_price": money(price * factor), "amount": money(amount)})
         for sign, lines in ((1, p["lines"]), (-1, p["replacement_lines"])):
             for line in lines:
-                key = str(line["material_id"])
+                key = str(line["material_id"]) + "@" + str(line["price"])
                 if key not in bom:
                     bom[key] = {**line, "quantity": ZERO}
                 bom[key]["quantity"] += decimal(line["quantity"]) * count * payload.quantity * sign
-    price = payload.sale_price if payload.sale_price is not None else (listed * (1 - payload.discount / 100)).quantize(D("0.01"), rounding=ROUND_HALF_UP)
+    if sum((bool(payload.discount), payload.sale_price is not None, payload.discount_amount is not None)) > 1:
+        fail("Выберите один способ: скидка в процентах, скидка в рублях или договорная цена")
+    price = (payload.sale_price if payload.sale_price is not None else listed - payload.discount_amount
+             if payload.discount_amount is not None else listed * (1 - payload.discount / 100)).quantize(D("0.01"), rounding=ROUND_HALF_UP)
+    if price < 0:
+        fail("Скидка не может превышать сумму по прайсу")
     # Price overrides are final prices. The discount is applied once to list price.
     if payload.sale_price is not None and payload.discount:
         fail("Укажите либо итоговую договорную цену, либо скидку")
@@ -402,7 +422,7 @@ def estimate_out(db, row, user, number=None):
               "discount_amount": snap["result"]["discount_amount"], "note": snap["input"]["note"]}
     # Whitelist for commercial users. No recursively redacted financial JSON.
     inp = snap["input"]
-    result["input"] = {k: inp[k] for k in ("title", "number", "client_id", "template_id", "quantity", "selections", "discount", "sale_price", "note")}
+    result["input"] = {k: inp.get(k) for k in ("title", "number", "client_id", "template_id", "quantity", "selections", "discount", "discount_amount", "sale_price", "note")}
     if cost_access(user):
         result.update({"result": snap["result"], "bom": snap["bom"], "profile": snap["profile"], "expenses": snap["expenses"],
                        "priced_on": snap["sources"]["priced_on"],
