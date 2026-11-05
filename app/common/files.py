@@ -173,4 +173,10 @@ def download_file(file_id: int, db: Session = Depends(get_db), user=Depends(get_
     required_module = PURPOSE_MODULE.get(asset.purpose)
     if required_module and not user.has_access(required_module):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа к этому файлу")
+    from app.crm.import_access import shared_imported_attachment, reviewed_response
+    imported = shared_imported_attachment(db, user, asset)
+    if imported is not None:
+        _, item, content = imported
+        if content is not None:
+            return reviewed_response(item, content)
     return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)

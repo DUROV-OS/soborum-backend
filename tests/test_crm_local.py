@@ -177,7 +177,7 @@ def test_import_stages_deleted_history_and_native_retry(db, make_user):
     assert deal.payload["amount"] == 1500000
     assert len(deal.payload["contact_ids"]) == 1
     assert db.query(CRMEntity).filter_by(kind="contact", archived=True).count() == 1
-    assert service.history(db, deal)["items"][0]["text"] == "История"
+    assert service.history(db, deal, user=owner)["items"][0]["text"] == "История"
     deal.name = "Изменили у себя"
     db.commit()
     count = db.query(CRMEntity).count()
@@ -230,8 +230,13 @@ def test_imported_files_are_scoped_and_path_is_confined(db, make_user, api, tmp_
     db.add(row)
     db.commit()
     sales = make_user(Module.CLIENTS, Module.AI)
-    assert _read_imported_attachment(db, sales, row.id)["text"] == "Текст договора"
-    assert api(sales).get(f"/api/crm/files/{row.id}/download").status_code == 200
+    with pytest.raises(HTTPException) as denied:
+        _read_imported_attachment(db, sales, row.id)
+    assert denied.value.status_code == 403
+    assert api(sales).get(f"/api/crm/files/{row.id}/download").status_code == 403
+    owner = make_user(admin=True)
+    assert _read_imported_attachment(db, owner, row.id)["text"] == "Текст договора"
+    assert api(owner).get(f"/api/crm/files/{row.id}/download").status_code == 200
     warehouse = make_user(Module.WAREHOUSE, Module.AI)
     with pytest.raises(HTTPException) as e:
         _read_imported_attachment(db, warehouse, row.id)
@@ -240,7 +245,7 @@ def test_imported_files_are_scoped_and_path_is_confined(db, make_user, api, tmp_
     row.payload = {"_downloaded_files": [{"filename": "outside.txt", "local_name": "../outside"}]}
     db.commit()
     with pytest.raises(HTTPException) as e:
-        _read_imported_attachment(db, sales, row.id)
+        _read_imported_attachment(db, owner, row.id)
     assert e.value.status_code == 404
 
 

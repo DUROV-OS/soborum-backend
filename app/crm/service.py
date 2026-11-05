@@ -8,6 +8,8 @@ from app.moysklad.models import SourceRecord
 from app.users.models import User
 from app.common.module_access import Module
 from pydantic import ValidationError
+from app.crm.sales_fields import merge_sales_patch, temperature_expression, validate_sales_fields
+from app.crm.privacy import can_read_private, prepare_write, redact, visible_history
 
 SCHEMAS = {
     "contact": ContactData,
@@ -60,7 +62,7 @@ def register_client_request(db, client, request, *, archived=False):
 _UNSET = object()
 
 
-def out(row, *, source_fields=None, priority_override=_UNSET):
+def out(row, *, source_fields=None, priority_override=_UNSET, user=None):
     from sqlalchemy.orm import object_session
     from app.crm.models import CRMTaskLink
 
@@ -85,7 +87,7 @@ def out(row, *, source_fields=None, priority_override=_UNSET):
         "kind": row.kind,
         "name": row.name,
         "archived": row.archived,
-        "data": row.payload,
+        "data": redact(row.payload, user),
         "version": row.version,
         "source_id": row.source_id,
         "updated_at": row.updated_at,
@@ -105,7 +107,7 @@ def validate(db, kind, payload, previous=None):
     try:
         data = SCHEMAS[kind].model_validate(payload).model_dump(mode="json")
     except ValidationError as error:
-        raise HTTPException(422, str(error)) from error
+        raise HTTPException(422, 'Проверьте формат полей карточки') from error
     uid = data.get("responsible_user_id")
     if uid is not None:
         user = db.get(User, uid)
@@ -148,7 +150,7 @@ def validate(db, kind, payload, previous=None):
         linked = db.get(CRMEntity, data["deal_id"])
         if linked and linked.kind == "deal" and not linked.payload.get("is_unsorted"):
             raise HTTPException(422, "Заявка уже связана с обычной сделкой; отметка спама недоступна")
-    return data
+    return validate_sales_fields(db, kind, data, previous)
 
 
 def _effective_owner_expression(kind):
@@ -183,7 +185,7 @@ def _task_priority_expression():
 
 
 def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, owner_id=None,
-                   date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal"):
+                   date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal", temperature=None, user=None):
     """One filter contract for paginated registers and unpaginated board totals."""
     if kind not in SCHEMAS:
         raise HTTPException(422, "Неизвестный раздел продаж")
@@ -195,6 +197,11 @@ def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage
     if spam not in ("normal", "spam", "all"):
         raise HTTPException(422, "Неизвестный фильтр спама")
     stmt = db.query(CRMEntity).filter_by(kind=kind)
+    if temperature is not None:
+        if kind not in ('contact', 'deal', 'inquiry') or temperature not in ('hot', 'warm', 'cold', 'unknown'):
+            raise HTTPException(422, 'Температура доступна для контактов, сделок и входящих заявок')
+        value = temperature_expression(kind)
+        stmt = stmt.filter(value.is_(None) if temperature == 'unknown' else value == temperature)
     if kind == "inquiry" and spam != "all":
         from sqlalchemy import func
 
@@ -213,12 +220,13 @@ def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage
     if query:
         from sqlalchemy import cast, String, or_
 
-        stmt = stmt.filter(
-            or_(
-                func_lower(CRMEntity.name).contains(query.casefold(), autoescape=True),
-                func_lower(cast(CRMEntity.payload, String)).contains(query.casefold(), autoescape=True),
-            )
-        )
+        searchable = [CRMEntity.name]
+        if can_read_private(user):
+            searchable.append(cast(CRMEntity.payload, String))
+        else:
+            searchable += [CRMEntity.payload[key].as_string() for key in ('phone', 'email', 'contact_name', 'source_name')]
+            searchable += [CRMEntity.payload['customer'][key].as_string() for key in ('phone_2', 'phone_3', 'city', 'first_name', 'last_name', 'middle_name')]
+        stmt = stmt.filter(or_(*(func_lower(value).contains(query.casefold(), autoescape=True) for value in searchable)))
     if pipeline_id is not None:
         stmt = stmt.filter(CRMEntity.payload["pipeline_id"].as_integer() == pipeline_id)
     if stage_id is not None:
@@ -243,19 +251,19 @@ def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage
 
 
 def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0, owner_id=None,
-                 date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal"):
+                 date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal", temperature=None, user=None):
     from sqlalchemy import literal
     from app.crm.dates import source_date_expressions, source_date_fields
 
     stmt = _entries_query(db, kind, query, archive, pipeline_id, stage_id, owner_id,
-                          date_from, date_to, date_unknown, priority, spam)
+                          date_from, date_to, date_unknown, priority, spam, temperature, user)
     epoch, origin = source_date_expressions(db, kind)
     order = [epoch.desc().nulls_last(), CRMEntity.id.desc()] if kind in ("deal", "inquiry") else [CRMEntity.id.desc()]
     priority_column = _task_priority_expression() if kind == "task" else literal(None)
     return {
         "total": stmt.count(),
         "items": [
-            {**out(row, source_fields=source_date_fields(created, source_kind), priority_override=task_priority),
+            {**out(row, source_fields=source_date_fields(created, source_kind), priority_override=task_priority, user=user),
              "effective_owner_id": effective_owner or None}
             for row, effective_owner, created, source_kind, task_priority in stmt.add_columns(
                 _effective_owner_expression(kind), epoch, origin, priority_column)
@@ -271,7 +279,7 @@ def func_lower(value):
 
 
 def kanban_summary(db, query="", archive="active", pipeline_id=None, owner_id=None,
-                   date_from=None, date_to=None, date_unknown=False, spam="normal"):
+                   date_from=None, date_to=None, date_unknown=False, spam="normal", temperature=None, user=None):
     """Commercial budgets of all canonical board cards, independent of page size.
 
     Pending inquiries represent their hidden unsorted deal once. Website inquiries
@@ -306,7 +314,7 @@ def kanban_summary(db, query="", archive="active", pipeline_id=None, owner_id=No
                 "amounts": {}, "unpriced_count": 0,
             }
 
-    date_filter = {"date_from": date_from, "date_to": date_to, "date_unknown": date_unknown, "spam": spam}
+    date_filter = {"date_from": date_from, "date_to": date_to, "date_unknown": date_unknown, "spam": spam, "temperature": temperature, "user": user}
     deals = _entries_query(db, "deal", query, archive, owner_id=owner_id, **date_filter).all()
     regular_ids = {row.id for row in deals}
     inquiries = _entries_query(db, "inquiry", query, archive, owner_id=owner_id, **date_filter).all()
@@ -356,7 +364,7 @@ def kanban_summary(db, query="", archive="active", pipeline_id=None, owner_id=No
 
 
 def create(db, kind, entry, user):
-    data = validate(db, kind, entry.data)
+    data = validate(db, kind, prepare_write(entry.data, user))
     if kind == "deal" and not data.get("responsible_user_id"):
         data["responsible_user_id"] = user.id
     if kind=='task' and data.get('entity_id') and not entry.archived:
@@ -387,7 +395,7 @@ def create(db, kind, entry, user):
     )
     db.commit()
     db.refresh(row)
-    return out(row)
+    return out(row, user=user)
 
 
 def patch(db, id, payload, user):
@@ -395,7 +403,7 @@ def patch(db, id, payload, user):
     if row.version != payload.version:
         raise HTTPException(409, "Запись уже изменена. Обновите карточку.")
     data = (
-        validate(db, row.kind, {**row.payload, **payload.data}, previous=row.payload)
+        validate(db, row.kind, merge_sales_patch(row.payload, prepare_write(payload.data, user, row.payload)), previous=row.payload)
         if payload.data is not None
         else row.payload
     )
@@ -409,7 +417,7 @@ def patch(db, id, payload, user):
         values["name"] = payload.name.strip()
     if payload.archived is not None:
         values["archived"] = payload.archived
-    before = out(row)
+    before = {'name': row.name, 'data': row.payload, 'archived': row.archived}
     result = db.execute(
         update(CRMEntity)
         .where(CRMEntity.id == id, CRMEntity.version == payload.version)
@@ -444,10 +452,10 @@ def patch(db, id, payload, user):
     )
     db.commit()
     db.expire(row)
-    return out(row)
+    return out(row, user=user)
 
 
-def history(db, row, limit=100, offset=0):
+def history(db, row, limit=100, offset=0, user=None):
     local = db.query(CRMEvent).filter_by(entity_id=row.id).order_by(CRMEvent.id.desc()).all()
     entries = [
         {
@@ -471,6 +479,12 @@ def history(db, row, limit=100, offset=0):
             .all()
         )
         for r in imported:
+            if not can_read_private(user):
+                from app.crm.import_access import public_history_entry
+                safe = public_history_entry(db, r)
+                if safe:
+                    entries.append(safe)
+                continue
             p = r.payload
             params = p.get("params") or {}
             text = (
@@ -505,6 +519,7 @@ def history(db, row, limit=100, offset=0):
                     "text": str(text),
                     "details": p,
                     "source": "amocrm",
+                    "source_record_id": r.id,
                 }
             )
     if row.payload.get("client_request_id"):
@@ -530,6 +545,7 @@ def history(db, row, limit=100, offset=0):
                     "source": "soborum",
                 }
             )
+    entries = visible_history(entries, row, user)
     entries.sort(key=lambda r: r["created_at"], reverse=True)
     return {"total": len(entries), "items": entries[offset : offset + limit]}
 
@@ -543,11 +559,11 @@ def add_note(db, row, text, user):
     return {"id": note.id, "text": text.strip()}
 
 
-def files(db, query="", entity=None, offset=0, limit=50):
+def files(db, query="", entity=None, offset=0, limit=50, user=None):
     stmt = db.query(SourceRecord).filter(
         SourceRecord.entity_type.in_(["amocrm/files", "amocrm/file_versions"])
     )
-    if query:
+    if query and can_read_private(user):
         stmt = stmt.filter(SourceRecord.search_text.contains(query.casefold(), autoescape=True))
     # File metadata is small (hundreds of records); Python also supports
     # SQLite tests without relying on PostgreSQL-only JSON containment.
@@ -570,8 +586,19 @@ def files(db, query="", entity=None, offset=0, limit=50):
         f = next(iter(r.payload.get("_downloaded_files", [])), None)
         if not f or f["local_name"] in seen:
             continue
+        if not can_read_private(user):
+            from app.crm.import_access import authorized_attachment
+            try:
+                _, public, _ = authorized_attachment(db, user, r)
+            except HTTPException:
+                continue
+            if query and query.casefold() not in public['filename'].casefold():
+                continue
+            result = {'id': r.id, 'name': public['filename'], 'size': public['size'], 'archived': r.archived}
+        else:
+            result = {"id": r.id, "name": f["filename"], "size": f.get("size", 0), "archived": r.archived}
         seen.add(f["local_name"])
-        results.append({"id": r.id, "name": f["filename"], "size": f.get("size", 0), "archived": r.archived})
+        results.append(result)
     return {"total": len(results), "items": results[offset : offset + limit]}
 
 
@@ -580,7 +607,7 @@ def accept_inquiry(db, row, entry, user):
         raise HTTPException(422, "Эта запись не является входящей заявкой")
     row = db.query(CRMEntity).filter_by(id=row.id).populate_existing().with_for_update().one()
     if row.payload.get("accepted_deal_id"):
-        return out(get(db, row.payload["accepted_deal_id"], "deal"))
+        return out(get(db, row.payload["accepted_deal_id"], "deal"), user=user)
     if row.payload.get("is_spam"):
         raise HTTPException(422, "Сначала уберите отметку «Спам», затем примите заявку в работу")
     if row.archived:
@@ -588,19 +615,24 @@ def accept_inquiry(db, row, entry, user):
     if not entry.name.strip():
         raise HTTPException(422, "Введите название сделки")
     old = row.payload
+    deal = get(db, old["deal_id"], "deal") if old.get("deal_id") else None
+    previous = deal.payload if deal else {}
     data = validate(
         db,
         "deal",
         {
-            **entry.data,
+            **previous,
+            **({'referral': old['referral']} if old.get('referral') is not None else {}),
+            **prepare_write(entry.data, user),
+            **({'inquiry_customer_snapshot': old['customer']} if old.get('customer') is not None else {}),
             "is_unsorted": False,
             "client_id": old.get("client_id"),
             "client_request_id": old.get("client_request_id"),
         },
+        previous={**previous, **({'referral': old['referral']} if old.get('referral') is not None else {})},
     )
     if not data.get("responsible_user_id"):
         data["responsible_user_id"] = user.id
-    deal = get(db, old["deal_id"], "deal") if old.get("deal_id") else None
     if deal and not data.get("contact_ids"):
         data["contact_ids"] = deal.payload.get("contact_ids", [])
     if not data.get("contact_ids") and (old.get("phone") or old.get("email")):
@@ -620,7 +652,7 @@ def accept_inquiry(db, row, entry, user):
             contact = CRMEntity(
                 kind="contact",
                 name=old.get("contact_name") or entry.name,
-                payload=ContactData(phone=phone, email=email).model_dump(mode="json"),
+                payload=ContactData(phone=phone, email=email, customer=old.get('customer')).model_dump(mode="json"),
                 archived=False,
             )
             db.add(contact)
@@ -655,4 +687,4 @@ def accept_inquiry(db, row, entry, user):
         )
     )
     db.commit()
-    return out(deal)
+    return out(deal, user=user)

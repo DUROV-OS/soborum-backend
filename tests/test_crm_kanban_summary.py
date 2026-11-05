@@ -91,7 +91,8 @@ def test_summary_default_funnel_first_open_stage_and_archive(db):
     assert column(all_, other_first)["count"] == 1
 
 
-def test_summary_search_matches_register_filters_and_missing_stage_reporting(db):
+def test_summary_search_matches_register_filters_and_missing_stage_reporting(db, make_user):
+    owner = make_user(admin=True)
     pipeline, first, _ = board(db)
     row(db, "deal", "Offer%_", {"pipeline_id": pipeline.id, "stage_id": first.id, "amount": 100})
     row(db, "deal", "Offerxx", {"pipeline_id": pipeline.id, "stage_id": first.id, "amount": 200})
@@ -103,9 +104,10 @@ def test_summary_search_matches_register_filters_and_missing_stage_reporting(db)
     literal = service.kanban_summary(db, query="offer%_")
     assert column(literal, first)["count"] == service.list_entries(db, "deal", query="offer%_")["total"] == 1
     assert column(literal, first)["amounts"] == {"RUB": 100}
-    metadata = service.kanban_summary(db, query="phone123")
+    metadata = service.kanban_summary(db, query="phone123", user=owner)
     assert column(metadata, first)["count"] == 2
     assert column(metadata, first)["amounts"] == {"RUB": 700}
+    assert column(service.kanban_summary(db, query="phone123"), first)['count'] == 1
     assert service.kanban_summary(db)["unmapped_count"] == 1
 
 

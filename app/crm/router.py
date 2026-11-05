@@ -6,18 +6,34 @@ from sqlalchemy.orm import Session
 from app.core.deps import require_view, require_edit, require_full
 from app.common.module_access import Module
 from app.db.session import get_db
-from app.users.models import User
+from app.users.models import User, UserRole
 from app.crm import service
 from app.crm.models import CRMEntity
 from app.crm.schemas import Entry, Patch, Note
 from app.crm import chat_links
 from app.moysklad.models import SourceRecord
 from app.moysklad.service import attachment_path
+from app.crm.import_access import ReviewInput, review_status, record_review, authorized_attachment, reviewed_response
 
 app = FastAPI(title="Продажи — CRM Соборума")
 view = require_view(Module.CLIENTS)
 edit = require_edit(Module.CLIENTS)
 full = require_full(Module.CLIENTS)
+
+
+def check_agency_policy(user, kind, data, previous=None):
+    key = {'pipeline': 'purpose', 'stage': 'agency_source_eligible'}.get(kind)
+    if key and key in (data or {}) and data[key] != (previous or {}).get(key):
+        if user.role != UserRole.ADMIN:
+            raise HTTPException(403, 'Настройку источников агентств меняет администратор')
+
+
+@app.get('/agency-sources')
+def agency_sources(query: str = Query('', max_length=300), offset: int = Query(0, ge=0),
+                   limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db),
+                   user: User = Depends(view)):
+    from app.crm.sales_fields import agency_sources as sources
+    return sources(db, query, offset, limit)
 
 
 @app.get('/entries/{entity_id}/chat-links')
@@ -79,7 +95,7 @@ def files(
     db: Session = Depends(get_db),
     user: User = Depends(view),
 ):
-    return service.files(db, query, offset=offset, limit=limit)
+    return service.files(db, query, offset=offset, limit=limit, user=user)
 
 
 @app.get("/files/{id}/download")
@@ -87,13 +103,26 @@ def download(id: int, db: Session = Depends(get_db), user: User = Depends(view))
     row = db.get(SourceRecord, id)
     if not row or row.entity_type not in ("amocrm/files", "amocrm/file_versions"):
         raise HTTPException(404, "Файл не найден")
-    path, item = attachment_path(row, 0)
+    path, item, content = authorized_attachment(db, user, row, 0)
+    if content is not None:
+        return reviewed_response(item, content)
     return FileResponse(
         path,
         filename=item["filename"],
         media_type=item.get("content_type", "application/octet-stream"),
         headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
     )
+
+
+@app.get('/import-reviews/{source_id}')
+def import_review(source_id: int, attachment_index: int = Query(-1, ge=-1, le=100),
+                  db: Session = Depends(get_db), user: User = Depends(view)):
+    return review_status(db, user, source_id, attachment_index)
+
+
+@app.post('/import-reviews/{source_id}', status_code=201)
+def classify_import(source_id: int, payload: ReviewInput, db: Session = Depends(get_db), user: User = Depends(view)):
+    return record_review(db, user, source_id, payload)
 
 
 @app.get("/catalog")
@@ -130,6 +159,7 @@ def entries(
     date_to: date | None = None,
     date_unknown: bool = False,
     priority: str | None = Query(None, pattern="^(low|medium|high)$"),
+    temperature: str | None = Query(None, pattern="^(hot|warm|cold|unknown)$"),
     spam: str = Query("normal", pattern="^(normal|spam|all)$"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -137,7 +167,7 @@ def entries(
     user: User = Depends(view),
 ):
     return service.list_entries(db, kind, query, archive, pipeline_id, stage_id, limit, offset, owner_id=owner_id,
-                                date_from=date_from, date_to=date_to, date_unknown=date_unknown, priority=priority, spam=spam)
+                                date_from=date_from, date_to=date_to, date_unknown=date_unknown, priority=priority, spam=spam, temperature=temperature, user=user)
 
 
 @app.get("/kanban-summary")
@@ -146,6 +176,7 @@ def kanban_summary(
     archive: str = Query("active", pattern="^(active|archived|all)$"),
     pipeline_id: int | None = None,
     owner_id: int | None = Query(None, ge=0),
+    temperature: str | None = Query(None, pattern="^(hot|warm|cold|unknown)$"),
     date_from: date | None = None,
     date_to: date | None = None,
     date_unknown: bool = False,
@@ -154,18 +185,19 @@ def kanban_summary(
     user: User = Depends(view),
 ):
     return service.kanban_summary(db, query=query, archive=archive, pipeline_id=pipeline_id, owner_id=owner_id,
-                                  date_from=date_from, date_to=date_to, date_unknown=date_unknown, spam=spam)
+                                  date_from=date_from, date_to=date_to, date_unknown=date_unknown, spam=spam, temperature=temperature, user=user)
 
 
 @app.get("/entries/{id}")
 def entry(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
-    return service.out(service.get(db, id))
+    return service.out(service.get(db, id), user=user)
 
 
 @app.post("/entries/{kind}", status_code=201)
 def create(kind: str, entry: Entry, db: Session = Depends(get_db), user: User = Depends(edit)):
     if kind in ("stage", "pipeline"):
         full(user)
+    check_agency_policy(user, kind, entry.data)
     return service.create(db, kind, entry, user)
 
 
@@ -174,6 +206,7 @@ def patch(id: int, entry: Patch, db: Session = Depends(get_db), user: User = Dep
     row = service.get(db, id)
     if row.kind in ("stage", "pipeline") or entry.archived is not None:
         full(user)
+    check_agency_policy(user, row.kind, entry.data, row.payload)
     return service.patch(db, id, entry, user)
 
 
@@ -185,14 +218,14 @@ def history(
     db: Session = Depends(get_db),
     user: User = Depends(view),
 ):
-    return service.history(db, service.get(db, id), limit, offset)
+    return service.history(db, service.get(db, id), limit, offset, user=user)
 
 
 @app.get("/entries/{id}/files")
 def entry_files(
     id: int, offset: int = Query(0, ge=0), db: Session = Depends(get_db), user: User = Depends(view)
 ):
-    return service.files(db, entity=service.get(db, id), offset=offset)
+    return service.files(db, entity=service.get(db, id), offset=offset, user=user)
 
 
 @app.post("/entries/{id}/notes", status_code=201)
