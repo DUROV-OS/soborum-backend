@@ -17,6 +17,8 @@ from app.users.models import User
 from app.warehouse.models import WarehouseMaterial
 
 app = FastAPI(title="Сметы и себестоимость")
+from app.costing.catalog_navigation import router as catalog_navigation_router, catalog_brief
+app.include_router(catalog_navigation_router)
 
 
 def view(user: User = Depends(get_current_user)):
@@ -297,14 +299,7 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
     for item in source["items"].values():
         if item["archived"]:
             continue
-        calc = s.inspect_item(item, source)
-        data = item["content"]
-        result.append({"id": item["id"], "title": item["title"], "kind": item["kind"], "version": item["version"],
-                       "warehouse_product_id":data.get('warehouse_product_id'),"house_model_key":data.get('house_model_key'),
-                       "code": data["code"], "category": data["category"], "model": data["model"], "unit": data["unit"],
-                       "area": str(s.geometry(data)) if s.geometry(data) else None,
-                       "mode": data["mode"], "image": data["image"], "price": calc["price"],
-                       "available": calc["price"] is not None and not calc["missing"]})
+        result.append(catalog_brief(item,source))
     return result
 
 

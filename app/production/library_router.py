@@ -79,6 +79,13 @@ def detail(key:str,db:Session=Depends(get_db),user=Depends(view)):
     return visible_card(get_card(db,key),user)
 
 
+@router.get('/models/{key}/connections')
+def connections(key:str,db:Session=Depends(get_db),user=Depends(view)):
+    get_card(db,key)
+    from app.costing.catalog_navigation import model_connections
+    return {'connections':model_connections(db,user,key)}
+
+
 class QuantityChange(BaseModel):
     model_config=ConfigDict(extra='forbid')
     key:str=Field(max_length=20)
