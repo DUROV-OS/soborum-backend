@@ -1,5 +1,6 @@
 from datetime import date
-from fastapi import FastAPI, Depends, Query
+from fastapi import FastAPI, Depends, Query, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -14,11 +15,42 @@ from app.crm import chat_links
 from app.moysklad.models import SourceRecord
 from app.moysklad.service import attachment_path
 from app.crm.import_access import ReviewInput, review_status, record_review, authorized_attachment, reviewed_response
+from app.crm import agency_logos
 
 app = FastAPI(title="Продажи — CRM Соборума")
 view = require_view(Module.CLIENTS)
 edit = require_edit(Module.CLIENTS)
 full = require_full(Module.CLIENTS)
+
+
+@app.get('/agencies/{agency_id}/logo')
+def agency_logo_status(agency_id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    return agency_logos.status(db, user, agency_id)
+
+
+@app.get('/agencies/{agency_id}/logo/content')
+def agency_logo_content(agency_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(view)):
+    return agency_logos.content(db, user, agency_id, request.headers.get('if-match'))
+
+
+@app.put('/agencies/{agency_id}/logo', openapi_extra={
+    'parameters': [{'in': 'header', 'name': 'If-Match', 'required': True,
+                    'schema': {'type': 'string'}, 'description': 'Quoted current CRM entry version, e.g. "3"'}],
+    'requestBody': {'required': True, 'content': {mime: {'schema': {'type': 'string', 'format': 'binary'}}
+                   for mime in ('image/png', 'image/jpeg', 'image/webp', 'application/octet-stream')}}})
+async def upload_agency_logo(agency_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(edit)):
+    # Reject wrong kinds/permissions before consuming image bytes. The write
+    # rechecks ownership and version under a lock after decoding the bounded body.
+    agency_logos.agency(db, user, agency_id)
+    version, data = await agency_logos.read_upload(request)
+    image = await run_in_threadpool(agency_logos.normalize, data)
+    return await run_in_threadpool(agency_logos.save, db, user, agency_id, version, image)
+
+
+@app.delete('/agencies/{agency_id}/logo')
+def delete_agency_logo(agency_id: int, body: agency_logos.LogoVersion,
+                       db: Session = Depends(get_db), user: User = Depends(full)):
+    return agency_logos.remove(db, user, agency_id, body.version)
 
 
 def check_agency_policy(user, kind, data, previous=None):
