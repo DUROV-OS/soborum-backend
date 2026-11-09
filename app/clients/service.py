@@ -272,9 +272,25 @@ def find_client_by_contact(db: Session, phone: str, email: str) -> Client | None
 
 
 def intake_lead(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool]:
+    client, created, _ = intake_lead_with_receipt(db, payload)
+    return client, created
+
+
+def intake_lead_with_receipt(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool, bool]:
     """Заявка с сайта (0111-a): новый лид или повторное обращение существующего
     клиента. Возвращает (клиент, создан_ли_новый). Недостающий контакт (нет почты
     или телефона) хранится пустой строкой — колонки обязательные, тип не меняли."""
+    if payload.external_event_id:
+        # Serialize retries before creating a client; a DB unique key remains
+        # the final guard. No Python hash(): it differs between workers.
+        if db.get_bind().dialect.name == 'postgresql':
+            import hashlib
+            from sqlalchemy import text
+            lock_key = int.from_bytes(hashlib.sha256(payload.external_event_id.encode()).digest()[:8], 'big', signed=True)
+            db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': lock_key})
+        receipt = db.query(ClientLeadRequest).filter_by(external_event_id=payload.external_event_id).first()
+        if receipt is not None:
+            return db.get(Client, receipt.client_id), False, True
     existing = find_client_by_contact(db, payload.phone, payload.email)
     if existing is not None:
         client, created = existing, False
@@ -292,6 +308,8 @@ def intake_lead(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool]:
         source=payload.source,
         message=payload.message,
         utm=payload.utm or None,
+        external_event_id=payload.external_event_id,
+        tracking=payload.tracking,
         is_repeat=not created,
     )
     db.add(lead_request)
@@ -301,7 +319,7 @@ def intake_lead(db: Session, payload: LeadIntakePayload) -> tuple[Client, bool]:
     from app.crm.service import register_client_request
 
     register_client_request(db, client, lead_request)
-    return client, created
+    return client, created, False
 
 
 def clear_lead_unprocessed(client: Client | None) -> None:

@@ -16,6 +16,7 @@ from app.house_models import models as _house_models_models  # noqa: F401
 from app.installation import models as _installation_models  # noqa: F401
 from app.jobs import models as _jobs_models  # noqa: F401
 from app.marketing import models as _marketing_models  # noqa: F401
+from app.marketing import conversion_models as _conversion_models  # noqa: F401
 from app.notifications import models as _notifications_models  # noqa: F401
 from app.partners import models as _partners_models  # noqa: F401
 from app.production import models as _production_models  # noqa: F401

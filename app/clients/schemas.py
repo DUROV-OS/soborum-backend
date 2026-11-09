@@ -52,6 +52,8 @@ class LeadIntakePayload(BaseModel):
     message: str = Field(default="", max_length=4000)
     source: str = Field(default="Сайт", max_length=255)
     utm: dict[str, str] | None = None
+    external_event_id: str | None = Field(None, max_length=255)
+    tracking: dict | None = None
 
     @model_validator(mode="after")
     def _need_contact(self):

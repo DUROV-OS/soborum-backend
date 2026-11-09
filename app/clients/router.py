@@ -111,12 +111,13 @@ async def intake_lead(request: Request, db: Session = Depends(get_db)):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=[{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()],
         )
-    client, created = client_service.intake_lead(db, payload)
+    client, created, replayed = client_service.intake_lead_with_receipt(db, payload)
     db.commit()
     # Уведомление — после commit (notify коммитит сам); сбой уведомления не должен
     # терять заявку, которая уже сохранена.
     try:
-        client_service.notify_new_lead(db, client, created)
+        if not replayed:
+            client_service.notify_new_lead(db, client, created)
     except Exception:  # noqa: BLE001
         logger.exception("intake: не удалось отправить уведомление о заявке клиента %s", client.id)
     return LeadIntakeOut(status="created" if created else "duplicate", client_id=client.id)
@@ -144,6 +145,7 @@ async def _intake_fields(request: Request) -> dict:
 _INTAKE_SKIP = {
     "token", "name", "phone", "email", "message", "source", "utm", "textarea", "comments", "comment",
     "checkbox", "tranid", "formid", "formname", "forma", "formservices[]", "cookies", "referer",
+    "yclid", "ym_client_id", "metrika_client_id", "page_url", "form_source",
 }
 
 
@@ -170,7 +172,8 @@ def _intake_payload(fields: dict) -> dict:
     if extras:
         data["message"] = "\n".join(filter(None, [data.get("message", ""), *extras]))
     data["message"] = data.get("message", "")[:4000]
-    return {**data, "utm": utm or None}
+    from app.marketing.conversions import tracking_fields, event_key
+    return {**data, "utm": utm or None, "external_event_id": event_key(fields), "tracking": tracking_fields(fields)}
 
 
 @app.post("/margin-preview")
