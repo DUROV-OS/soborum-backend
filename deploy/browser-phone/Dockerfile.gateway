@@ -1,0 +1,4 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends janus janus-tools coturn ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["janus"]

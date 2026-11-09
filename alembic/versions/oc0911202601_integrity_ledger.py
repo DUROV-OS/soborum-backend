@@ -9,7 +9,7 @@ import json
 import sqlalchemy as sa
 
 revision = "oc0911202601"
-down_revision = "ch0911202601"
+down_revision = "bp0911202601"
 branch_labels = depends_on = None
 
 TABLES = (
@@ -46,6 +46,7 @@ BEGIN
         FROM public.integrity_events ORDER BY sequence DESC LIMIT 1;
     last_number := coalesce(last_number, 0) + 1;
     last_hash := coalesce(last_hash, repeat('0', 64));
+    body := jsonb_build_object('occurred_at', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) || body;
     serialised := (body || jsonb_build_object('sequence', last_number, 'version', 1))::text;
     INSERT INTO public.integrity_events(sequence, entity, entity_key, action, payload, previous_hash, event_hash)
     VALUES (last_number, body->>'entity', body->>'entity_key', body->>'action', serialised, last_hash,

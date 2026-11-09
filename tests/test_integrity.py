@@ -24,6 +24,11 @@ def chain():
     return rows
 
 
+def test_integrity_migration_follows_the_current_private_schema():
+    from app.core.readiness import expected_heads
+    assert expected_heads() == frozenset({"oc0911202601"})
+
+
 def test_checks_payload_chain_order_projection_and_checkpoint():
     rows = chain()
     checkpoint = verify_rows(rows)["checkpoint"]

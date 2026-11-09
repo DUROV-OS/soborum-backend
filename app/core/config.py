@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     call_whisper_model: str = "small"
     call_analysis_url: str = "http://127.0.0.1:11434"
     call_analysis_model: str = "qwen3:1.7b"
+    browser_phone_gateway: str = ""
+    browser_phone_gateway_secret: str = ""
+    browser_phone_encryption_key: str = ""
+    browser_phone_domain: str = "vats801755.megapbx.ru"
+    browser_phone_origin: str = ""
+    browser_phone_turn_secret: str = ""
+    browser_phone_turn_host: str = ""
 
     admin_email: str = "admin@soborbum.local"
     # No default. Empty or a well-known value => bootstrap_admin refuses to create an admin.

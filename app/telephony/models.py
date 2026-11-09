@@ -116,3 +116,26 @@ class MAXInboundMessage(Base):
     message_text: Mapped[str] = mapped_column(Text, default='')
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BrowserPhoneAccount(Base):
+    __tablename__ = 'browser_phone_accounts'
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), primary_key=True)
+    login: Mapped[str] = mapped_column(String(100), unique=True)
+    password_cipher: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    active_call: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class BrowserPhoneCall(Base):
+    __tablename__ = 'browser_phone_calls'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    actor_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
+    call_id: Mapped[int] = mapped_column(ForeignKey('phone_calls.id'), unique=True)
+    state: Mapped[str] = mapped_column(String(30), default='prepared')
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recording_started: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

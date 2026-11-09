@@ -53,6 +53,7 @@ from app.sales.router import app as sales_app
 from app.costing.router import app as costing_app
 from app.telephony.router import router as telephony_router
 from app.integrity.router import app as integrity_app
+from app.telephony.browser_router import router as browser_phone_router
 
 app = FastAPI(title="Soborbum")
 
@@ -152,6 +153,7 @@ def mcp_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
 
 app.include_router(files_router)
 app.include_router(telephony_router)
+app.include_router(browser_phone_router)
 
 app.mount("/api/auth", auth_app)
 app.mount("/api/clients", clients_app)

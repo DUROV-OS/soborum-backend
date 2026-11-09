@@ -54,6 +54,7 @@ def new_user(db):
 def test_real_triggers_cover_bulk_changes_deletions_and_atomic_rollback(engine):
     with Session(engine) as db:
         assert protection(db)["state"] == "active"
+        assert json.loads(db.get(IntegrityEvent, 1).payload)["occurred_at"].endswith("Z")
         user = new_user(db)
         bind_actor(db, user)
         uid = user.id
