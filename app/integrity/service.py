@@ -7,7 +7,7 @@ from app.integrity.models import IntegrityEvent
 
 ZERO_HASH = "0" * 64
 EXPECTED_TABLES = frozenset("""
-warehouse_inventory_acts warehouse_control_documents warehouse_control_records
+warehouse_inventory_counts warehouse_inventory_acts warehouse_control_documents warehouse_control_records
 users user_module_access file_assets clients client_notes crm_entities crm_events
 costing_settings costing_materials costing_items costing_estimates costing_revisions
 costing_audit costing_price_versions costing_order_links sales_orders sales_shipments
@@ -53,8 +53,8 @@ def protection(db):
         value = installed.get(("integrity_events", name))
         if not value or value[0] not in {"O", "A"} or value[1:] != (kind, "integrity_reject_mutation"):
             missing.append("integrity_events." + name)
-    for table in ('warehouse_inventory_acts','warehouse_control_documents','warehouse_control_records','sales_events','costing_signoffs','costing_overhead_plans','costing_evidence_documents','costing_revisions','payment_evidence_documents','payment_evidence_versions','payment_evidence_checks','actual_cost_documents','actual_cost_records','actual_cost_versions','actual_cost_decisions','actual_cost_closures'):
-        control='warehouse_control_immutable' if table.startswith('warehouse_control_') or table == 'warehouse_inventory_acts' else 'journey_events_immutable' if table == 'sales_events' else 'actual_cost_immutable' if table.startswith('actual_') else 'payment_evidence_immutable' if table.startswith('payment_') else 'costing_version_immutable'
+    for table in ('warehouse_inventory_counts','warehouse_inventory_acts','warehouse_control_documents','warehouse_control_records','sales_events','costing_signoffs','costing_overhead_plans','costing_evidence_documents','costing_revisions','payment_evidence_documents','payment_evidence_versions','payment_evidence_checks','actual_cost_documents','actual_cost_records','actual_cost_versions','actual_cost_decisions','actual_cost_closures'):
+        control='warehouse_control_immutable' if table.startswith('warehouse_control_') or table.startswith('warehouse_inventory_') else 'journey_events_immutable' if table == 'sales_events' else 'actual_cost_immutable' if table.startswith('actual_') else 'payment_evidence_immutable' if table.startswith('payment_') else 'costing_version_immutable'
         value=installed.get((table,control))
         if not value or value[0] not in {'O','A'} or value[1:] != (27,'integrity_reject_mutation'):
             missing.append(table+'.'+control)

@@ -49,9 +49,10 @@ def movements_match(db, act):
 def act_out(db, act, row):
     from app.users.models import User
     actor = db.get(User, act.actor_id)
-    intact = c.proof_intact(db, act.content['proof'])
+    from app.warehouse.electronic_inventory import observations_intact
+    intact = c.proof_intact(db, act.content['proof']) and observations_intact(db,act.content)
     return {'id': act.id, 'stage': act.stage, 'actor_id': act.actor_id,
-            'actor_name': actor.full_name if actor else 'Сотрудник №' + str(act.actor_id), 'created_at': act.created_at, 'proof': act.content['proof'], 'intact': intact,
+            'actor_name': actor.full_name if actor else 'Сотрудник №' + str(act.actor_id), 'created_at': (act.created_at.replace(tzinfo=timezone.utc) if act.created_at.tzinfo is None else act.created_at), 'mode':act.content.get('mode','scan'), 'proof': act.content['proof'], 'intact': intact,
             'current': intact and (act.content.get('posted_hash') == fingerprint(posted_facts(row)) and movements_match(db,act) if act.stage == 'posted' else act.content['source_hash'] == fingerprint(snapshot(row))),
             'snapshot': act.content['snapshot'], 'operation_ids': act.content.get('operation_ids', [])}
 
@@ -78,7 +79,7 @@ def attach(db, row, body, user):
 def require_act(db, row, body):
     from app.warehouse.documents import fail
     if not body.act_id or not body.confirmed:
-        fail('Приложите акт инвентаризации и подтвердите сверку всех количеств', 422)
+        fail('Подтвердите электронный акт или приложите акт пересчёта', 422)
     if db.query(Act).filter_by(request_id=str(body.request_id)).first():
         fail('Этот ключ уже использован для подтверждения акта')
     act = db.get(Act, body.act_id)
@@ -93,7 +94,8 @@ def require_act(db, row, body):
 def posted(db, row, body, user, prepared):
     db.add(Act(document_id=row.id, stage='posted', request_id=str(body.request_id), actor_id=user.id,
         file_id=prepared.file_id, content={'request': body.model_dump(mode='json'), 'prepared_id': prepared.id,
-            'prepared_by_id': prepared.actor_id, 'proof': prepared.content['proof'],
+            'prepared_by_id': prepared.actor_id, 'mode':prepared.content.get('mode','scan'),
+            'observations':prepared.content.get('observations',[]), 'proof': prepared.content['proof'],
             'source_hash': prepared.content['source_hash'], 'snapshot': prepared.content['snapshot'],
             'posted_lines': row.lines, 'posted_hash': fingerprint(posted_facts(row)), 'operation_ids': row.operation_ids}))
     db.flush()

@@ -660,3 +660,6 @@ from app.warehouse.inventory_evidence import router as inventory_evidence_router
 from app.warehouse.reconciliation import router as reconciliation_router
 app.include_router(inventory_evidence_router)
 app.include_router(reconciliation_router)
+
+from app.warehouse.electronic_inventory import router as electronic_inventory_router
+app.include_router(electronic_inventory_router)

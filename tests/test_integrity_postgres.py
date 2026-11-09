@@ -34,10 +34,10 @@ def engine():
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE integrity_events"))
         conn.execute(text("ALTER TABLE file_assets DROP COLUMN sha256, DROP COLUMN size_bytes"))
-        for table in ('warehouse_inventory_acts','warehouse_control_records','warehouse_control_documents','actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
+        for table in ('warehouse_inventory_counts','warehouse_inventory_acts','warehouse_control_records','warehouse_control_documents','actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
             conn.execute(text('DROP TABLE '+table))
         covered = set()
-        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py','wc0911202601_warehouse_control.py','wr1011202601_inventory_evidence.py'):
+        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py','wc0911202601_warehouse_control.py','wr1011202601_inventory_evidence.py','ei1011202601_electronic_inventory.py'):
             filename = Path(__file__).resolve().parents[1] / 'alembic/versions' / name
             spec = spec_from_file_location('migration_'+name, filename)
             migration = module_from_spec(spec); spec.loader.exec_module(migration)
@@ -434,3 +434,33 @@ def test_concurrent_legacy_reconciliation_cannot_double_attribute_blocks(engine,
         assert (db.get(BlockMaterial,bid).quantity_provided,db.get(BlockMaterial,b2id).quantity_provided)==provided
         assert db.query(WarehouseControlRecord).filter_by(production_id=pid,kind='reconcile').count()==1
         assert verify(db)['state']=='consistent'
+
+
+def test_electronic_count_concurrency_and_immutable_observations(engine):
+    from app.warehouse import documents as d,electronic_inventory as e
+    from app.warehouse.models import WarehouseMaterial,Warehouse,MaterialCategory,StockDocument
+    from app.warehouse.control_models import WarehouseInventoryCount
+    from fastapi import HTTPException
+    with Session(engine) as db:
+        actor=new_user(db);uid=actor.id
+        material=WarehouseMaterial(title='Mobile count',code='MOBILE-'+str(uuid4()),warehouse=Warehouse.TECHNOLOGY,category=MaterialCategory.NONE,unit='шт',quantity_in_stock=10,is_fractional=False)
+        db.add(material);db.commit();mid=material.id
+        doc=d.create(d.Create(request_id=uuid4(),kind='inventory',warehouse=Warehouse.TECHNOLOGY,note='Synthetic electronic count',lines=[{'material_id':mid}]),db,actor)
+    barrier=Barrier(2)
+    def worker(qty):
+        with Session(engine) as db:
+            actor=db.get(User,uid);bind_actor(db,actor);barrier.wait(timeout=10)
+            try:e.record(doc['id'],e.Observation(request_id=uuid4(),version=doc['version'],material_id=mid,quantity=qty),db,actor);return 200
+            except HTTPException as exc:db.rollback();return exc.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:assert sorted(pool.map(worker,[8,9]))==[200,409]
+    with Session(engine) as db:
+        record=db.query(WarehouseInventoryCount).filter_by(document_id=doc['id']).one()
+        assert db.get(WarehouseMaterial,mid).quantity_in_stock==10
+        for sql in ('UPDATE warehouse_inventory_counts SET content=content WHERE id=:id','DELETE FROM warehouse_inventory_counts WHERE id=:id','TRUNCATE warehouse_inventory_counts CASCADE'):
+            with pytest.raises(DBAPIError):db.execute(text(sql),{'id':record.id})
+            db.rollback()
+        db.execute(text('ALTER TABLE warehouse_inventory_counts DISABLE TRIGGER warehouse_control_immutable'))
+        assert protection(db)['state']=='incomplete';db.rollback()
+        act=e.prepare(db,db.get(StockDocument,doc['id']),e.Confirm(request_id=uuid4(),version=2,confirmed=True),db.get(User,uid));db.commit()
+        assert act.content['mode']=='electronic' and e.observations_intact(db,act.content)
+        assert protection(db)['state']=='active' and verify(db)['state']=='consistent'

@@ -180,6 +180,9 @@ def snapshot(db, row, lines, *, preserve=True):
                     else watermarks.get(m.id, 0)
                 ),
                 "quantity": str(line.quantity) if line.quantity is not None else None,
+                **({k: old[k] for k in ("count_id","counted_by","counted_at","count_comment","count_proof") if k in old}
+                   if old and old.get("count_id") and line.quantity is not None and dec(old.get("quantity")) == line.quantity
+                   and old["unit"] == m.unit and old["is_fractional"] == m.is_fractional else {}),
             }
         )
     return result
