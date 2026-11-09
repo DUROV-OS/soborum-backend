@@ -252,9 +252,10 @@ def overview(db,project_id=None,with_closures=True):
     used_units=defaultdict(D);plan_units=defaultdict(dict)
     for p in projects:
         rev=revisions.get(p.id)
-        if rev and rev.request_data.get('overhead_plan_id'):
-            used_units[rev.request_data['overhead_plan_id']]+=D(str(rev.request_data.get('quantity',1)))
-            plan_units[rev.request_data['overhead_plan_id']][p.id]=D(str(rev.request_data.get('quantity',1)))
+        inp = rev.snapshot.get('input', rev.request_data) if rev else {}
+        if inp.get('overhead_plan_id'):
+            used_units[inp['overhead_plan_id']]+=D(str(inp.get('quantity',1)))
+            plan_units[inp['overhead_plan_id']][p.id]=D(str(inp.get('quantity',1)))
     results=[]
     for project in projects:
         if project_id is not None and project.id!=project_id: continue
@@ -266,7 +267,7 @@ def overview(db,project_id=None,with_closures=True):
                     if a['project_id']==project.id: sums[a['category']]+=D(a['amount'])
             elif row['review']['state']!='void': issues.append('Затрата №'+str(row['id'])+' не признана: '+'; '.join(row['review']['issues']))
         revision=revisions.get(project.id);plan=None;overhead=None;allocation=None;monthly_rows=[]
-        if revision: plan=plans.get(revision.request_data.get('overhead_plan_id'))
+        if revision: plan=plans.get(revision.snapshot.get('input', revision.request_data).get('overhead_plan_id'))
         if not plan: issues.append('Не выбран документально утверждённый месячный план постоянных затрат')
         else:
             approved=g.plan_state(db,plan)
@@ -281,7 +282,7 @@ def overview(db,project_id=None,with_closures=True):
             if used_units[plan.id]>D(plan.content['planned_units']): issues.append('Число изделий в связанных проектах превышает месячный план; пересогласуйте план')
             for key in ('factory','staff'):
                 if monthly[key]<=0: issues.append('Нет признанных фактических затрат по статье «'+CATEGORIES[key]+'»')
-            units=D(str(revision.request_data.get('quantity',1)))
+            units=D(str(revision.snapshot.get('input', revision.request_data).get('quantity',1)))
             if approved['approved'] and used_units[plan.id]<=D(plan.content['planned_units']):
                 shares=allocate_month(monthly,plan_units[plan.id],plan.content['planned_units'])
                 overhead=sum(shares[project.id].values(),D(0))

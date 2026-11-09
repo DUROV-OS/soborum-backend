@@ -347,7 +347,12 @@ def review(db, row, user=None):
                       'unit': item.get('unit'), 'quantity': str(item['quantity']), 'unit_price': str(item['unit_price']),
                       'delivered_unit_price': str(delivered) if delivered is not None else None, 'previous': prior,
                       'targets': targets, 'issues': issues, 'offers': market, 'market_review_due': not bool(market)})
-    basis = {'order': order_basis(row), 'archived': row.archived, 'trust_id': trust_record.id if trust_record else 0,
+    from app.purchasing.budget import review as budget_review
+    budgets = budget_review(db, row, allocations)
+    for budget in budgets:
+        for i, issue in enumerate(budget['issues']):
+            problem(f"budget_{budget['order_id']}_{budget['line_index']}_{i}", issue)
+    basis = {'budgets': budgets, 'order': order_basis(row), 'archived': row.archived, 'trust_id': trust_record.id if trust_record else 0,
              'price_id': price_record.id if price_record else 0, 'reasons': reasons,
              'lines': [{k: l[k] for k in ('index', 'previous', 'targets', 'issues')} for l in lines]}
     token = digest(basis)
@@ -356,7 +361,7 @@ def review(db, row, user=None):
     people = {stage: governance.responsible(db, stage) for stage in ('accounting', 'director')}
     return {'order_id': row.id, 'supplier_id': row.supplier_id, 'supplier_name': supplier_row.name, 'currency': row.currency,
             'version': row.version, 'fingerprint': token, 'decision': 'auto_approved' if valid_approval else 'eligible' if not reasons else 'manual_review',
-            'auto_approval_enabled': True, 'auto_payment_enabled': False, 'reasons': reasons, 'lines': lines,
+            'auto_approval_enabled': True, 'auto_payment_enabled': False, 'reasons': reasons, 'lines': lines, 'budgets': budgets,
             'approval_id': approved.id if valid_approval else None, 'previous_approval_id': approved.id if approved else None,
             'trust': {'id': trust_record.id if trust_record else 0, 'verified': trusted},
             'price': {'id': price_record.id if price_record else 0, 'verified': verified,
