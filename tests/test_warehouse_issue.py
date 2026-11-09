@@ -1,3 +1,4 @@
+from tests.warehouse_control_helpers import legacy_issue_client
 """Отпуск со склада (0088-b):
 
 - ручной отпуск требует «куда» и «кто получил», для дома подставляет его
@@ -63,7 +64,7 @@ def _reload(db, obj):
 def test_manual_issue_to_workshop(api, make_user, db):
     beam = _material(db, "Брус", 10)
     db.commit()
-    keeper = api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT))
+    keeper = legacy_issue_client(api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT)), db)
 
     resp = keeper.post(
         "/api/warehouse/operations/issue",
@@ -95,13 +96,13 @@ def test_manual_issue_required_fields_and_access(api, make_user, db):
     db.commit()
     line = [{"warehouse_material_id": beam.id, "quantity": 1}]
 
-    viewer = api(make_user(Module.WAREHOUSE, level=AccessLevel.VIEW))
+    viewer = legacy_issue_client(api(make_user(Module.WAREHOUSE, level=AccessLevel.VIEW)), db)
     assert viewer.post(
         "/api/warehouse/operations/issue",
         json={"destination_kind": "object", "destination": "Объект", "received_by": "Петров", "lines": line},
     ).status_code == 403
 
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
     no_recipient = admin.post(
         "/api/warehouse/operations/issue",
         json={"destination_kind": "object", "destination": "Объект", "received_by": " ", "lines": line},
@@ -126,7 +127,7 @@ def test_manual_issue_to_house_requires_techcard(api, make_user, db):
     house = _house(db, "Дом 1")
     bm = _norm(db, _block(db, house, "Каркас", 1), beam, required=5)
     db.commit()
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     resp = admin.post(
         "/api/warehouse/operations/issue",
@@ -163,7 +164,7 @@ def test_techcard_houses_and_preview(api, make_user, db):
     db.add(Task(title="Сопоставить", link_type=TaskLinkType.BLOCK_MATERIAL_MATCH,
                 block_id=house.blocks[0].id, status=TaskStatus.READY))
     db.commit()
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     houses = admin.get("/api/warehouse/techcard-issue/houses").json()
     assert [(h["production_id"], h["positions_to_issue"]) for h in houses] == [(house.id, 2)]
@@ -182,7 +183,7 @@ def test_techcard_houses_and_preview(api, make_user, db):
 
 def test_techcard_issue_shortage_blocks_everything(api, make_user, db):
     house, beam, screws, *_ = _techcard_house(db)
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     resp = admin.post(f"/api/warehouse/techcard-issue/{house.id}", json={"received_by": "Петров"})
     assert resp.status_code == 400
@@ -193,7 +194,7 @@ def test_techcard_issue_shortage_blocks_everything(api, make_user, db):
 
 def test_techcard_issue_with_reduced_lines_moves_norms(api, make_user, db):
     house, beam, screws, beam_frame, beam_roof, screws_roof = _techcard_house(db)
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     too_much = admin.post(
         f"/api/warehouse/techcard-issue/{house.id}",
@@ -230,7 +231,7 @@ def test_techcard_issue_with_reduced_lines_moves_norms(api, make_user, db):
 
 def test_techcard_issue_requires_recipient(api, make_user, db):
     house, beam, *_ = _techcard_house(db)
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
     resp = admin.post(
         f"/api/warehouse/techcard-issue/{house.id}",
         json={"received_by": "", "lines": [{"warehouse_material_id": beam.id, "quantity": 1}]},
@@ -241,7 +242,7 @@ def test_techcard_issue_requires_recipient(api, make_user, db):
 
 def test_partial_issues_allow_any_order_and_never_exceed_remaining_norm(api, make_user, db):
     house, beam, screws, *_ = _techcard_house(db)
-    keeper = api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT))
+    keeper = legacy_issue_client(api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT)), db)
     url = f'/api/warehouse/techcard-issue/{house.id}'
     def issue(material, qty):
         return keeper.post(url, json={'received_by': 'Цех', 'lines': [{'warehouse_material_id': material.id, 'quantity': qty}]})
@@ -266,7 +267,7 @@ def test_storekeeper_without_task_access_can_partially_issue_a_production_reques
     created = api(producer).post(f'/api/production/block-materials/{bm.id}/request', json={'quantity': 6})
     assert created.status_code == 201, created.text
     request_id = created.json()['id']
-    client = api(keeper)
+    client = legacy_issue_client(api(keeper), db)
     queue = client.get('/api/warehouse/requests')
     assert queue.status_code == 200
     assert [(item['id'], item['quantity'], item['in_stock']) for item in queue.json()] == [(request_id, 6, 10)]

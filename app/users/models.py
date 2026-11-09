@@ -26,6 +26,8 @@ class User(Base):
 
     job_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
     workspace_preferences: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    work_phone: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    telephony_extension: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     module_access: Mapped[list["UserModuleAccess"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

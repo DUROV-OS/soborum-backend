@@ -11,7 +11,7 @@ from app.tasks.models import Task, TaskStatus
 
 def _card(db, admin):
     task = outbox.propose_message(
-        db, chat_id=27580426, text="Тест агента", recipient="Арсений Щекин", recipient_ids=[admin.id]
+        db, chat_id=123456, text="Тест агента", recipient="Тестовый получатель", recipient_ids=[admin.id]
     )
     db.commit()
     return task
@@ -35,7 +35,7 @@ def test_approve_sends_once_and_closes(db, make_user):
         return {"chatId": chat_id}
 
     outbox.approve_and_send(db, task.id, admin, sender)
-    assert sent == [(27580426, "Тест агента")]
+    assert sent == [(123456, "Тест агента")]
     assert db.get(Task, task.id).status == TaskStatus.DONE
     with pytest.raises(HTTPException) as exc:
         outbox.approve_and_send(db, task.id, admin, sender)
@@ -93,7 +93,8 @@ def test_max_digest_is_proposed_not_sent(db, make_user, monkeypatch):
 
     admin = make_user(admin=True)
     worker = make_user()
-    monkeypatch.setattr(settings, "agent_max_chat_id", 27580426)
+    monkeypatch.setattr(settings, "agent_max_chat_id", 123456)
+    monkeypatch.setattr(settings, "agent_max_recipient", "Тестовый получатель")
     assert max_digest(db) == []  # сообщать не о чем
 
     from app.agents.autonomy.workspace import utcnow
@@ -108,7 +109,7 @@ def test_max_digest_is_proposed_not_sent(db, make_user, monkeypatch):
     cards = [t for t in db.query(Task).filter(Task.link_type == TaskLinkType.AGENT_PROPOSAL)
              if (t.link_meta or {}).get("scenario") == "max_send"]
     assert len(cards) == 1 and cards[0].status == TaskStatus.IN_REVIEW
-    assert cards[0].link_meta["max"]["chat_id"] == 27580426
+    assert cards[0].link_meta["max"]["chat_id"] == 123456
     assert admin in cards[0].assignees
     assert sent == []
     assert any(a["scenario"] == "max_digest" and a["level"] == "B" for a in run.actions)

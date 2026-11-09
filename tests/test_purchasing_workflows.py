@@ -238,10 +238,13 @@ def test_automatic_review_is_read_only_and_never_infers_trust_or_price(db, api, 
     assert result.status_code == 200
     report = result.json()
     assert report['decision'] == 'manual_review'
-    assert not report['auto_approval_enabled'] and not report['auto_payment_enabled']
+    assert report['auto_approval_enabled'] and not report['auto_payment_enabled']
     codes = {item['code'] for item in report['reasons']}
-    assert {'supplier_verification_missing', 'sale_link_missing', 'techcard_link_missing',
-            'price_evidence_missing', 'payment_controls_missing'} <= codes
+    assert {'supplier_not_verified', 'price_not_verified', 'line_0'} <= codes
+    assert report['lines'][0]['issues'] and not report['lines'][0]['targets']
+    assert report['payment_blockers']
+    from app.purchasing.control_models import PurchaseControlRecord
+    assert db.query(PurchaseControlRecord).count() == 0
     assert client.get(f"/api/purchasing/orders/{order['id']}").json() == before
     assert api(make_user()).get(f"/api/purchasing/orders/{order['id']}/automatic-review").status_code == 403
     assert api(owner).get('/api/purchasing/orders/999999/automatic-review').status_code == 404

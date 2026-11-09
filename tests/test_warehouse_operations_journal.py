@@ -1,3 +1,4 @@
+from tests.warehouse_control_helpers import legacy_issue_client
 """Документы операций склада и журнал (0088-a):
 
 - оприходование и списание проводятся документом из нескольких строк,
@@ -42,7 +43,7 @@ def test_receipt_document_with_two_lines_and_balance_after(api, make_user, db):
     beam = _material(db, "Брус", stock=10)
     board = _material(db, "Доска", stock=4)
     db.commit()
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     resp = admin.post(
         "/api/warehouse/operations/receipt",
@@ -71,7 +72,7 @@ def test_write_off_shortage_rejects_whole_document(api, make_user, db):
     beam = _material(db, "Брус", stock=10)
     board = _material(db, "Доска", stock=1)
     db.commit()
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     resp = admin.post(
         "/api/warehouse/operations/write-off",
@@ -95,10 +96,10 @@ def test_write_off_requires_reason_and_full_level(api, make_user, db):
     db.commit()
     line = [{"warehouse_material_id": beam.id, "quantity": 1}]
 
-    editor = api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT))
+    editor = legacy_issue_client(api(make_user(Module.WAREHOUSE, level=AccessLevel.EDIT)), db)
     assert editor.post("/api/warehouse/operations/write-off", json={"note": "брак", "lines": line}).status_code == 403
 
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
     resp = admin.post("/api/warehouse/operations/write-off", json={"note": "  ", "lines": line})
     assert resp.status_code == 400
     assert "причину" in resp.json()["detail"]
@@ -109,7 +110,7 @@ def test_operation_validations(api, make_user, db):
     beam = _material(db, "Брус", stock=10)
     sand = _material(db, "Песок", stock=10, is_fractional=True)
     db.commit()
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     def post(lines, **extra):
         return admin.post("/api/warehouse/operations/receipt", json={"note": "пересчёт", "lines": lines, **extra})
@@ -133,7 +134,7 @@ def test_operation_validations(api, make_user, db):
 def test_occurred_at_in_past_is_kept_in_journal(api, make_user, db):
     beam = _material(db)
     db.commit()
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
     yesterday = datetime.now(timezone.utc) - timedelta(days=1)
 
     resp = admin.post(
@@ -158,7 +159,7 @@ def test_occurred_at_in_past_is_kept_in_journal(api, make_user, db):
 def test_card_write_off_creates_document(api, make_user, db):
     beam = _material(db)
     db.commit()
-    admin = api(make_user(admin=True))
+    admin = legacy_issue_client(api(make_user(admin=True)), db)
 
     resp = admin.post(f"/api/warehouse/materials/{beam.id}/write-off", json={"quantity": 3, "reason": "брак"})
     assert resp.status_code == 200
@@ -196,7 +197,7 @@ def test_journal_direction_house_filter_and_excludes_non_stock_rows(api, make_us
     beam = _material(db, "Брус", stock=10)
     db.commit()
     admin_user = make_user(admin=True)
-    admin = api(admin_user)
+    admin = legacy_issue_client(api(admin_user), db)
 
     production, request = _production_with_request(db, admin_user, beam, 4)
     assert admin.post(f"/api/warehouse/requests/{request.id}/approve").status_code == 200

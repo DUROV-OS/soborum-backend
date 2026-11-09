@@ -177,11 +177,11 @@ def _fake_llm(monkeypatch, status=None, error=None, no_tool=False):
         if no_tool:
             return SimpleNamespace(content=[SimpleNamespace(type="text", text="…")])
         return SimpleNamespace(content=[SimpleNamespace(
-            type="tool_use", input={"summary": "Всё хорошо.", "status": status},
+            type="tool_use", input={"summary": "Всё хорошо.", "status": status, "citations":["total_productions"]},
         )])
 
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
-    monkeypatch.setattr(llm, "llm_client", lambda: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    monkeypatch.setattr(llm, "llm_client", lambda **kwargs: SimpleNamespace(messages=SimpleNamespace(create=create)))
     return calls
 
 

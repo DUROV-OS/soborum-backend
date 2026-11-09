@@ -208,6 +208,20 @@ def manufacture(db, recipe_id, parameters, user):
         recipe = db.query(Recipe).filter_by(id=recipe_id).populate_existing().with_for_update().one_or_none()
         if not recipe:
             raise HTTPException(404, "Техкарта не найдена")
+        if recipe.source_id and recipe.source_id.startswith('costing-order:'):
+            from app.costing.integration import link_out
+            from app.costing.models import CostingOrderLink
+            from app.sales.service import get_order
+            link = db.query(CostingOrderLink).filter_by(recipe_id=recipe.id).first()
+            if not link:
+                raise HTTPException(409, "Не найдена связь норматива с заказом")
+            order = get_order(db, link.order_id, True)
+            if order.archived or order.status != 'confirmed' or not link_out(db, link, order)['fresh']:
+                raise HTTPException(409, "Для выпуска нужен действующий подтверждённый заказ с закреплённой сметой")
+            completed = sum((Decimal(r.parameters['multiplier']) for r in db.query(ManufactureRun)
+                .filter(ManufactureRun.recipe_id == recipe.id, ManufactureRun.id != run.id) if r.result), Decimal(0))
+            if completed + parameters.multiplier > 1:
+                raise HTTPException(409, "Выпуск превышает утверждённое количество строки заказа")
         inputs, outputs = resolve_lines(db, recipe, parameters.warehouse, parameters.multiplier)
         ids = sorted({m.id for m, q in inputs + outputs})
         materials = {
@@ -332,6 +346,8 @@ def update_recipe(
         raise HTTPException(404, "Техкарта не найдена")
     if body.version != row.version:
         raise HTTPException(409, "Техкарта уже изменена. Обновите карточку.")
+    if row.source_id and row.source_id.startswith('costing-order:') and body.content.model_dump(mode='json') != row.content:
+        raise HTTPException(409,"Это закреплённый норматив заказа. Измените смету и согласуйте новую версию заказа.")
     if body.archived != row.archived:
         require_full(Module.PRODUCTION)(user)
     if not body.title.strip():

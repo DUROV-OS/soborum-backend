@@ -690,7 +690,8 @@ def download_meeting_audio(meeting_id: int, db: Session = Depends(get_db), user:
     asset = ai_meetings.audio_asset(db, meeting)
     if asset is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Запись совещания не найдена")
-    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
+    from app.common.files import verified_file_response
+    return verified_file_response(asset)
 
 
 @app.get("/mcp/authorize")

@@ -4,6 +4,8 @@ autogenerate run. Import this module (not its contents) for the side effect.
 """
 
 from app.accounting import models as _accounting_models  # noqa: F401
+from app.accounting import evidence_models as _payment_evidence_models  # noqa: F401
+from app.accounting import actual_models as _actual_cost_models  # noqa: F401
 from app.agents import models as _agents_models  # noqa: F401
 from app.agents.autonomy import models as _agents_autonomy_models  # noqa: F401
 from app.ai import models as _ai_models  # noqa: F401
@@ -16,10 +18,12 @@ from app.house_models import models as _house_models_models  # noqa: F401
 from app.installation import models as _installation_models  # noqa: F401
 from app.jobs import models as _jobs_models  # noqa: F401
 from app.marketing import models as _marketing_models  # noqa: F401
+from app.marketing import conversion_models as _conversion_models  # noqa: F401
 from app.notifications import models as _notifications_models  # noqa: F401
 from app.partners import models as _partners_models  # noqa: F401
 from app.production import models as _production_models  # noqa: F401
 from app.production import stage_templates as _production_stage_templates  # noqa: F401
+from app.production import library_models as _production_library_models  # noqa: F401
 from app.tasks import models as _tasks_models  # noqa: F401
 from app.users import models as _users_models  # noqa: F401
 from app.warehouse import models as _warehouse_models  # noqa: F401
@@ -27,5 +31,14 @@ from app.warehouse import reservation_models as _reservation_models  # noqa: F40
 from app.moysklad import models as _moysklad_models  # noqa: F401
 from app.moysklad import recipes as _local_recipes_models  # noqa: F401
 from app.crm import models as _crm_models  # noqa: F401
+from app.crm import chat_models as _crm_chat_models  # noqa: F401
 from app.purchasing import models as _purchasing_models  # noqa: F401
 from app.sales import models as _sales_models  # noqa: F401
+from app.costing import models as _costing_models  # noqa: F401
+from app.telephony import models as _telephony_models  # noqa: F401
+from app.integrity import models as _integrity_models  # noqa: F401
+from app.costing import governance_models as _costing_governance_models  # noqa: F401
+
+from app.warehouse import control_models as _warehouse_control_models
+
+from app.purchasing import control_models as _purchase_control_models

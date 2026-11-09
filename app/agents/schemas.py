@@ -84,6 +84,12 @@ class ShiftReviewOut(BaseModel):
     kind: str
     # None — запись смены до 0084-e: статуса не было, фронт показывает «Не проверено».
     status: ReviewStatusName | None = None
+    method: Literal['rules','unavailable','legacy'] = 'legacy'
+    human_approved: Literal[False] = False
+    input_hash: str | None = None
+    input_text: str | None = None
+    rules_version: str | None = None
+    matched_rules: list[str] = Field(default_factory=list)
 
 
 class ShiftItemOut(BaseModel):
@@ -141,6 +147,8 @@ class ShiftOut(BaseModel):
     autorun: bool = True
     interval_seconds: int = 3600
     next_tick_at: datetime | None = None
+    charts_as_of: datetime | None = None
+    charts_source_hash: str | None = None
 
 
 class ApprovalDecisionRequest(BaseModel):

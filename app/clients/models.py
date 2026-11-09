@@ -412,6 +412,7 @@ class ClientLeadRequest(Base):
     (`is_repeat`). Автора-сотрудника нет, поэтому это не `ClientNote`."""
 
     __tablename__ = "client_lead_requests"
+    __table_args__ = (UniqueConstraint('external_event_id', name='uq_lead_external_event'),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(
@@ -420,6 +421,8 @@ class ClientLeadRequest(Base):
     source: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     utm: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    external_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tracking: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_repeat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

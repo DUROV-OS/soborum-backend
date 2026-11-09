@@ -61,6 +61,11 @@ require_accounting_view = require_view(AccessModule.ACCOUNTING)
 require_accounting_edit = require_edit(AccessModule.ACCOUNTING)
 require_accounting_full = require_full(AccessModule.ACCOUNTING)
 
+from app.accounting.evidence_router import router as evidence_router
+app.include_router(evidence_router)
+from app.accounting.actual_router import router as actual_cost_router
+app.include_router(actual_cost_router)
+
 
 @app.get("/money-movements/enums")
 def money_movement_enums(_: User = Depends(require_accounting_view)):

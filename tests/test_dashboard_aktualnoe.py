@@ -1,95 +1,61 @@
-"""Блок «Актуальное» на «Сегодня» (app.dashboard.aktualnoe):
-
-- без ANTHROPIC_API_KEY отдаётся деградированная подборка (топ по свежести,
-  детерминированные проценты) и не кешируется;
-- с «ИИ» результат кешируется и не пересчитывается чаще раза в 12 часов,
-  а `reload=True` пересчитывает сразу;
-- сотруднику без доступа к разделу «Цикл клиента» блок пустой.
-"""
-
-from datetime import timedelta
-
-import pytest
-
+"""Activity must remain traceable and must never invent a completion percentage."""
+from datetime import datetime, timedelta, timezone
 from app.ai import cache as ai_cache
-from app.ai.models import AiCacheEntry
 from app.clients import service as client_service
-from app.clients.models import ClientNote
+from app.clients.models import ClientNote, ClientStage
 from app.clients.schemas import ClientCreate
 from app.common.module_access import Module
-from app.dashboard import aktualnoe as mod
+from app.cycle.models import CycleStatus
 from app.dashboard.aktualnoe import CACHE_KEY, generate_aktualnoe
 
 
-def _client_with_activity(db, name, notes):
-    client = client_service.create_client(
-        db, ClientCreate(full_name=name, phone="+70000000000", email=f"{name}@example.com")
-    )
-    for text in notes:
-        db.add(ClientNote(client_id=client.id, author_id=1, text=text))
-    db.commit()
-    return client
+def seed(db, name='Клиент'):
+    client = client_service.create_client(db, ClientCreate(full_name=name, phone='+70000000000', email='test@example.com'))
+    note = ClientNote(client_id=client.id, author_id=1, text='Заметка', created_at=datetime.now(timezone.utc)-timedelta(hours=1))
+    db.add(note); db.commit()
+    return client, note
 
 
-@pytest.fixture
-def user_cycle(make_user):
-    return make_user(Module.CYCLE)
+def test_activity_has_real_record_references_and_no_percentage(db, make_user):
+    user = make_user(Module.CYCLE)
+    client, note = seed(db)
+    result = generate_aktualnoe(db,user)
+    item = result.items[0]
+    assert result.source == 'database' and result.progress_basis == 'not_calculated'
+    # Creating a client also creates a stage-task event; the explicit note adds one.
+    assert item.percent is None and item.source_hash and item.recent_events==2
+    source = next(s for s in item.sources if s.entity=='client_notes')
+    assert source.record_id==note.id and source.field=='created_at'
+    assert item.cycle_id==client.cycle_id
+    assert ai_cache.get(db,CACHE_KEY) is None
 
 
-def test_degrades_and_is_not_cached_without_ai(db, user_cycle):
-    _client_with_activity(db, "Альфа", ["звонок", "смета"])
-    _client_with_activity(db, "Бета", ["письмо"])
-
-    result = generate_aktualnoe(db, user_cycle)
-
-    assert result.degraded is True
-    assert result.ai_configured is False
-    assert 1 <= len(result.items) <= 3
-    for item in result.items:
-        assert 0 <= item.percent <= 100
-        assert item.stage
-    # деградированный ответ не кешируется
-    assert ai_cache.get(db, CACHE_KEY, ttl=timedelta(hours=12)) is None
+def test_legacy_ai_cache_is_ignored_and_changes_are_visible_immediately(db, make_user):
+    user=make_user(Module.CYCLE)
+    client,note=seed(db)
+    first=generate_aktualnoe(db,user)
+    ai_cache.set(db,CACHE_KEY,{'items':[{'percent':99,'stage':'Всё готово'}]},datetime.now(timezone.utc))
+    client.stage=ClientStage.DISCUSSION;db.commit()
+    second=generate_aktualnoe(db,user)
+    assert second.items[0].stage=='Обсуждение' and second.items[0].percent is None
+    assert second.items[0].source_hash!=first.items[0].source_hash
+    db.delete(note);db.commit()
+    third=generate_aktualnoe(db,user)
+    assert not any(s.entity=='client_notes' for s in third.items[0].sources)
 
 
-def test_cache_not_recomputed_within_12h(db, user_cycle, monkeypatch):
-    _client_with_activity(db, "Гамма", ["монтаж согласован"])
-
-    calls = {"n": 0}
-
-    def fake_rate(activities):
-        calls["n"] += 1
-        return {a.cycle_id: {"percent": 42, "stage": "тест-стадия", "phrase": "идут работы"} for a in activities}
-
-    monkeypatch.setattr(mod, "ai_rate_cycles", fake_rate)
-
-    first = generate_aktualnoe(db, user_cycle)
-    assert first.degraded is False
-    assert calls["n"] == 1
-    assert first.items[0].percent == 42
-
-    # второй запрос в пределах 12 часов — из кеша, ИИ не дёргаем
-    second = generate_aktualnoe(db, user_cycle)
-    assert calls["n"] == 1
-    assert second.generated_at == first.generated_at
-
-    # reload=True — пересчёт немедленно
-    third = generate_aktualnoe(db, user_cycle, force=True)
-    assert calls["n"] == 2
-    assert third.generated_at >= first.generated_at
-
-    # запись в кеше «состарилась» больше чем на 12 часов — снова пересчёт
-    entry = db.get(AiCacheEntry, CACHE_KEY)
-    entry.generated_at = entry.generated_at - timedelta(hours=13)
-    db.commit()
-    generate_aktualnoe(db, user_cycle)
-    assert calls["n"] == 3
+def test_completed_cycle_and_future_activity_are_not_recent_work(db, make_user):
+    user=make_user(Module.CYCLE)
+    client,note=seed(db)
+    before=generate_aktualnoe(db,user).items[0].recent_events
+    note.created_at=datetime.now(timezone.utc)+timedelta(days=1);db.commit()
+    result=generate_aktualnoe(db,user)
+    assert result.items[0].recent_events==before-1
+    assert not any(s.entity=='client_notes' for s in result.items[0].sources)
+    client.cycle.status=CycleStatus.COMPLETED;db.commit()
+    assert generate_aktualnoe(db,user).items==[]
 
 
-def test_empty_without_cycle_access(db, make_user):
-    _client_with_activity(db, "Дельта", ["звонок"])
-    user = make_user(Module.CLIENTS)
-
-    result = generate_aktualnoe(db, user)
-
-    assert result.items == []
+def test_no_access_no_activity(db,make_user):
+    user=make_user(Module.CLIENTS);seed(db)
+    assert generate_aktualnoe(db,user).items==[]

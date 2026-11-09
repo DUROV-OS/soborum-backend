@@ -26,6 +26,17 @@ def _wait_no_subscribers():
     pytest.fail("подписчик не отписался после закрытия соединения")
 
 
+def test_metadata_request_preserves_interleaved_message_notifications(monkeypatch):
+    from app.max.client import MaxSession
+    session = MaxSession('synthetic')
+    notification = {'cmd': 0, 'seq': 12, 'opcode': 128, 'payload': {'chatId': 3, 'message': {'id': 'new'}}}
+    response = {'cmd': 1, 'seq': 4, 'opcode': 32, 'payload': {'contacts': []}}
+    frames = iter([notification, response])
+    monkeypatch.setattr(session, '_recv', lambda: next(frames))
+    assert session._wait(32, 4) == response
+    assert session.pending_notifications == [notification]
+
+
 @contextlib.contextmanager
 def _authed_ws(client, user, *, wait_unsubscribed=True):
     with client.websocket_connect("/api/max/ws") as conn:
@@ -224,7 +235,8 @@ def test_run_reconnects_and_resyncs_after_failures(monkeypatch, published):
             raise _Stop
 
     monkeypatch.setattr(listener, "_open_session", open_session)
-    monkeypatch.setattr(listener.time, "sleep", fake_sleep)
+    monkeypatch.setattr(listener._wake, "wait", fake_sleep)
+    monkeypatch.setattr(listener.random, "uniform", lambda *_: 1)
     with pytest.raises(_Stop):
         listener._run()
 

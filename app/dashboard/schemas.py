@@ -57,12 +57,25 @@ class SectionSignalOut(BaseModel):
     agent_note: str | None = None
 
 
+class ActivitySource(BaseModel):
+    entity: str
+    record_id: int
+    field: str
+    label: str
+    at: datetime
+
+
 class AktualnoeItem(BaseModel):
     cycle_id: int
     client_name: str
     stage: str
-    percent: int = Field(ge=0, le=100)
+    # Stage and activity cannot establish a completed-work percentage.
+    percent: None = None
     phrase: str = ""
+    last_activity: datetime | None = None
+    recent_events: int = 0
+    sources: list[ActivitySource] = Field(default_factory=list)
+    source_hash: str | None = None
 
 
 class AktualnoeOut(BaseModel):
@@ -71,3 +84,5 @@ class AktualnoeOut(BaseModel):
     ai_configured: bool = False
     # true — блок собран без ИИ (топ по свежести, проценты детерминированные)
     degraded: bool = False
+    source: Literal['database'] = 'database'
+    progress_basis: Literal['not_calculated'] = 'not_calculated'

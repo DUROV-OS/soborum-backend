@@ -6,7 +6,8 @@ An LLM, if added later, may only tighten a verdict. It cannot loosen a block.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from app.ai.provenance import fingerprint
 
 from app.agents.types import LegalCategory, LegalDecision, LegalFinding, LegalVerdict
 
@@ -147,6 +148,7 @@ RULES: tuple[Rule, ...] = (
 )
 
 _COMPILED = tuple((rule, tuple(re.compile(p, re.IGNORECASE) for p in rule.patterns)) for rule in RULES)
+RULES_VERSION = 'legal-rules-v1:' + fingerprint([asdict(rule) for rule in RULES])[:16]
 
 _VERDICT_RANK = {
     LegalVerdict.ALLOW: 0,
@@ -178,21 +180,21 @@ def scan(text: str) -> LegalDecision:
         return LegalDecision(
             verdict=LegalVerdict.ALLOW,
             findings=[],
-            passport="Юридический риск не обнаружен детерминированным фильтром. Категория: none.",
+            passport="Автоматический фильтр: совпадений с настроенными правилами нет. Это не юридическое заключение и не согласование человека.",
         )
 
     verdict = max((f.verdict for f in findings), key=lambda v: _VERDICT_RANK[v])
     lines = [f"- {f.rule_id} ({f.category}): {f.reason} [совпало: «{f.matched}»]" for f in findings]
-    return LegalDecision(verdict=verdict, findings=findings, passport="Паспорт проверки юриста\n" + "\n".join(lines))
+    return LegalDecision(verdict=verdict, findings=findings, passport="Автоматическая проверка правил; согласования юриста нет.\n" + "\n".join(lines))
 
 
 def lawyer_reply(decision: LegalDecision) -> str:
     if decision.verdict == LegalVerdict.ALLOW:
-        return "Юрист: юридических стоп-факторов нет. Можно продолжать в рамках полномочий."
+        return "Автоматический фильтр: совпадений с настроенными правилами нет. Юрист не согласовывал результат."
     headline = {
-        LegalVerdict.BLOCK: "Юрист: блок.",
-        LegalVerdict.ESCALATE_HUMAN: "Юрист: только с человеком.",
-        LegalVerdict.ALLOW_WITH_CONDITIONS: "Юрист: можно с оговорками.",
+        LegalVerdict.BLOCK: "Автоматический фильтр: действие заблокировано.",
+        LegalVerdict.ESCALATE_HUMAN: "Автоматический фильтр: требуется решение человека.",
+        LegalVerdict.ALLOW_WITH_CONDITIONS: "Автоматический фильтр: выявлены условия для проверки.",
     }[decision.verdict]
     unique_lines: list[str] = []
     for finding in decision.findings:

@@ -30,7 +30,9 @@ def setup(db, api, make_user, quantity=10, fractional=False):
     db.add_all([cp, m])
     db.commit()
     org = db.query(Organization).first()
-    return api(owner), owner, cp, org, m
+    client=api(owner)
+    client.fulfillment_fixture_db=db
+    return client, owner, cp, org, m
 
 
 def order(client, cp, org, m, quantity="6", lines=None):
@@ -47,11 +49,11 @@ def order(client, cp, org, m, quantity="6", lines=None):
     response = client.post("/api/sales/orders", json=body)
     assert response.status_code == 201, response.text
     row = response.json()
-    confirmed = client.post(
-        f"/api/sales/orders/{row['id']}/confirm", json={"version": row["version"]}
-    )
-    assert confirmed.status_code == 200, confirmed.text
-    return confirmed.json(), body
+    # These scenarios test fulfilment of existing contracts. The full signature ->
+    # confirmation transition is exercised in test_costing_integration/approvals.
+    db=client.fulfillment_fixture_db
+    stored=db.get(SalesOrder,row['id']);stored.status='confirmed';stored.version+=1;db.commit()
+    return client.get(f"/api/sales/orders/{row['id']}").json(), body
 
 
 def shipment(client, row, quantity="2", lines=None):

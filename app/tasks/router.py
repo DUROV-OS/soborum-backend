@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.common.module_access import Module, AccessLevel
@@ -8,7 +10,7 @@ from app.core.deps import require_admin, require_edit, require_view
 from app.db.session import get_db
 from app.tasks import service as task_service
 from app.tasks import story_points_stats
-from app.tasks.models import Task, TaskLinkType, TaskStatus
+from app.tasks.models import Task, TaskLinkType, TaskPriority, TaskStatus, task_assignees
 from app.tasks.schemas import (
     TaskCreate,
     TaskOut,
@@ -48,9 +50,11 @@ def list_tasks(
     scope: TaskScope = TaskScope.MINE,
     assignee_id: int | None = None,
     reviewer_id: int | None = None,
+    responsible_id: Annotated[int | None, Query(ge=0)] = None,
     block_id: int | None = None,
     link_type: TaskLinkType | None = None,
     task_status: TaskStatusFilter | None = Query(None, alias="status"),
+    priority: TaskPriority | None = None,
     overdue: bool | None = None,
 ):
     if scope == TaskScope.ALL and not current.has_access(Module.TASKS_ALL):
@@ -61,10 +65,23 @@ def list_tasks(
         query = query.filter(Task.assignees.any(User.id == assignee_id))
     if reviewer_id is not None:
         query = query.filter(Task.reviewers.any(User.id == reviewer_id))
+    if responsible_id is not None:
+        # Existing UI rule: an explicit responsible person takes precedence;
+        # otherwise the sole assignee is responsible. Zero means neither.
+        sole_assignee = (
+            select(func.min(task_assignees.c.user_id))
+            .where(task_assignees.c.task_id == Task.id)
+            .having(func.count() == 1)
+            .correlate(Task)
+            .scalar_subquery()
+        )
+        query = query.filter(func.coalesce(Task.responsible_id, sole_assignee, 0) == responsible_id)
     if block_id is not None:
         query = query.filter(Task.block_id == block_id)
     if link_type is not None:
         query = query.filter(Task.link_type == link_type)
+    if priority is not None:
+        query = query.filter(Task.priority == priority)
     if task_status == TaskStatusFilter.OPEN:
         # Тот же набор, что считает Пульс (0084-h): всё, кроме done, в этой области.
         tasks = task_service.open_tasks_query(db, current, scope, query)

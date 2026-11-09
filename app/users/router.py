@@ -82,6 +82,8 @@ def create_user_endpoint(payload: UserCreate, db: Session = Depends(get_db), _: 
         full_name=payload.full_name,
         role=payload.role,
         module_access=payload.module_access,
+        work_phone=payload.work_phone,
+        telephony_extension=payload.telephony_extension,
     )
     return UserOut.from_model(user)
 
@@ -111,6 +113,9 @@ def update_user(
         user.workspace_preferences = None
     if payload.password is not None:
         user.hashed_password = hash_password(payload.password)
+    for field in ("work_phone", "telephony_extension"):
+        if field in payload.model_fields_set:
+            setattr(user, field, getattr(payload, field))
     # Роль и активность — через сервис: он же держит проверки на самого себя
     # и на последнего администратора (0074).
     try:
