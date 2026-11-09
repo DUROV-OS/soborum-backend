@@ -63,6 +63,8 @@ require_accounting_full = require_full(AccessModule.ACCOUNTING)
 
 from app.accounting.evidence_router import router as evidence_router
 app.include_router(evidence_router)
+from app.accounting.actual_router import router as actual_cost_router
+app.include_router(actual_cost_router)
 
 
 @app.get("/money-movements/enums")

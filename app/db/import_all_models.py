@@ -5,6 +5,7 @@ autogenerate run. Import this module (not its contents) for the side effect.
 
 from app.accounting import models as _accounting_models  # noqa: F401
 from app.accounting import evidence_models as _payment_evidence_models  # noqa: F401
+from app.accounting import actual_models as _actual_cost_models  # noqa: F401
 from app.agents import models as _agents_models  # noqa: F401
 from app.agents.autonomy import models as _agents_autonomy_models  # noqa: F401
 from app.ai import models as _ai_models  # noqa: F401

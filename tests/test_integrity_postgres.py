@@ -34,10 +34,10 @@ def engine():
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE integrity_events"))
         conn.execute(text("ALTER TABLE file_assets DROP COLUMN sha256, DROP COLUMN size_bytes"))
-        for table in ('payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
+        for table in ('actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
             conn.execute(text('DROP TABLE '+table))
         covered = set()
-        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py'):
+        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py'):
             filename = Path(__file__).resolve().parents[1] / 'alembic/versions' / name
             spec = spec_from_file_location('migration_'+name, filename)
             migration = module_from_spec(spec); spec.loader.exec_module(migration)
@@ -227,3 +227,45 @@ def test_concurrent_production_signoff_cannot_approve_two_versions(engine):
         assert db.query(CostingSignoff).filter_by(target='estimate',target_id=eid,stage='production').count()==1
         assert db.query(CostingRevision).filter_by(estimate_id=eid).count()==2
         assert verify(db)['state']=='consistent'
+
+
+def test_actual_cost_concurrency_and_immutable_decisions(engine):
+    from fastapi import HTTPException
+    from app.accounting import actual as a
+    from app.accounting.actual_schemas import CostInput,CostDecision
+    from app.accounting.actual_models import ActualCostDocument,ActualCostRecord,ActualCostVersion,ActualCostClosure
+    from app.accounting.models import Organization
+    from app.accounting.seed import ensure_organizations_seed
+    from app.common.files import save_bytes_file,FilePurpose
+    from app.costing.models import CostingEstimate
+    from app.costing.governance_models import CostingApprovalPolicy
+    from app.costing.service import lock
+    with Session(engine) as db:
+        ensure_organizations_seed(db);actor=new_user(db);uid=actor.id
+        db.get(CostingApprovalPolicy,1).accounting_user_id=uid
+        asset=save_bytes_file(db,'synthetic-actual.txt','text/plain',b'isolated incurred workshop expense',FilePurpose.COSTING_EVIDENCE,actor)
+        document=ActualCostDocument(file_id=asset.id,actor_id=uid);db.add(document);db.commit();docid=document.id
+        payload={'kind':'document','organization_id':db.query(Organization).first().id,'issuer':'Test landlord','number':'actual-'+str(uuid4()),'document_date':'2026-11-01','incurred_on':'2026-11-01','line_ref':'1',
+            'evidence':{'file_id':asset.id,'locator':'Test line 1'},'gross_amount':'100.01','excluded_tax':'0','tax_basis':'No excluded tax, test proof',
+            'allocations':[{'category':'factory','amount':'100.01','month':'2026-11-01','locator':'Test line 1'}],'reason':'Synthetic cost concurrency'}
+    barrier=Barrier(2)
+    def worker(_):
+        with Session(engine) as db:
+            actor=db.get(User,uid);bind_actor(db,actor);barrier.wait(timeout=10)
+            try:
+                lock(db);v=a.save(db,CostInput(**payload,request_id=uuid4()),actor);db.commit();return v.version
+            except HTTPException as error:db.rollback();return error.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(worker,range(2)))
+    assert sorted(results)==[1,409]
+    with Session(engine) as db:
+        version=db.query(ActualCostVersion).one();actor=db.get(User,uid);lock(db)
+        decision=a.decide(db,version.record_id,CostDecision(request_id=uuid4(),version=1,source_hash=a.canonical(version.content),action='recognize',confirmed=True,reason='Personally checked synthetic cost'),actor)
+        project=CostingEstimate(title='Synthetic closure protection',actor_id=uid);db.add(project);db.flush()
+        closure=ActualCostClosure(project_id=project.id,stage='accounting',source_hash='0'*64,actor_id=uid,request_id=str(uuid4()),content={'synthetic':True});db.add(closure);db.commit()
+        for table,id in [('actual_cost_documents',docid),('actual_cost_records',version.record_id),('actual_cost_versions',version.id),('actual_cost_decisions',decision.id),('actual_cost_closures',closure.id)]:
+            for statement in (f'UPDATE {table} SET id=id WHERE id=:id',f'DELETE FROM {table} WHERE id=:id'):
+                with pytest.raises(DBAPIError):db.execute(text(statement),{'id':id})
+                db.rollback()
+        db.execute(text('ALTER TABLE actual_cost_closures DISABLE TRIGGER actual_cost_immutable'))
+        assert protection(db)['state']=='incomplete';db.rollback()
+        assert protection(db)['state']=='active' and verify(db)['state']=='consistent'
