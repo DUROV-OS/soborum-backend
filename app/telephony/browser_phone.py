@@ -135,7 +135,8 @@ def prepare(db, user, entity_id, phone, request_id):
     db.add(row)
     account.active_call = key
     db.add(CRMEvent(entity_id=entity_id, actor_id=user.id, action='browser_call_started',
-                    details={'text': 'Начат звонок через гарнитуру', 'call_id': call.id, 'phone': phone}))
+                    details={'text': 'Начат звонок через гарнитуру', 'call_id': call.id, 'phone': phone,
+                             'note_type': 'call_out', 'params': {'phone': phone, 'text': 'Начат звонок через гарнитуру'}}))
     db.commit()
     return {'id': key, 'call_id': call.id, 'state': row.state}
 
@@ -157,5 +158,7 @@ def finish(db, row, failed=False):
         account.active_call = None
     db.add(CRMEvent(entity_id=call.deal_id or call.crm_entity_id, actor_id=row.actor_id,
                     action='browser_call_finished', details={'text': 'Звонок завершён', 'call_id': call.id,
-                    'status': call.status, 'duration': call.duration}))
+                    'status': call.status, 'duration': call.duration, 'note_type': 'call_out',
+                    'params': {'phone': call.phone, 'duration': call.duration, 'text': 'Звонок завершён',
+                    'call_status': 'Разговор состоялся' if call.status == 'answered' else 'Вызов не подтверждён' if failed else 'Без ответа'}}))
     db.commit()

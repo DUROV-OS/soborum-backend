@@ -63,6 +63,7 @@ def test_dial_card_scoping_and_idempotency(db, voice_setup):
 
 
 def test_deal_call_keeps_card_and_owner(db, voice_setup):
+    from app.crm.models import CRMEvent
     user, director, contact = voice_setup
     deal = CRMEntity(kind='deal', name='Тестовая заявка', payload={'contact_ids': [contact.id], 'responsible_user_id': director.id})
     db.add(deal); db.commit()
@@ -75,6 +76,9 @@ def test_deal_call_keeps_card_and_owner(db, voice_setup):
     assert call.deal_id == deal.id and call.crm_entity_id == deal.id
     assert call.status == 'answered' and call.processing == 'local_recording' and call.duration >= 24
     assert deal.payload['responsible_user_id'] == director.id
+    events = db.query(CRMEvent).filter_by(entity_id=deal.id).all()
+    assert all(event.details['note_type'] == 'call_out' for event in events)
+    assert events[-1].details['params']['call_status'] == 'Разговор состоялся'
     assert db.get(BrowserPhoneAccount, user.id).active_call is None
     phone.finish(db, row)
     assert db.query(PhoneCall).count() == 1
