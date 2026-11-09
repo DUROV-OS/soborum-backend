@@ -192,6 +192,9 @@ def _run(job):
         if not confirmed:
             _expire(job)
             return
+        # Phone approval ends QR renewal before the token/account exchange.
+        if not _publish(job, phase='verifying', qr_image=None, expires_at=time.time() + 300):
+            return
         reply = _request(session, 291, {'trackId': track})
         token = _login_token(reply)
         challenge = reply.get('passwordChallenge') or {}
