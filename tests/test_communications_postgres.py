@@ -116,7 +116,7 @@ def test_migration_upgrade_downgrade_preserves_crm_and_starts_disabled(engine):
         db.commit()
     spec = spec_from_file_location('communications_migration', Path(__file__).parents[1] / 'alembic/versions/ch0911202601_communications.py')
     module = module_from_spec(spec); spec.loader.exec_module(module)
-    assert module.down_revision == 'cg0611202601'
+    assert module.down_revision == 'mc0911202601'
     with engine.begin() as conn:
         module.op = Operations(MigrationContext.configure(conn))
         before = conn.execute(text("SELECT id,name,payload::text FROM crm_entities")).all()
