@@ -110,7 +110,11 @@ def ws_user(db, token):
         user = db.get(User, int(subject)) if subject is not None else None
     except (TypeError, ValueError):
         return None
-    return user if phone.eligible(user) else None
+    if phone.eligible(user):
+        from app.integrity.context import bind_actor
+        bind_actor(db, user)
+        return user
+    return None
 
 
 @router.websocket('/browser-phone/ws/{call_id}')

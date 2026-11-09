@@ -150,6 +150,7 @@ def test_websocket_scoped_call_recording_and_single_use(db, api, voice_setup, mo
     assert any(command.get('audio') and command.get('peer_audio') for command in commands)
     row = db.get(BrowserPhoneCall, result['id'])
     assert row.state == 'ended' and row.accepted_at is not None
+    assert db.info['integrity_actor']['id'] == user.id
     assert db.get(PhoneCall, result['call_id']).processing == 'local_recording'
     with api(user).websocket_connect(f"/api/crm/browser-phone/ws/{result['id']}") as ws:
         ws.send_json({'type': 'auth', 'token': create_access_token(str(user.id))})
