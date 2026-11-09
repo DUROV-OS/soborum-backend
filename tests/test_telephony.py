@@ -201,3 +201,26 @@ def test_analysis_keeps_only_points_with_real_quotes(monkeypatch):
     assert len(result['key_points'])==1
     assert result['key_points'][0]['quote']=='Пришлите расчёт'
     assert result['tasks']==[{'text':'Пришлите расчёт','quote':'Пришлите расчёт'}]
+
+
+def test_analysis_never_displays_invented_paraphrases_with_genuine_quotes(monkeypatch):
+    import json
+    import httpx
+    monkeypatch.setattr(settings, 'call_analysis_url', 'http://127.0.0.1:11434')
+    text = 'Хочу заказать баню. Пришлите расчёт завтра.'
+    invented = {'summary': 'Покупка отложена, договорились связаться через месяц.',
+        'key_points': [{'text': 'Покупка отложена', 'quote': text}] * 3,
+        'tasks': [{'text': 'Позвонить через месяц', 'quote': text}] * 3}
+    def response(*args, **kwargs):
+        return httpx.Response(200, json={'message': {'content': json.dumps(invented)}})
+    @contextmanager
+    def client(**kwargs):
+        class Fake:
+            post = staticmethod(response)
+        yield Fake()
+    monkeypatch.setattr(worker.httpx, 'Client', client)
+    result = worker.analyze(text)
+    assert 'отложена' not in result['summary'] and 'месяц' not in result['summary']
+    assert 'Хочу заказать баню.' in result['summary']
+    assert result['tasks'] == [{'text': 'Пришлите расчёт завтра.', 'quote': 'Пришлите расчёт завтра.'}]
+    assert all(point['text'] == point['quote'] and point['quote'] in text for point in result['key_points'])
