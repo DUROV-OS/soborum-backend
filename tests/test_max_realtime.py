@@ -224,7 +224,8 @@ def test_run_reconnects_and_resyncs_after_failures(monkeypatch, published):
             raise _Stop
 
     monkeypatch.setattr(listener, "_open_session", open_session)
-    monkeypatch.setattr(listener.time, "sleep", fake_sleep)
+    monkeypatch.setattr(listener._wake, "wait", fake_sleep)
+    monkeypatch.setattr(listener.random, "uniform", lambda *_: 1)
     with pytest.raises(_Stop):
         listener._run()
 

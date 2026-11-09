@@ -22,6 +22,7 @@ from app.users.models import User
 from app.common.module_access import Module
 from app.crm.chat_models import CRMChatLink
 from app.crm.models import CRMEntity
+from app.max.auth_router import router as connection_router
 
 
 class SendMessageIn(BaseModel):
@@ -53,6 +54,7 @@ app = FastAPI(
     description="Чтение сообщений из мессенджера MAX (oneme) по websocket.",
     version="0.1.0",
 )
+app.include_router(connection_router)
 
 
 @app.get("/chats")
