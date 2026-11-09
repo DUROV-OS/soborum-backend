@@ -66,10 +66,16 @@ async def check_account(user_id: int, db: Session = Depends(get_db), user: User 
                     if state == 'registered':
                         return {'state': 'connected', 'checked_at': phone.now().isoformat(), 'calls_started': 0}
                     if state == 'registration_failed' or data.get('error_code'):
-                        raise ValueError('Registration rejected')
+                        if data.get('result', {}).get('code') in (408, 503, 504):
+                            raise HTTPException(503, 'ВАТС не отвечает на SIP-подключение с сервера CRM. Требуется проверить доступ к МегаФону; пароль менять не нужно.')
+                        raise HTTPException(502, 'ВАТС отклонила SIP-подключение. Проверьте действующий логин и пароль сотрудника.')
         return await asyncio.wait_for(wait(), 20)
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        raise HTTPException(503, 'ВАТС не отвечает на SIP-подключение с сервера CRM. Требуется проверить доступ к МегаФону; пароль менять не нужно.')
     except Exception:
-        raise HTTPException(502, 'SIP-подключение не подтверждено. Проверьте действующий логин и пароль сотрудника в ВАТС.')
+        raise HTTPException(503, 'Сервер телефонии недоступен. Проверьте подключение перед повторной проверкой.')
     finally:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(gateway.close(), 5)
@@ -150,7 +156,8 @@ async def voice(ws: WebSocket, call_id: UUID, db: Session = Depends(get_db)):
                     result = data.get('result', {})
                     state = result.get('event')
                     if data.get('error_code') or state == 'registration_failed':
-                        await ws.send_json({'type': 'error', 'message': 'ВАТС отклонила подключение или звонок. Проверьте SIP-логин и пароль сотрудника.'})
+                        network_error = result.get('code') in (408, 503, 504)
+                        await ws.send_json({'type': 'error', 'message': 'ВАТС не отвечает на SIP-подключение с сервера CRM. Требуется проверить сетевой доступ к МегаФону.' if network_error else 'ВАТС отклонила подключение или звонок. Проверьте SIP-логин и пароль сотрудника.'})
                         return
                     if state == 'registered':
                         row.state = 'registered'

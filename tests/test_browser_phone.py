@@ -155,3 +155,17 @@ def test_websocket_scoped_call_recording_and_single_use(db, api, voice_setup, mo
         ws.send_json({'type': 'auth', 'token': create_access_token(str(user.id))})
         assert ws.receive_json()['type'] == 'error'
     assert sum(command['request'] == 'call' for command in commands) == 1
+
+
+def test_registration_timeout_reports_network_issue_instead_of_wrong_password(api, voice_setup, monkeypatch):
+    from app.telephony import browser_router
+    user, director, contact = voice_setup
+    class Unreachable:
+        async def open(self, *args): pass
+        async def poll(self):
+            return [{'plugindata': {'data': {'result': {'event': 'registration_failed', 'code': 408}}}}]
+        async def close(self): pass
+    monkeypatch.setattr(browser_router, 'Gateway', Unreachable)
+    response = api(director).post(f'/api/crm/browser-phone/accounts/{user.id}/check')
+    assert response.status_code == 503
+    assert 'ВАТС не отвечает' in response.json()['detail']
