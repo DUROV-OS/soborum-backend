@@ -16,8 +16,10 @@ from app.moysklad.models import SourceRecord
 from app.moysklad.service import attachment_path
 from app.crm.import_access import ReviewInput, review_status, record_review, authorized_attachment, reviewed_response
 from app.crm import agency_logos
+from app.crm.communications_router import router as communications_router
 
 app = FastAPI(title="Продажи — CRM Соборума")
+app.include_router(communications_router)
 view = require_view(Module.CLIENTS)
 edit = require_edit(Module.CLIENTS)
 full = require_full(Module.CLIENTS)

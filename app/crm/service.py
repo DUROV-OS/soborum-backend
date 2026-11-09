@@ -672,6 +672,11 @@ def accept_inquiry(db, row, entry, user):
     from app.crm.guard import accepted, close_terminal_followups
 
     accepted(db, row, deal, user)
+    from app.telephony.service import accept_inquiry as transfer_inquiry_calls
+    transfer_inquiry_calls(db, row, deal, user)
+    from app.crm.chat_models import CRMChatLink
+    for chat_link in db.query(CRMChatLink).filter_by(entity_id=row.id):
+        chat_link.entity_id = deal.id
     close_terminal_followups(db, deal, user)
     if old.get("client_id"):
         from app.clients.models import Client
