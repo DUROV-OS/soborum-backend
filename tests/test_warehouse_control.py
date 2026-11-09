@@ -162,3 +162,16 @@ def test_issue_precision_and_nonfinite_quantities_rejected(db,make_user,api,quan
     result=api(keeper).post(f'/api/warehouse/techcard-issue/{p.id}',json=body)
     assert result.status_code==422
     assert m.quantity_in_stock==30 and not db.query(StockMovement).count()
+
+
+def test_issued_material_cannot_change_unit_and_return_checks_unit(db,make_user,api):
+    keeper,_,m,p,b,b2,digest,doc=setup(db,make_user)
+    op=c.issue(db,p.id,issue_body(digest,m,6),keeper);db.commit()
+    response=api(keeper).patch(f'/api/warehouse/materials/{m.id}',json={'unit':'м'})
+    assert response.status_code==409,response.text
+    movement=db.query(StockMovement).filter_by(operation_id=op.id).one()
+    # A changed external import is also refused rather than interpreted in new units.
+    m.unit='м';db.commit()
+    with pytest.raises(HTTPException):c.return_material(db,movement.id,return_body(doc,1),keeper)
+    db.rollback()
+    assert c.returned_quantity(db,movement.id)==0

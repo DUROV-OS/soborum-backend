@@ -132,12 +132,13 @@ def update_material(
 
     if (
         any(k in fields and fields[k] != getattr(material, k) for k in ("unit", "is_fractional"))
-        and (db.query(StockReservation.id).filter_by(material_id=material.id).first()
+        and (db.query(StockMovement.id).filter_by(warehouse_material_id=material.id).first()
+            or db.query(StockReservation.id).filter_by(material_id=material.id).first()
             or any(l.get("material_id") == material.id for cls in (SalesOrder, SalesShipment)
                 for (entries,) in db.query(cls.lines) for l in entries))
     ):
         raise HTTPException(
-            409, "У карточки есть история резервов или продаж. Для другой единицы учёта создайте новую позицию."
+            409, "У карточки есть история движений, резервов или продаж. Для другой единицы учёта создайте новую позицию."
         )
     if "supplier_id" in fields:
         ensure_supplier_exists(db, fields["supplier_id"])

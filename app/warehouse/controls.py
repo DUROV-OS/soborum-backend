@@ -171,7 +171,7 @@ def return_material(db, movement_id, body, actor):
         used=sum((D(item['quantity']) for r in previous for item in r.content['restored'] if item['block_material_id']==bid),D(0))
         take=min(left,D(allocation['quantity'])-used)
         if take<=0:continue
-        if not b or b.warehouse_material_id!=movement.warehouse_material_id or D(str(b.quantity_provided))<take:
+        if not b or b.warehouse_material_id!=movement.warehouse_material_id or b.unit!=movement.warehouse_material.unit or D(str(b.quantity_provided))<take:
             fail('Выдача больше не совпадает с блоками производства. Требуется сверка.',409)
         b.quantity_provided=float(D(str(b.quantity_provided))-take)
         b.quantity_required=float(D(str(b.quantity_required))+take)
