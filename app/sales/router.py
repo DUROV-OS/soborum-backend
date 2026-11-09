@@ -22,6 +22,10 @@ from app.warehouse.reservation_service import allocations, dec
 from app.users.models import User
 
 app = FastAPI(title="Заказы покупателей и отгрузки")
+from app.sales.journey import router as journey_router
+from app.sales.journey_supply import router as journey_supply_router
+app.include_router(journey_router)
+app.include_router(journey_supply_router)
 view, edit, full = (
     require_view(Module.CLIENTS),
     require_edit(Module.CLIENTS),

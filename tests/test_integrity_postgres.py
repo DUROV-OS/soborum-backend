@@ -37,7 +37,7 @@ def engine():
         for table in ('actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
             conn.execute(text('DROP TABLE '+table))
         covered = set()
-        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py'):
+        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py'):
             filename = Path(__file__).resolve().parents[1] / 'alembic/versions' / name
             spec = spec_from_file_location('migration_'+name, filename)
             migration = module_from_spec(spec); spec.loader.exec_module(migration)
@@ -171,6 +171,62 @@ def test_payment_evidence_concurrency_and_immutable_history(engine):
         db.execute(text('ALTER TABLE payment_evidence_versions DISABLE TRIGGER payment_evidence_immutable'))
         assert protection(db)['state']=='incomplete';db.rollback()
         assert protection(db)['state']=='active' and verify(db)['state']=='consistent'
+
+
+def test_two_orders_cannot_allocate_the_same_purchase_capacity(engine, monkeypatch):
+    from datetime import datetime, timezone
+    from fastapi import HTTPException
+    from app.accounting.models import SupplierOrder, Counterparty, Organization
+    from app.accounting.seed import ensure_organizations_seed
+    from app.costing import governance
+    from app.costing.integration import fingerprint
+    from app.costing.models import CostingEstimate, CostingRevision, CostingOrderLink
+    from app.sales.models import SalesOrder, SalesEvent
+    from app.sales.journey_supply import allocate, Allocation
+    from app.warehouse.models import Supplier, WarehouseMaterial, Warehouse, MaterialCategory
+    # Approval workflow is exercised with actual documents in test_order_journey;
+    # here isolate the cross-order PostgreSQL capacity race.
+    monkeypatch.setattr(governance, 'assert_approved', lambda *args: None)
+    with Session(engine) as db:
+        ensure_organizations_seed(db); actor = new_user(db); uid = actor.id
+        cp = Counterparty(name='Synthetic capacity buyer', is_active=True)
+        supplier = Supplier(name='Synthetic capacity supplier')
+        material = WarehouseMaterial(title='Capacity product', code='RACE-JOURNEY', warehouse=Warehouse.TECHNOLOGY,
+            category=MaterialCategory.NONE, unit='шт', is_fractional=False, quantity_in_stock=0, purchase_price=0, threshold=0)
+        db.add_all([cp, supplier, material]); db.flush()
+        purchase = SupplierOrder(supplier_id=supplier.id, items=[{'warehouse_material_id': material.id, 'material': material.title,
+            'quantity': 2, 'unit_price': 1, 'unit': 'шт', 'stock_tracked': True}], total_cost=2)
+        db.add(purchase); db.flush(); pid = purchase.id
+        ids = []
+        for _ in range(2):
+            order = SalesOrder(counterparty_id=cp.id, organization_id=db.query(Organization).first().id, status='confirmed',
+                actor_id=uid, occurred_at=datetime.now(timezone.utc), total=10, lines=[{'material_id': material.id, 'title': material.title,
+                'stock_tracked': True, 'unit': 'шт', 'quantity': '2', 'unit_price': '5', 'line_total': '10', 'opening_shipped': '0'}])
+            quote = CostingEstimate(actor_id=uid, title='Synthetic capacity quote', status='approved')
+            db.add_all([order, quote]); db.flush()
+            revision = CostingRevision(estimate_id=quote.id, number=1, actor_id=uid, reason='Synthetic', request_id=str(uuid4()), request_data={}, snapshot={})
+            db.add(revision); db.flush()
+            db.add(CostingOrderLink(order_id=order.id, line_index=0, estimate_id=quote.id, revision_id=revision.id, fingerprint=fingerprint(order,0), actor_id=uid))
+            ids.append(order.id)
+        db.commit()
+    barrier = Barrier(2)
+    def worker(oid):
+        with Session(engine) as db:
+            actor = db.get(User, uid); bind_actor(db, actor)
+            body = Allocation(request_id=uuid4(), version=1, order_line=0, supplier_order_id=pid, supplier_version=1, supplier_line=0, quantity='2')
+            barrier.wait(timeout=10)
+            try: allocate(oid, body, db, actor); return 200
+            except HTTPException as error: db.rollback(); return error.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(worker, ids)) == [200, 409]
+    with Session(engine) as db:
+        row = db.query(SalesEvent).filter_by(kind='supply_allocated').one()
+        for statement in ('UPDATE sales_events SET data=data WHERE id=:id', 'DELETE FROM sales_events WHERE id=:id'):
+            with pytest.raises(DBAPIError): db.execute(text(statement), {'id': row.id})
+            db.rollback()
+        db.execute(text('ALTER TABLE sales_events DISABLE TRIGGER journey_events_immutable'))
+        assert protection(db)['state'] == 'incomplete'; db.rollback()
+        assert verify(db)['state'] == 'consistent'
 
 
 def test_signed_costing_records_cannot_be_rewritten_by_sql(engine):
