@@ -74,6 +74,13 @@ class _NoAnalysis(Exception):
 def status_floor(section: str, snapshot: dict) -> tuple[str | None, str | None, list[str]]:
     """Минимальный статус раздела по фактам: (статус, причина, тексты причин).
     None — у раздела пола нет, модель решает сама."""
+    if section == "marketing":
+        acquisition = snapshot.get('acquisition') or {}
+        reasons = list(acquisition.get('issues') or [])
+        if acquisition.get('recorded_ad_spend') is None or not acquisition.get('offline_delivery_confirmed'):
+            reasons.append('Расход рекламы и передача обратных конверсий требуют сверки; окупаемость не определена')
+        if reasons:
+            return 'yellow', 'Результат привлечения подтверждён не полностью', reasons
     if section != "production":
         return None, None, []
     worst = snapshot.get("worst_state")

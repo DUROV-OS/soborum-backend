@@ -38,6 +38,9 @@ app = FastAPI(
 require_marketing_view = require_view(AccessModule.MARKETING)
 require_marketing_edit = require_edit(AccessModule.MARKETING)
 
+from app.marketing.conversion_router import router as conversion_router
+app.include_router(conversion_router)
+
 
 @app.get("/calendar", response_model=list[ContentItemOut])
 def calendar(
