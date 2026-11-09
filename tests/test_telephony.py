@@ -212,7 +212,7 @@ def test_analysis_never_displays_invented_paraphrases_with_genuine_quotes(monkey
         'key_points': [{'text': 'Покупка отложена', 'quote': text}] * 3,
         'tasks': [{'text': 'Позвонить через месяц', 'quote': text}] * 3}
     def response(*args, **kwargs):
-        return httpx.Response(200, json={'message': {'content': json.dumps(invented)}})
+        return httpx.Response(200, request=httpx.Request('POST', args[0]), json={'message': {'content': json.dumps(invented)}})
     @contextmanager
     def client(**kwargs):
         class Fake:
