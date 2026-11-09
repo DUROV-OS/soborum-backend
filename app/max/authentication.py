@@ -94,7 +94,7 @@ def start(request_id, actor_id):
             if _attempt.phase == 'connecting':
                 raise HTTPException(409, 'Подключение уже сохраняется. Дождитесь результата.')
             if _attempt.actor_id != actor_id:
-                raise HTTPException(409, 'Другой администратор уже подключает MAX')
+                raise HTTPException(409, 'Другой руководитель уже подключает MAX')
             _discard(_attempt, 'cancelled')
         job = _attempt = Attempt(str(request_id), actor_id, state['generation'])
         timer = threading.Timer(600, _expire, args=(job,))
