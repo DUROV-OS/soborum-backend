@@ -252,9 +252,19 @@ def test_managers_cannot_manage_corporate_credentials(private_store, api, make_u
 
 
 def test_admin_status_is_not_cacheable_and_never_contains_token(private_store, api, make_user):
-    response = api(make_user(admin=True)).get('/api/max/connection')
+    director = make_user(admin=True)
+    director.job_role = 'director'
+    response = api(director).get('/api/max/connection')
     assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
     assert 'legacy-secret' not in response.text and 'device_id' not in response.text
+
+
+@pytest.mark.parametrize('suffix', ['', '/check', '/qr', '/qr/00000000-0000-0000-0000-000000000001/confirm'])
+def test_admin_without_director_role_cannot_manage_max(private_store, api, make_user, suffix):
+    client = api(make_user(admin=True))
+    response = client.get('/api/max/connection') if not suffix else client.post(
+        '/api/max/connection'+suffix, json={'request_id': str(uuid4())})
+    assert response.status_code == 403
 
 
 def test_listener_survives_storage_error_while_reporting_network_failure(private_store, monkeypatch):
