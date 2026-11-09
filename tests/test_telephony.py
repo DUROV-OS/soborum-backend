@@ -209,7 +209,7 @@ def test_analysis_never_displays_invented_paraphrases_with_genuine_quotes(monkey
     monkeypatch.setattr(settings, 'call_analysis_url', 'http://127.0.0.1:11434')
     text = 'Хочу заказать баню. Пришлите расчёт завтра.'
     invented = {'summary': 'Покупка отложена, договорились связаться через месяц.',
-        'key_points': [{'text': 'Покупка отложена', 'quote': text}] * 3,
+        'key_points': [{'text': 'Покупка отложена', 'quote': 'Пришлите расчёт завтра.'}] * 3,
         'tasks': [{'text': 'Позвонить через месяц', 'quote': text}] * 3}
     def response(*args, **kwargs):
         return httpx.Response(200, request=httpx.Request('POST', args[0]), json={'message': {'content': json.dumps(invented)}})

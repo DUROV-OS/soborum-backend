@@ -124,6 +124,9 @@ def analyze(text):
                         result[key].append({'text': quote, 'quote': quote})
         result[key] = result[key][:5]
     candidates = [point['quote'] for point in result['key_points']]
+    requests = [quote for quote in sentences(text) if re.search(r'\b(?:хочу|хотим|нужен|нужна|нужно|нужны|интересует|планирую|планируем)\b', quote, re.I)]
+    if requests:
+        candidates = [requests[0], *candidates]
     if not candidates:
         candidates = [value['summary'].strip() for value in results if isinstance(value.get('summary'), str)
                       and value['summary'].strip() and value['summary'].strip() in text]
