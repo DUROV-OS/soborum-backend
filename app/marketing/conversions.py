@@ -77,6 +77,7 @@ def report(db, start, end, *, can_review=False, can_open_clients=False, now=None
         rid = (entity.payload or {}).get('client_request_id')
         if rid in request_ids:
             linked.setdefault(rid, []).append(entity)
+    ready, excluded, feedback = export_candidates(db, now=now)
     rows, issues = [], []
     for r in requests:
         review = reviews.get(r.id)
@@ -96,7 +97,7 @@ def report(db, start, end, *, can_review=False, can_open_clients=False, now=None
             'receipt_deduplicated': bool(r.external_event_id), 'sales_inbox_open': inquiry_open,
             'awaiting_quality_hours': round((now-aware(r.created_at)).total_seconds()/3600, 1) if outcome == 'unreviewed' else None,
             'feedback_status': 'awaiting_quality' if outcome == 'unreviewed' else
-                ('excluded' if outcome != 'qualified' else ('ready_for_export' if identifiers else 'missing_visit_id'))})
+                ('excluded' if outcome != 'qualified' else feedback[r.id])})
     counts = dict(Counter(r['outcome'] for r in rows))
     missing = sum(not r['has_visit_id'] for r in rows)
     unreviewed = counts.get('unreviewed', 0)
@@ -104,7 +105,6 @@ def report(db, start, end, *, can_review=False, can_open_clients=False, now=None
         issues.append(f'Обращения без идентификатора визита: {missing}. Их источник нельзя достоверно связать с рекламой.')
     if unreviewed:
         issues.append(f'Ожидают оценки качества в Durov OS: {unreviewed}.')
-    ready, excluded = export_rows(db, now=now)
     return {'date_from': start.isoformat(), 'date_to': end.isoformat(), 'timezone': 'Europe/Moscow',
         'checked_at': now.isoformat(), 'partial_today': end >= now.astimezone(MOSCOW).date(),
         'scope': 'website_receipts', 'total_requests': len(rows), 'unique_contacts': len({r.client_id for r in requests}),
@@ -132,7 +132,7 @@ def review_request(db, request_id, payload, actor):
     return {'request_id': request_id, 'version': row.version, 'outcome': row.outcome}
 
 
-def export_rows(db, *, now=None):
+def export_candidates(db, *, now=None):
     """One qualified signal per client. CSV creation is NOT successful delivery.
 
     Eligibility uses the first confirmed qualification time, even after review
@@ -142,24 +142,33 @@ def export_rows(db, *, now=None):
     reviews = latest_reviews(db)
     qualified = [(r, reviews[r.id]) for r in db.query(ClientLeadRequest).order_by(ClientLeadRequest.created_at, ClientLeadRequest.id)
                  if r.id in reviews and reviews[r.id].outcome == 'qualified']
-    rows, excluded, seen = [], Counter(), set()
+    rows, excluded, seen, statuses = [], Counter(), set(), {}
     for request, review in qualified:
         if request.client_id in seen:
             excluded['repeat_qualified_contact'] += 1
+            statuses[request.id] = 'repeat_qualified_contact'
             continue
         seen.add(request.client_id)
         tracking = request.tracking or {}
         if not (tracking.get('client_id') or tracking.get('yclid')):
             excluded['missing_visit_id'] += 1
+            statuses[request.id] = 'missing_visit_id'
             continue
         first = db.query(ConversionReview).filter_by(request_id=request.id, outcome='qualified').order_by(ConversionReview.id).first()
         occurred = aware(first.created_at)
         if aware(request.created_at) < now - timedelta(days=21) or occurred > now:
             excluded['outside_matching_window'] += 1
+            statuses[request.id] = 'outside_matching_window'
             continue
+        statuses[request.id] = 'ready_for_export'
         rows.append({'ClientId': tracking.get('client_id', ''), 'Yclid': tracking.get('yclid', ''),
                      'Target': TARGET, 'DateTime': int(occurred.timestamp())})
-    return rows, dict(excluded)
+    return rows, dict(excluded), statuses
+
+
+def export_rows(db, *, now=None):
+    rows, excluded, _ = export_candidates(db, now=now)
+    return rows, excluded
 
 
 def export_csv(db):

@@ -92,6 +92,10 @@ def test_export_omits_missing_ids_old_receipts_and_repeat_contacts(db, make_user
     exported = conversions.export_csv(db)
     assert exported['rows'] == 1 and exported['sent'] is False
     assert exported['excluded'] == {'repeat_qualified_contact':1,'missing_visit_id':1,'outside_matching_window':1}
+    today = datetime.now(conversions.MOSCOW).date()
+    result = conversions.report(db, today-timedelta(days=30), today)
+    statuses = {row['id']:row['feedback_status'] for row in result['rows']}
+    assert statuses == {a.id:'ready_for_export', b.id:'repeat_qualified_contact', c.id:'missing_visit_id', d.id:'outside_matching_window'}
     assert list(csv.DictReader(io.StringIO(exported['csv'])))[0]['Target'] == 'durov_os_qualified'
     assert 'Synthetic' not in exported['csv'] and '8900' not in exported['csv']
     old_time = list(csv.DictReader(io.StringIO(exported['csv'])))[0]['DateTime']
