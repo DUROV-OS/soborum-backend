@@ -22,4 +22,5 @@ pytesseract==0.3.13
 pillow==12.3.0
 edge-tts==7.2.3
 websocket-client==1.6.1
+qrcode==8.2
 pywebpush==2.5.0
