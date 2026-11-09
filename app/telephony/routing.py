@@ -1,5 +1,6 @@
 """One persistent assignment per caller. PBX handles ringing and overflow."""
 import re
+from datetime import datetime, timezone
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import update
@@ -47,6 +48,9 @@ class Configuration(BaseModel):
     main_phone: str = '79066773555'
     wait_seconds: int = Field(20, ge=10, le=120)
     pbx_setup_confirmed: bool = False
+    auto_create_leads: bool = False
+    max_incoming_enabled: bool = False
+    lead_stage_id: int | None = Field(None, ge=1)
     members: list[Member] = Field(default_factory=list, max_length=100)
 
     @field_validator('main_phone')
@@ -63,6 +67,8 @@ class Configuration(BaseModel):
             raise ValueError('Сотрудник и логин ВАТС должны быть уникальными')
         if self.enabled and (not self.pbx_setup_confirmed or not any(m.enabled for m in self.members)):
             raise ValueError('Сопоставьте менеджеров и настройте основной номер и переадресацию в ВАТС')
+        if (self.auto_create_leads or self.max_incoming_enabled) and self.lead_stage_id is None:
+            raise ValueError('Выберите этап для новых заявок по звонку')
         return self
 
 
@@ -89,6 +95,9 @@ def read_config(db):
         'main_phone': config.main_phone if config else '79066773555',
         'wait_seconds': config.wait_seconds if config else 20,
         'pbx_setup_confirmed': config.pbx_setup_confirmed if config else False,
+        'auto_create_leads': config.auto_create_leads if config else False,
+        'max_incoming_enabled': config.max_incoming_enabled if config else False,
+        'lead_stage_id': config.lead_stage_id if config else None,
         'fallback': 'other_manager_keep_owner',
         'members': [dict(user_id=m.user_id, pbx_user=m.pbx_user, enabled=m.enabled)
                     for m in db.query(PhoneRoutingMember).order_by(PhoneRoutingMember.user_id)],
@@ -121,6 +130,10 @@ def save_config(db, body, actor):
             raise HTTPException(422, 'Логин и внутренний номер ВАТС не должны указывать на разных сотрудников')
         identifiers.update(aliases)
     before = read_config(db)
+    if body.auto_create_leads or body.max_incoming_enabled:
+        from app.telephony.leads import destination
+        if destination(db, body.lead_stage_id) is None:
+            raise HTTPException(422, 'Выберите открытый этап действующей воронки продаж')
     # Remove first so changing/swapping logins does not collide with old rows.
     db.query(PhoneRoutingMember).delete(synchronize_session=False)
     db.flush()
@@ -129,6 +142,13 @@ def save_config(db, body, actor):
     config.main_phone = body.main_phone
     config.wait_seconds = body.wait_seconds
     config.pbx_setup_confirmed = body.pbx_setup_confirmed
+    config.auto_create_leads = body.auto_create_leads
+    if body.max_incoming_enabled and not config.max_incoming_enabled:
+        config.max_leads_started_at = datetime.now(timezone.utc)
+    config.max_incoming_enabled = body.max_incoming_enabled
+    config.lead_stage_id = body.lead_stage_id
+    if body.auto_create_leads or body.max_incoming_enabled:
+        config.lead_actor_id = actor.id
     config.version += 1
     # Memory and the allocation cursor intentionally survive edits/restarts.
     db.add(PhoneRoutingAudit(actor_id=actor.id, details={'before': before, 'after': body.model_dump()}))

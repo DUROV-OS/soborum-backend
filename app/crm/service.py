@@ -469,7 +469,7 @@ def history(db, row, limit=100, offset=0, user=None):
         for e in local
     ]
     entity = {"deal": "leads", "contact": "contacts", "company": "companies"}.get(row.kind)
-    if entity and row.source_id:
+    if entity and row.source_id and row.source_id.isdigit():
         imported = (
             db.query(SourceRecord)
             .filter(

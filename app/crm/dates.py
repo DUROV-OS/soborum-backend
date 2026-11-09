@@ -38,7 +38,9 @@ def source_date_expressions(db, kind, entity=CRMEntity):
     from app.clients.models import ClientLeadRequest
 
     raw = _raw_epoch(db, kind, entity)
-    local = case((entity.source_id.is_(None), extract("epoch", entity.created_at)), else_=None)
+    local = case(((entity.source_id.is_(None) | entity.source_id.startswith('phone/megafon/')
+                   | entity.source_id.startswith('max/') | entity.source_id.startswith('followup/phone/')
+                   | entity.source_id.startswith('followup/max/')), extract("epoch", entity.created_at)), else_=None)
     sources = []
     if kind in ("deal", "inquiry"):
         request = aliased(ClientLeadRequest)

@@ -21,7 +21,7 @@ from app.telephony.models import PhoneRoutingMemory, PhoneRoutingConfig
 
 URL = os.getenv('COMMUNICATIONS_TEST_DATABASE_URL', '')
 pytestmark = pytest.mark.skipif(not URL, reason='Requires isolated local communications_test PostgreSQL')
-TABLES = {'phone_calls', 'phone_call_audit', 'phone_routing_config', 'phone_routing_members',
+TABLES = {'max_inbound_messages', 'phone_calls', 'phone_call_audit', 'phone_routing_config', 'phone_routing_members',
           'phone_routing_memory', 'phone_routing_audit', 'phone_dial_requests'}
 
 
@@ -128,3 +128,48 @@ def test_migration_upgrade_downgrade_preserves_crm_and_starts_disabled(engine):
         assert conn.execute(text("SELECT id,name,payload::text FROM crm_entities")).all() == before
         module.upgrade()
         assert conn.execute(text("SELECT id,name,payload::text FROM crm_entities")).all() == before
+
+
+def test_concurrent_max_delivery_and_manual_creation_are_idempotent(engine):
+    from datetime import datetime, timedelta, timezone
+    from app.crm import max_intake, chat_links
+    from app.crm.chat_models import CRMChatLink
+    from app.crm.models import CRMEvent
+    from app.telephony.models import MAXInboundMessage
+    from app.notifications.models import Notification
+    ids = seed(engine)
+    with Session(engine) as db:
+        for user in db.query(User): user.job_role = 'manager'
+        pipeline = CRMEntity(kind='pipeline', name='Продажи', payload={'purpose': 'sales'})
+        db.add(pipeline); db.flush()
+        stage = CRMEntity(kind='stage', name='Новые заявки', payload={'pipeline_id': pipeline.id, 'outcome': 'open'})
+        db.add(stage); db.flush()
+        config = db.get(PhoneRoutingConfig, 1)
+        config.max_incoming_enabled, config.lead_stage_id, config.lead_actor_id = True, stage.id, ids[0]
+        config.max_leads_started_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+        db.commit()
+    barrier = Barrier(8)
+    def receive(i):
+        with Session(engine) as db:
+            barrier.wait(timeout=10)
+            max_intake.ingest(db, {'account_id':'1','chat_id':3,'phone':'79001112233','name':'Клиент'},
+                {'id':str(i % 2), 'sender':2, 'time':int(datetime.now(timezone.utc).timestamp()*1000), 'text':'Расчёт'})
+            db.commit()
+    with ThreadPoolExecutor(max_workers=8) as pool: list(pool.map(receive, range(8)))
+    with Session(engine) as db:
+        assert db.query(MAXInboundMessage).count() == 2
+        assert db.query(Notification).count() == 2
+        assert db.query(CRMEntity).filter_by(kind='deal').count() == 0
+    def attach(i):
+        with Session(engine) as db:
+            barrier.wait(timeout=10)
+            return chat_links.create_link(db, chat_links.LinkFromMax(max_chat_id=3,
+                create=chat_links.CreateCard(kind='deal', name='Клиент', phone='79001112233')), db.get(User, ids[i % 2]))['entity_id']
+    with ThreadPoolExecutor(max_workers=8) as pool: results = list(pool.map(attach, range(8)))
+    assert len(set(results)) == 1
+    with Session(engine) as db:
+        assert db.query(CRMEntity).filter_by(kind='deal').count() == 1
+        assert db.query(CRMEntity).filter_by(kind='contact').count() == 1
+        assert db.query(CRMChatLink).count() == 1
+        assert db.query(CRMEvent).filter_by(action='max_message_received').count() == 2
+        assert db.query(Notification).filter_by(read_at=None).count() == 0

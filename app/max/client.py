@@ -86,6 +86,7 @@ class MaxSession:
         self.ws = None
         self.seq = 0
         self.login: dict = {}  # payload кадра AUTH (opcode 19)
+        self.pending_notifications: list[dict] = []
 
     # -- низкий уровень ------------------------------------------------
 
@@ -112,6 +113,8 @@ class MaxSession:
             msg = self._recv()
             if msg.get("opcode") == opcode and (seq is None or msg.get("seq") == seq):
                 return msg
+            if msg.get('cmd') == 0 and msg.get('opcode') in (1, 128, 130):
+                self.pending_notifications.append(msg)
         raise TimeoutError(f"нет ответа с opcode {opcode}")
 
     # -- жизненный цикл ---------------------------------------------------

@@ -39,6 +39,8 @@ def routing_config(db: Session = Depends(get_db), user: User = Depends(require_a
 
 @router.put('/api/crm/telephony/routing')
 def save_routing(body: routing.Configuration, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    if body.auto_create_leads and len(settings.megafon_crm_token) < 32:
+        raise HTTPException(422, 'Сначала настройте серверный ключ для событий ВАТС')
     if body.enabled and (len(settings.megafon_crm_token) < 32 or not provider.configured()):
         raise HTTPException(422, 'Сначала настройте серверные ключи и адрес ВАТС')
     return routing.save_config(db, body, user)

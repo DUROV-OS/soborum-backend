@@ -103,6 +103,16 @@ class FrameHandler:
             viewer_id = self.session.viewer_id()
             db = SessionLocal()
             try:
+                from app.crm import max_intake
+                try:
+                    if max_intake.enabled(db, message):
+                        identity = max_intake.prepare(self.session, chat_id, message)
+                        max_intake.ingest(db, identity, message)
+                        db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    log.warning('MAX intake: message processing deferred (%s)', type(exc).__name__)
+                    _wake.set()  # Reconnect and retry recent messages with durable deduplication.
                 client_service.notify_chat_message(
                     db,
                     chat_id=chat_id,
@@ -179,6 +189,19 @@ def _open_session() -> max_client.MaxSession:
 
 def _listen(session: max_client.MaxSession) -> None:
     handler = FrameHandler(lambda frame: session.ws.send(json.dumps(frame)), session=session)
+    # Reconcile recent incoming messages after reconnect. Intake's persisted
+    # enable time and provider message IDs prevent importing the old inbox.
+    for chat_id, messages in getattr(session, 'last_messages', lambda: {})().items():
+        for message in messages:
+            try:
+                with SessionLocal() as db:
+                    from app.crm import max_intake
+                    if max_intake.enabled(db, message):
+                        identity = max_intake.prepare(session, int(chat_id), message)
+                        max_intake.ingest(db, identity, message)
+                        db.commit()
+            except Exception as exc:
+                log.warning('MAX intake: reconnect processing deferred (%s)', type(exc).__name__)
     opened = last_health = last_ping = last_frame = time.monotonic()
     while True:
         now = time.monotonic()
@@ -191,7 +214,8 @@ def _listen(session: max_client.MaxSession) -> None:
             session._send(OP_PING, {"interactive": False})
             last_ping = now
         try:
-            frame = session._recv()
+            pending = getattr(session, 'pending_notifications', [])
+            frame = pending.pop(0) if pending else session._recv()
         except max_client.websocket.WebSocketTimeoutException:
             continue
         last_frame = time.monotonic()

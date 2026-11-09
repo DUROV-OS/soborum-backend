@@ -54,6 +54,8 @@ def attach(db, entity_id, chat_id, label, user):
         raise HTTPException(422, 'Укажите название чата')
     db.add(CRMChatLink(entity_id=entity_id, max_chat_id=chat_id, label=label, created_by_id=user.id))
     db.add(CRMEvent(entity_id=entity_id, actor_id=user.id, action='chat_linked', details={'chat_id': chat_id}))
+    from app.crm.max_intake import attach_pending
+    attach_pending(db, chat_id, entity_id, user.id)
     try:
         db.commit()
     except IntegrityError:
@@ -78,3 +80,38 @@ def require_chat(db, entity_id, chat_id, *, editing=False):
     card(db, entity_id, editing=editing)
     if not any(link['chat_id'] == chat_id for link in links(db, entity_id)['items']):
         raise HTTPException(404, 'Этот чат не привязан к карточке')
+
+
+def phone_choices(db, entity_id):
+    from app.telephony.routing import numbers, normalize
+    from app.clients.models import Client
+    entry = card(db, entity_id)
+    rows = [entry]
+    if entry.kind == 'deal':
+        ids = set(entry.payload.get('contact_ids') or [])
+        if entry.payload.get('company_id'):
+            ids.add(entry.payload['company_id'])
+        rows += db.query(CRMEntity).filter(CRMEntity.id.in_(ids), CRMEntity.archived.is_(False)).all() if ids else []
+    found = {}
+    for row in rows:
+        for number in sorted(numbers(row)):
+            found.setdefault(number, {'phone': '+' + number, 'name': row.name})
+    client = db.get(Client, entry.payload.get('client_id')) if entry.payload.get('client_id') else None
+    if client and normalize(client.phone):
+        number = normalize(client.phone)
+        found.setdefault(number, {'phone': '+' + number, 'name': client.full_name})
+    return {'items': list(found.values())}
+
+
+def start_from_card(db, entity_id, phone, user):
+    from app.telephony.routing import normalize
+    from app.max import service as max_service
+    card(db, entity_id, editing=True)
+    choice = next((item for item in phone_choices(db, entity_id)['items'] if normalize(item['phone']) == normalize(phone)), None)
+    if not choice:
+        raise HTTPException(422, 'Сначала сохраните номер в карточке этого клиента')
+    # Starting a dialog may add a contact in MAX, but never sends a message.
+    result = max_service.start_dialog(choice['phone'], choice['name'][:64])
+    if not any(link['chat_id'] == result['chatId'] for link in links(db, entity_id)['items']):
+        attach(db, entity_id, result['chatId'], (result.get('name') or choice['name'] or 'MAX')[:255], user)
+    return result

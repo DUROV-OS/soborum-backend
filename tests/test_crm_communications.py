@@ -50,3 +50,14 @@ def test_archived_chat_cannot_send_and_unlink_is_scoped(db, api, make_user, monk
     assert client.delete(f'/api/crm/entries/{first.id}/chats/{link.id}').status_code == 200
     assert db.query(CRMChatLink).count() == 0
     assert db.query(CRMEvent).filter_by(action='chat_unlinked').count() == 1
+
+
+def test_manager_connection_status_does_not_expose_max_identity(db, make_user, monkeypatch):
+    from app.telephony import connections
+    monkeypatch.setattr(connections.session_store, 'configured', lambda: True)
+    monkeypatch.setattr(connections.session_store, 'public_status', lambda: {
+        'configured': True, 'state': 'connected', 'last_connected_at': 1794220000,
+        'display_name': 'Private company identity', 'account_id': '12345'})
+    result = connections.status(db, make_user(Module.CLIENTS))['max']
+    assert set(result) == {'configured', 'state', 'checked_at'}
+    assert result['configured'] and result['state'] == 'connected' and result['checked_at']

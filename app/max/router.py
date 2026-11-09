@@ -23,6 +23,7 @@ from app.common.module_access import Module
 from app.crm.chat_models import CRMChatLink
 from app.crm.models import CRMEntity
 from app.max.auth_router import router as connection_router
+from app.max.access import require_global_write
 
 
 class SendMessageIn(BaseModel):
@@ -120,7 +121,7 @@ def get_chat(
 
 
 @app.post("/messages", status_code=201)
-def send_message(payload: SendMessageIn, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def send_message(payload: SendMessageIn, db: Session = Depends(get_db), _: User = Depends(require_global_write)):
     """Отправить текстовое сообщение в чат MAX (MSG_SEND, opcode 64).
 
     ``chat_id=0`` — «Избранное» (заметки для себя)."""
@@ -142,7 +143,7 @@ def _mark_lead_contacted(db: Session, chat_id: int) -> None:
 
 
 @app.post("/messages/forward", status_code=201)
-def forward_message(payload: ForwardMessageIn, _: User = Depends(get_current_user)):
+def forward_message(payload: ForwardMessageIn, _: User = Depends(require_global_write)):
     """Переслать сообщение в другой чат (0098). Ответ как у ``POST /messages``;
     оригинал — в ``message.forwarded``. 502 — MAX отклонил пересылку."""
     return max_service.forward_message(
@@ -151,7 +152,7 @@ def forward_message(payload: ForwardMessageIn, _: User = Depends(get_current_use
 
 
 @app.patch("/messages")
-def edit_message(payload: EditMessageIn, _: User = Depends(get_current_user)):
+def edit_message(payload: EditMessageIn, _: User = Depends(require_global_write)):
     """Изменить текст своего сообщения (0098). 404 — нет сообщения, 403 —
     чужое, 409 — пересланное или с фото/видео (MAX удалил бы вложение), 422 —
     пустой текст без файла, 502 — MAX отклонил правку."""
@@ -159,7 +160,7 @@ def edit_message(payload: EditMessageIn, _: User = Depends(get_current_user)):
 
 
 @app.post("/contacts", status_code=201)
-def start_dialog(payload: StartDialogIn, _: User = Depends(get_current_user)):
+def start_dialog(payload: StartDialogIn, _: User = Depends(require_global_write)):
     """Найти человека в MAX по номеру, при необходимости добавить в контакты
     аккаунта и вернуть его личный диалог (0093): ``{chatId, contactId, name,
     alreadyContact}``. Сообщений не отправляет. 404 — номер не
@@ -174,7 +175,7 @@ async def send_message_with_attachment(
     text: str = Form("", max_length=4000),
     notify: bool = Form(True),
     file: UploadFile | None = None,
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_global_write),
 ):
     """Отправить сообщение с файлом (0015): грузит вложение в MAX перед
     MSG_SEND, отдельный эндпоинт (не `/messages`) — тот принимает чистый

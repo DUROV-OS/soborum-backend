@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 from app.common.module_access import Module
@@ -7,6 +7,8 @@ from app.db.session import get_db
 from app.users.models import User
 from app.crm import communications
 from app.max import service as max_service
+from app.crm.models import CRMEvent
+from app.max.chat_link_guard import lock_chat
 
 router = APIRouter()
 view, edit = require_view(Module.CLIENTS), require_edit(Module.CLIENTS)
@@ -42,6 +44,21 @@ def links(entity_id: int, db: Session = Depends(get_db), user: User = Depends(vi
     return communications.links(db, entity_id)
 
 
+@router.get('/entries/{entity_id}/chat-phones')
+def phones(entity_id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    return communications.phone_choices(db, entity_id)
+
+
+class StartFromCard(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    phone: str = Field(min_length=10, max_length=40)
+
+
+@router.post('/entries/{entity_id}/chats/start')
+def start_chat(entity_id: int, body: StartFromCard, db: Session = Depends(get_db), user: User = Depends(edit)):
+    return communications.start_from_card(db, entity_id, body.phone, user)
+
+
 @router.post('/entries/{entity_id}/chats')
 def attach(entity_id: int, body: ChatLink, db: Session = Depends(get_db), user: User = Depends(edit)):
     return communications.attach(db, entity_id, body.chat_id, body.label, user)
@@ -62,13 +79,36 @@ def history(entity_id: int, chat_id: int, limit: int = Query(30, ge=1, le=100),
 @router.post('/entries/{entity_id}/chats/{chat_id}/messages', status_code=201)
 def send(entity_id: int, chat_id: int, body: Message,
          db: Session = Depends(get_db), user: User = Depends(edit)):
+    return send_to_card(db, entity_id, chat_id, user, body.text)
+
+
+@router.post('/entries/{entity_id}/chats/{chat_id}/messages/attachment', status_code=201)
+def send_attachment(entity_id: int, chat_id: int, file: UploadFile = File(...), text: str = Form('', max_length=4000),
+                    db: Session = Depends(get_db), user: User = Depends(edit)):
+    from app.max.client import MAX_UPLOAD_SIZE
+    communications.require_chat(db, entity_id, chat_id, editing=True)
+    data = file.file.read(MAX_UPLOAD_SIZE + 1)
+    if len(data) > MAX_UPLOAD_SIZE:
+        raise HTTPException(413, 'Файл больше 20 МБ')
+    if not data:
+        raise HTTPException(422, 'Выберите непустой файл')
+    return send_to_card(db, entity_id, chat_id, user, text.strip(),
+                        (data, file.filename or 'file', file.content_type or 'application/octet-stream'))
+
+
+def send_to_card(db, entity_id, chat_id, user, text, upload=None):
+    lock_chat(db, chat_id)
     communications.require_chat(db, entity_id, chat_id, editing=True)
     # A single explicit click sends once. The caller retains its draft if the
     # remote outcome is uncertain; no transport/application retries.
     try:
-        result = max_service.send_message(chat_id, body.text)
+        result = max_service.send_message(chat_id, text, **({'file': upload} if upload else {}))
         if not isinstance(result, dict) or not isinstance(result.get('message'), dict) or not result['message'].get('id'):
             raise HTTPException(502, 'MAX не подтвердил отправку сообщения')
+        db.add(CRMEvent(entity_id=entity_id, actor_id=user.id, action='max_message_sent', details={
+            'text': 'MAX: ' + (text or 'Вложение'), 'chat_id': chat_id, 'message_id': str(result['message']['id']),
+        }))
+        db.commit()
         return result
     except HTTPException as error:
         if error.status_code < 500:

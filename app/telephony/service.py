@@ -8,7 +8,7 @@ from app.clients.models import Client
 from app.crm.models import CRMEntity
 from app.telephony.models import PhoneCall, PhoneCallAudit
 from app.core.config import settings
-from app.telephony import routing
+from app.telephony import routing, leads
 
 
 def phone(value):
@@ -89,9 +89,11 @@ def ingest(db, body, *, remember=True):
         if not number or body.get('type') not in ('INCOMING', 'ACCEPTED', 'COMPLETED', 'CANCELLED', 'OUTGOING'):
             raise HTTPException(422, 'Неверный номер или событие звонка')
         if remember:
-            routing.observe_answer(db, SimpleNamespace(phone=number,
+            event = SimpleNamespace(phone=number,
                 direction=body.get('direction') or ('out' if body['type'] == 'OUTGOING' else 'in'),
-                employee=body.get('user') or body.get('ext') or ''), body)
+                employee=body.get('user') or body.get('ext') or '')
+            leads.ensure(db, event, body)
+            routing.observe_answer(db, event, body)
         db.commit()
         return {'result': 'ok'}
     if not external_id or len(external_id) > 255 or not 7 <= len(number) <= 15:
@@ -134,6 +136,8 @@ def ingest(db, body, *, remember=True):
             row.direction = body['direction']
     if cmd == 'history' or row.started_at is None:
         row.employee = str(body.get('user') or body.get('ext') or row.employee or '')[:255]
+    if remember:
+        leads.ensure(db, row, body)
     match(db, row)
     if remember:
         routing.observe_answer(db, row, body)

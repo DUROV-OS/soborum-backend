@@ -58,6 +58,11 @@ class PhoneRoutingConfig(Base):
     # Ring timing/fallback is applied in the PBX, not in a contact response.
     wait_seconds: Mapped[int] = mapped_column(Integer, default=20)
     pbx_setup_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_create_leads: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_incoming_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_leads_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lead_stage_id: Mapped[int | None] = mapped_column(ForeignKey('crm_entities.id'), nullable=True)
+    lead_actor_id: Mapped[int | None] = mapped_column(ForeignKey('users.id'), nullable=True)
 
 
 class PhoneRoutingMember(Base):
@@ -94,4 +99,20 @@ class PhoneDialRequest(Base):
     phone: Mapped[str] = mapped_column(String(16))
     pbx_user: Mapped[str] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(20), default='pending')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MAXInboundMessage(Base):
+    __tablename__ = 'max_inbound_messages'
+    __table_args__ = (UniqueConstraint('account_id', 'chat_id', 'message_id', name='uq_max_inbound_message'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(40))
+    chat_id: Mapped[str] = mapped_column(String(40))
+    message_id: Mapped[str] = mapped_column(String(100))
+    entity_id: Mapped[int | None] = mapped_column(ForeignKey('crm_entities.id'), nullable=True, index=True)
+    state: Mapped[str] = mapped_column(String(30))
+    phone: Mapped[str] = mapped_column(String(16), default='')
+    sender_name: Mapped[str] = mapped_column(String(255), default='')
+    message_text: Mapped[str] = mapped_column(Text, default='')
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

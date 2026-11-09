@@ -80,6 +80,17 @@ def link_card_from_max(payload: chat_links.LinkFromMax, db: Session = Depends(ge
     return chat_links.create_link(db, payload, user)
 
 
+@app.get('/chat-links/by-chat/{chat_id}')
+def chat_link_target(chat_id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    return chat_links.current_link(db, chat_id)
+
+
+@app.get('/chat-links/unlinked/{chat_id}')
+def unlinked_chat(chat_id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    from app.crm.max_intake import pending
+    return pending(db, chat_id)
+
+
 @app.get('/attention')
 def attention(
     offset: int = Query(0, ge=0),
