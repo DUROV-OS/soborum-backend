@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     browser_phone_gateway_secret: str = ""
     browser_phone_encryption_key: str = ""
     browser_phone_domain: str = "vats801755.megapbx.ru"
+    browser_phone_origin: str = ""
     browser_phone_turn_secret: str = ""
     browser_phone_turn_host: str = ""
 

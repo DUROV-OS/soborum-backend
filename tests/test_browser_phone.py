@@ -14,6 +14,7 @@ from app.telephony.models import BrowserPhoneAccount, BrowserPhoneCall, PhoneCal
 def voice_setup(db, make_user, monkeypatch):
     monkeypatch.setattr(settings, 'browser_phone_gateway', 'http://voice-gateway:8188/janus')
     monkeypatch.setattr(settings, 'browser_phone_gateway_secret', 'isolated-gateway-secret' * 2)
+    monkeypatch.setattr(settings, 'browser_phone_origin', 'https://crm.example.test')
     user = make_user(Module.CLIENTS)
     director = make_user(admin=True)
     director.job_role = 'director'
@@ -111,6 +112,10 @@ def test_websocket_rejects_impersonation_and_does_not_consume_call(db, api, make
         from starlette.websockets import WebSocketDisconnect
         with pytest.raises(WebSocketDisconnect): ws.receive_json()
     assert db.get(BrowserPhoneCall, result['id']).state == 'prepared'
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(f"/api/crm/browser-phone/ws/{result['id']}", headers={'origin': 'https://untrusted.example.test'}):
+            pass
 
 
 def test_websocket_scoped_call_recording_and_single_use(db, api, voice_setup, monkeypatch):
@@ -135,7 +140,7 @@ def test_websocket_scoped_call_recording_and_single_use(db, api, voice_setup, mo
                 await self.queue.put({'plugindata': {'data': {'result': {'event': 'recordingupdated'}}}})
         async def close(self): self.closed = True
     monkeypatch.setattr(browser_router, 'Gateway', FakeGateway)
-    with api(user).websocket_connect(f"/api/crm/browser-phone/ws/{result['id']}") as ws:
+    with api(user).websocket_connect(f"/api/crm/browser-phone/ws/{result['id']}", headers={'origin': 'https://crm.example.test'}) as ws:
         ws.send_json({'type': 'auth', 'token': create_access_token(str(user.id))})
         assert ws.receive_json()['type'] == 'registered'
         ws.send_json({'type': 'offer', 'sdp': 'v=0\r\nm=audio 9 RTP/AVP 0\r\n', 'phone': '79000000099'})

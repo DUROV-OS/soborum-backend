@@ -110,7 +110,7 @@ def ws_user(db, token):
 @router.websocket('/browser-phone/ws/{call_id}')
 async def voice(ws: WebSocket, call_id: UUID, db: Session = Depends(get_db)):
     origin = ws.headers.get('origin', '')
-    if origin and origin not in settings.cors_origins:
+    if origin and origin not in {*settings.cors_origins, settings.browser_phone_origin}:
         await ws.close(code=4403)
         return
     await ws.accept()
