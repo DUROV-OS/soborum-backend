@@ -34,10 +34,10 @@ def engine():
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE integrity_events"))
         conn.execute(text("ALTER TABLE file_assets DROP COLUMN sha256, DROP COLUMN size_bytes"))
-        for table in ('costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
+        for table in ('payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
             conn.execute(text('DROP TABLE '+table))
         covered = set()
-        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py'):
+        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py'):
             filename = Path(__file__).resolve().parents[1] / 'alembic/versions' / name
             spec = spec_from_file_location('migration_'+name, filename)
             migration = module_from_spec(spec); spec.loader.exec_module(migration)
@@ -127,6 +127,50 @@ def test_owner_tampering_and_missing_trigger_are_reported(engine):
         assert protection(db)["state"] == "incomplete"
         db.rollback()
         assert verify(db, checkpoint)["state"] == "consistent"
+
+
+def test_payment_evidence_concurrency_and_immutable_history(engine):
+    from fastapi import HTTPException
+    from app.accounting import evidence as e
+    from app.accounting.models import MoneyMovement,MoneyDirection,MoneySubkind,MoneyMovementStatus
+    from app.accounting.evidence_models import PaymentEvidenceDocument,PaymentEvidenceVersion,PaymentEvidenceCheck
+    from app.accounting.evidence_schemas import EvidenceInput,CheckInput
+    from app.common.files import save_bytes_file,FilePurpose
+    from app.costing.governance_models import CostingApprovalPolicy
+    from app.costing.service import lock
+    with Session(engine) as db:
+        user=new_user(db);uid=user.id
+        db.get(CostingApprovalPolicy,1).accounting_user_id=uid
+        row=MoneyMovement(direction=MoneyDirection.EXPENSE,subkind=MoneySubkind.OTHER_EXPENSE,amount=100.01,tax=0,initiator_id=uid,status=MoneyMovementStatus.POSTED)
+        db.add(row);db.flush();rid=row.id
+        asset=save_bytes_file(db,'synthetic.txt','text/plain',b'synthetic documented amount 100.01',FilePurpose.MONEY_MOVEMENT_DOCUMENT,user)
+        doc=PaymentEvidenceDocument(movement_id=rid,file_id=asset.id,actor_id=uid);db.add(doc);db.commit();docid=doc.id
+        proof={'file_id':asset.id,'locator':'Synthetic first line'}
+        payload={'expected_version':0,'source_hash':e.canonical(e.source(row)),'nature':'expense','payment_evidence':proof,
+                 'allocations':[{'amount':'100.01','category':'factory','scope':'month','month':'2026-11-01','evidence':proof}], 'reason':'Synthetic evidence concurrency'}
+    barrier=Barrier(2)
+    def worker(_):
+        with Session(engine) as db:
+            actor=db.get(User,uid);bind_actor(db,actor);barrier.wait(timeout=10)
+            try:
+                payment=e.movement(db,rid,True)
+                result=e.save_version(db,payment,EvidenceInput(**payload,request_id=uuid4()),actor)
+                value=result.version;db.commit();return value
+            except HTTPException as error:
+                db.rollback();return error.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool: results=list(pool.map(worker,range(2)))
+    assert sorted(results)==[1,409]
+    with Session(engine) as db:
+        version=db.query(PaymentEvidenceVersion).filter_by(movement_id=rid).one()
+        lock(db);actor=db.get(User,uid);row=e.movement(db,rid,True)
+        checked=e.sign(db,row,CheckInput(request_id=uuid4(),version=1,confirmed=True,reason='Personally verified test documents'),actor);db.commit()
+        for table,id in [('payment_evidence_documents',docid),('payment_evidence_versions',version.id),('payment_evidence_checks',checked.id)]:
+            for statement in (f'UPDATE {table} SET id=id WHERE id=:id',f'DELETE FROM {table} WHERE id=:id'):
+                with pytest.raises(DBAPIError): db.execute(text(statement),{'id':id})
+                db.rollback()
+        db.execute(text('ALTER TABLE payment_evidence_versions DISABLE TRIGGER payment_evidence_immutable'))
+        assert protection(db)['state']=='incomplete';db.rollback()
+        assert protection(db)['state']=='active' and verify(db)['state']=='consistent'
 
 
 def test_signed_costing_records_cannot_be_rewritten_by_sql(engine):
