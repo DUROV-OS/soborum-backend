@@ -40,3 +40,5 @@ from app.integrity import models as _integrity_models  # noqa: F401
 from app.costing import governance_models as _costing_governance_models  # noqa: F401
 
 from app.warehouse import control_models as _warehouse_control_models
+
+from app.purchasing import control_models as _purchase_control_models

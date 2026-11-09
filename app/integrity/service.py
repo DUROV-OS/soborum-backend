@@ -7,6 +7,7 @@ from app.integrity.models import IntegrityEvent
 
 ZERO_HASH = "0" * 64
 EXPECTED_TABLES = frozenset("""
+purchase_control_records purchase_control_documents
 warehouse_inventory_counts warehouse_inventory_acts warehouse_control_documents warehouse_control_records
 users user_module_access file_assets clients client_notes crm_entities crm_events
 costing_settings costing_materials costing_items costing_estimates costing_revisions
@@ -34,7 +35,7 @@ def protection(db):
         SELECT c.relname, t.tgname, t.tgenabled, t.tgtype, p.proname
         FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
         JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid
-        WHERE n.nspname='public' AND (t.tgname LIKE 'integrity_%' OR t.tgname IN ('costing_version_immutable','payment_evidence_immutable','actual_cost_immutable','journey_events_immutable','warehouse_control_immutable')) AND NOT t.tgisinternal
+        WHERE n.nspname='public' AND (t.tgname LIKE 'integrity_%' OR t.tgname IN ('costing_version_immutable','payment_evidence_immutable','actual_cost_immutable','journey_events_immutable','warehouse_control_immutable','purchase_control_immutable')) AND NOT t.tgisinternal
     """)).all()
     installed = {(row[0], row[1]): row[2:] for row in rows}
     missing = []
@@ -53,8 +54,8 @@ def protection(db):
         value = installed.get(("integrity_events", name))
         if not value or value[0] not in {"O", "A"} or value[1:] != (kind, "integrity_reject_mutation"):
             missing.append("integrity_events." + name)
-    for table in ('warehouse_inventory_counts','warehouse_inventory_acts','warehouse_control_documents','warehouse_control_records','sales_events','costing_signoffs','costing_overhead_plans','costing_evidence_documents','costing_revisions','payment_evidence_documents','payment_evidence_versions','payment_evidence_checks','actual_cost_documents','actual_cost_records','actual_cost_versions','actual_cost_decisions','actual_cost_closures'):
-        control='warehouse_control_immutable' if table.startswith('warehouse_control_') or table.startswith('warehouse_inventory_') else 'journey_events_immutable' if table == 'sales_events' else 'actual_cost_immutable' if table.startswith('actual_') else 'payment_evidence_immutable' if table.startswith('payment_') else 'costing_version_immutable'
+    for table in ('purchase_control_records','purchase_control_documents','warehouse_inventory_counts','warehouse_inventory_acts','warehouse_control_documents','warehouse_control_records','sales_events','costing_signoffs','costing_overhead_plans','costing_evidence_documents','costing_revisions','payment_evidence_documents','payment_evidence_versions','payment_evidence_checks','actual_cost_documents','actual_cost_records','actual_cost_versions','actual_cost_decisions','actual_cost_closures'):
+        control='purchase_control_immutable' if table.startswith('purchase_control_') else 'warehouse_control_immutable' if table.startswith('warehouse_control_') or table.startswith('warehouse_inventory_') else 'journey_events_immutable' if table == 'sales_events' else 'actual_cost_immutable' if table.startswith('actual_') else 'payment_evidence_immutable' if table.startswith('payment_') else 'costing_version_immutable'
         value=installed.get((table,control))
         if not value or value[0] not in {'O','A'} or value[1:] != (27,'integrity_reject_mutation'):
             missing.append(table+'.'+control)

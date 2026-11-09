@@ -34,10 +34,10 @@ def engine():
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE integrity_events"))
         conn.execute(text("ALTER TABLE file_assets DROP COLUMN sha256, DROP COLUMN size_bytes"))
-        for table in ('warehouse_inventory_counts','warehouse_inventory_acts','warehouse_control_records','warehouse_control_documents','actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
+        for table in ('purchase_control_records','purchase_control_documents','warehouse_inventory_counts','warehouse_inventory_acts','warehouse_control_records','warehouse_control_documents','actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
             conn.execute(text('DROP TABLE '+table))
         covered = set()
-        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py','wc0911202601_warehouse_control.py','wr1011202601_inventory_evidence.py','ei1011202601_electronic_inventory.py'):
+        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py','wc0911202601_warehouse_control.py','wr1011202601_inventory_evidence.py','ei1011202601_electronic_inventory.py','pc1011202601_purchase_controls.py'):
             filename = Path(__file__).resolve().parents[1] / 'alembic/versions' / name
             spec = spec_from_file_location('migration_'+name, filename)
             migration = module_from_spec(spec); spec.loader.exec_module(migration)
@@ -54,6 +54,56 @@ def new_user(db):
                 hashed_password="secret-must-never-enter-history", is_active=True)
     db.add(user); db.commit()
     return user
+
+
+def test_purchasing_concurrent_trust_and_immutable_documents(engine):
+    from app.purchasing import controls as c
+    from app.purchasing.control_models import PurchaseControlRecord as Record, PurchaseControlDocument as Document
+    from app.purchasing.control_schemas import Trust
+    from app.costing.governance_models import CostingApprovalPolicy as Policy
+    from app.common.files import save_bytes_file, FilePurpose
+    from app.warehouse.models import Supplier
+    from fastapi import HTTPException
+    with Session(engine) as db:
+        actor = new_user(db)
+        policy = db.get(Policy, 1)
+        if not policy:
+            policy = Policy(id=1, production_user_id=actor.id, accounting_user_id=actor.id, director_user_id=actor.id)
+            db.add(policy)
+        policy.director_user_id = actor.id
+        supplier = Supplier(name='Concurrent purchasing test'); db.add(supplier); db.flush()
+        asset = save_bytes_file(db, 'test.txt', 'text/plain', b'synthetic evidence', FilePurpose.COSTING_EVIDENCE, actor)
+        doc = Document(supplier_id=supplier.id, file_id=asset.id, actor_id=actor.id); db.add(doc); db.commit()
+        uid, sid, did = actor.id, supplier.id, doc.id
+        body = Trust(request_id=uuid4(), expected_id=0, trusted=True,
+                     evidence={'file_id': asset.id, 'locator': 'Synthetic page'}, reason='Concurrent test')
+    barrier = Barrier(2)
+    def sign(_):
+        with Session(engine) as db:
+            actor = db.get(User, uid); bind_actor(db, actor); barrier.wait(timeout=10)
+            row = c.trust(db, sid, body, actor); id = row.id; db.commit(); return id
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = list(pool.map(sign, range(2)))
+    assert result[0] == result[1]
+    barrier = Barrier(2)
+    def revoke(_):
+        with Session(engine) as db:
+            actor = db.get(User, uid); bind_actor(db, actor); barrier.wait(timeout=10)
+            try:
+                c.trust(db, sid, body.model_copy(update={'request_id': uuid4(), 'expected_id': result[0], 'trusted': False}), actor)
+                db.commit(); return 200
+            except HTTPException as exc:
+                db.rollback(); return exc.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(revoke, range(2))) == [200, 409]
+    with Session(engine) as db:
+        assert db.query(Record).filter_by(supplier_id=sid).count() == 2
+        for table, id in [('purchase_control_records', result[0]), ('purchase_control_documents', did)]:
+            for sql in (f'UPDATE {table} SET id=id WHERE id=:id', f'DELETE FROM {table} WHERE id=:id', f'TRUNCATE {table} CASCADE'):
+                with pytest.raises(DBAPIError):
+                    db.execute(text(sql), {'id': id})
+                db.rollback()
+        assert protection(db)['state'] == 'active' and verify(db)['state'] == 'consistent'
 
 
 def test_warehouse_concurrent_retries_returns_and_immutable_evidence(engine):
