@@ -950,6 +950,7 @@ def approve_request(
         if task:
             task_service.force_close(db, task)
     sync_shortage_task(db, warehouse_material)
+    request._issued_movement_id = movement.id
     return request
 
 

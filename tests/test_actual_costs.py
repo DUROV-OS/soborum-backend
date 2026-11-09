@@ -134,6 +134,32 @@ def test_material_cost_from_receipt_not_current_price(f):
     assert view['records'][0]['review']['state']=='recognized'
 
 
+def test_production_return_invalidates_cost_and_caps_new_recognition(f):
+    from tests.test_warehouse_issue import _block, _norm
+    from tests.warehouse_control_helpers import approved, evidence
+    from tests.test_warehouse_control import issue_body, return_body
+    from app.warehouse import controls as c
+    db=f['db'];p=f['production'];m=f['material'];owner=f['owner']
+    _norm(db,_block(db,p,'Return test',1),m,4)
+    digest,_,scan=approved(db,p.id,owner)
+    body_issue=issue_body(digest,m,2)
+    body_issue.occurred_at=f['receipt'].occurred_at
+    op=c.issue(db,p.id,body_issue,owner);db.commit()
+    f['movement']=db.query(StockMovement).filter_by(operation_id=op.id).one()
+    row=create(f,material_body(f));assert decision(f,row).status_code==200
+    c.return_material(db,f['movement'].id,return_body(scan,1),owner);db.commit()
+    report=f['api'](owner).get(P).json()
+    assert report['records'][0]['review']['state']=='stale'
+    assert report['projects'][0]['recognized_direct']=='0.00'
+    assert decision(f,row,'void').status_code==200
+    corrected=material_body(f,'1');corrected['expected_version']=1
+    response=f['api'](f['accountant']).post(P+f'/records/{row["id"]}/versions',json=corrected)
+    assert response.status_code==201,response.text
+    assert decision(f,response.json()).status_code==200
+    options=f['api'](owner).get(P+'/options').json()
+    assert next(v for v in options['movements'] if v['id']==f['movement'].id)['quantity']=='1'
+
+
 def test_material_quantity_caps_and_wrong_price(f):
     assert f['api'](f['accountant']).post(P+'/records',json=material_body(f,'3')).status_code==409
     data=material_body(f);data['gross_amount']='100';data['allocations'][0]['amount']='100'

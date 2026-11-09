@@ -38,3 +38,5 @@ from app.costing import models as _costing_models  # noqa: F401
 from app.telephony import models as _telephony_models  # noqa: F401
 from app.integrity import models as _integrity_models  # noqa: F401
 from app.costing import governance_models as _costing_governance_models  # noqa: F401
+
+from app.warehouse import control_models as _warehouse_control_models

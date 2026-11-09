@@ -46,7 +46,7 @@ def options(db:Session=Depends(get_db),user=Depends(view)):
         'shipments':[{'id':s.id,'number':s.number,'order_id':s.order_id,'amount':str(s.total)} for s in db.query(SalesShipment).filter_by(status='posted',archived=False).order_by(SalesShipment.id)],
         'documents':[{'id':f.id,'filename':f.filename,'sha256':f.sha256,'integrity':a.checked_file(f)} for f in documents],
         'receipts':[{'id':r.id,'number':r.number,'date':r.occurred_at,'lines':r.lines} for r in db.query(PurchaseReceipt).filter_by(status='posted').filter(PurchaseReceipt.operation_id.isnot(None)).order_by(PurchaseReceipt.id.desc())],
-        'movements':[{'id':m.id,'material_id':m.warehouse_material_id,'title':m.warehouse_material.title,'quantity':str(-a.D(str(m.delta))),
+        'movements':[{'id':m.id,'material_id':m.warehouse_material_id,'title':m.warehouse_material.title,'quantity':str(-a.D(str(m.delta))-a.returned_quantity(db,m.id)),
                       'production':productions[m.id].name,'client_id':productions[m.id].cycle.client.id if productions[m.id].cycle.client else None,
                       'date':str(a.local_date(m.operation.occurred_at if m.operation else m.created_at))} for m in movements if m.id in productions]}
 

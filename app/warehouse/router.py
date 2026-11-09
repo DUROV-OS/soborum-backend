@@ -13,6 +13,8 @@ from app.production.models import MaterialRequest, MaterialRequestStatus
 from app.users.models import User
 from app.warehouse import excel, price_import, service as warehouse_service
 from app.warehouse.documents import router as document_router
+from app.warehouse.control_router import router as control_router
+from app.warehouse import controls
 from app.warehouse.reservations import router as reservation_router
 from app.warehouse.models import (
     IssueDestinationKind,
@@ -274,16 +276,7 @@ def issue_by_techcard(
     db: Session = Depends(get_db),
     user: User = Depends(require_warehouse_edit),
 ):
-    production = warehouse_service.get_production_or_404(db, production_id)
-    operation = warehouse_service.issue_by_techcard(
-        db,
-        production,
-        user,
-        received_by=payload.received_by,
-        lines=None if payload.lines is None else [(l.warehouse_material_id, l.quantity) for l in payload.lines],
-        note=payload.note,
-        occurred_at=payload.occurred_at,
-    )
+    operation = controls.issue(db, production_id, payload, user)
     db.commit()
     db.refresh(operation)
     return _operation_out(operation)
@@ -422,9 +415,8 @@ def pending_requests(db: Session = Depends(get_db), _: User = Depends(require_wa
 
 
 @app.post("/requests/{request_id}/approve", response_model=MaterialRequestOut)
-def approve_request(request_id: int, payload: MaterialRequestIssue | None = None, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)):
-    request = warehouse_service.get_request_or_404(db, request_id)
-    request = warehouse_service.approve_request(db, request, user, quantity=payload.quantity if payload else None)
+def approve_request(request_id: int, payload: MaterialRequestIssue, db: Session = Depends(get_db), user: User = Depends(require_warehouse_edit)):
+    request = controls.issue_request(db, request_id, payload, user)
     db.commit()
     db.refresh(request)
     return request
@@ -661,3 +653,5 @@ def unlink_max_chat(supplier_id: int, db: Session = Depends(get_db), _: User = D
 
 app.include_router(document_router)
 app.include_router(reservation_router)
+
+app.include_router(control_router)

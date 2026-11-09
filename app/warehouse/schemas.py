@@ -1,3 +1,4 @@
+from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
@@ -407,15 +408,25 @@ class TechcardPreviewOut(BaseModel):
     lines: list[TechcardPreviewLine]
 
 
+class TechcardIssueLine(BaseModel):
+    warehouse_material_id: int = Field(gt=0)
+    quantity: Decimal = Field(ge=0, le=1000000000, decimal_places=6, allow_inf_nan=False)
+
+
 class TechcardIssueCreate(BaseModel):
+    request_id: UUID
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     occurred_at: datetime | None = None
     received_by: str = Field(default="", max_length=255)
     note: str | None = Field(default=None, max_length=500)
     # None — отпустить весь остаток норматива.
-    lines: list[OperationLineIn] | None = None
+    lines: list[TechcardIssueLine] | None = None
 
 
 class MaterialRequestIssue(BaseModel):
+    request_id: UUID
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    received_by: str = Field(min_length=1, max_length=255)
     quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=6, allow_inf_nan=False)
 
 

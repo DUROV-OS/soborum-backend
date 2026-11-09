@@ -67,9 +67,10 @@ def closure_basis(db,project,report,body,locking=False):
         belong=productions_of_movements(db,movements)
         for movement in movements:
             if movement.id not in belong or belong[movement.id].id!=id: continue
+            if any(not row['intact'] for row in a.return_facts(db,movement.id)): a.fail('Документ возврата повреждён. Сначала восстановите подтверждение.',409)
             recognized=sum((D(r['data']['quantity']) for r in material_rows if r['data']['movement_id']==movement.id),D(0))
-            if recognized!=-D(str(movement.delta)): a.fail('Не оценена вся фактическая выдача №'+str(movement.id),409)
-            production_sources.append({'production_id':id,'movement_id':movement.id,'quantity':str(recognized)})
+            if recognized!=-D(str(movement.delta))-a.returned_quantity(db,movement.id): a.fail('Не оценена вся фактическая выдача №'+str(movement.id),409)
+            production_sources.append({'production_id':id,'movement_id':movement.id,'quantity':str(recognized),'returns':a.return_facts(db,movement.id)})
     # Persist declared scope and operational references; the accountant confirms consumption,
     # accepted work, zero categories and completeness against the attached closing document.
     net=revenue-body.revenue_excluded_tax;cost=D(report['recognized_subtotal']);profit=net-cost

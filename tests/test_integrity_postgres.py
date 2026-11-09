@@ -34,10 +34,10 @@ def engine():
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE integrity_events"))
         conn.execute(text("ALTER TABLE file_assets DROP COLUMN sha256, DROP COLUMN size_bytes"))
-        for table in ('actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
+        for table in ('warehouse_control_records','warehouse_control_documents','actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
             conn.execute(text('DROP TABLE '+table))
         covered = set()
-        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py'):
+        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py','wc0911202601_warehouse_control.py'):
             filename = Path(__file__).resolve().parents[1] / 'alembic/versions' / name
             spec = spec_from_file_location('migration_'+name, filename)
             migration = module_from_spec(spec); spec.loader.exec_module(migration)
@@ -54,6 +54,51 @@ def new_user(db):
                 hashed_password="secret-must-never-enter-history", is_active=True)
     db.add(user); db.commit()
     return user
+
+
+def test_warehouse_concurrent_retries_returns_and_immutable_evidence(engine):
+    from tests.test_warehouse_control import setup, issue_body, return_body
+    from app.warehouse import controls as c
+    from app.warehouse.control_models import WarehouseControlRecord, WarehouseControlDocument
+    from app.warehouse.models import StockMovement, WarehouseMaterial
+    from app.common.files import FileAsset
+    from app.production.models import BlockMaterial
+    from fastapi import HTTPException
+    with Session(engine,expire_on_commit=False) as db:
+        keeper,producer,m,p,b,b2,digest,doc=setup(db,lambda *args:new_user(db))
+        uid,mid,pid,bid,b2id,fid=keeper.id,m.id,p.id,b.id,b2.id,doc.id
+        body=issue_body(digest,m,6)
+    barrier=Barrier(2)
+    def issue(_):
+        with Session(engine) as db:
+            actor=db.get(User,uid);bind_actor(db,actor);barrier.wait(timeout=10)
+            op=c.issue(db,pid,body,actor);oid=op.id;db.commit();return oid
+    with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(issue,range(2)))
+    assert results[0]==results[1]
+    with Session(engine) as db:
+        movement=db.query(StockMovement).filter_by(operation_id=results[0]).one();movement_id=movement.id
+        ret=return_body(db.get(FileAsset,fid),4)
+    barrier=Barrier(2)
+    def restore(_):
+        with Session(engine) as db:
+            actor=db.get(User,uid);bind_actor(db,actor);barrier.wait(timeout=10)
+            try:
+                op=c.return_material(db,movement_id,ret.model_copy(update={'request_id':uuid4()}),actor);db.commit();return 200
+            except HTTPException as exc:db.rollback();return exc.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(restore,range(2)))
+    assert sorted(results)==[200,409]
+    with Session(engine) as db:
+        assert db.get(WarehouseMaterial,mid).quantity_in_stock==28
+        assert db.get(BlockMaterial,bid).quantity_provided==0
+        assert db.get(BlockMaterial,b2id).quantity_provided==2
+        assert c.returned_quantity(db,movement_id)==4
+        record=db.query(WarehouseControlRecord).filter_by(production_id=pid,kind='return').one()
+        doc=db.query(WarehouseControlDocument).filter_by(file_id=fid).one()
+        for table,id in [('warehouse_control_records',record.id),('warehouse_control_documents',doc.id)]:
+            for sql in (f'UPDATE {table} SET id=id WHERE id=:id',f'DELETE FROM {table} WHERE id=:id',f'TRUNCATE {table} CASCADE'):
+                with pytest.raises(DBAPIError):db.execute(text(sql),{'id':id})
+                db.rollback()
+        assert protection(db)['state']=='active' and verify(db)['state']=='consistent'
 
 
 def test_real_triggers_cover_bulk_changes_deletions_and_atomic_rollback(engine):

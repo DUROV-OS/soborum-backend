@@ -18,6 +18,7 @@ from app.purchasing.returns import returned_lines
 from app.sales.models import SalesOrder
 from app.warehouse.models import StockMovement, StockMovementReason
 from app.warehouse.service import productions_of_movements
+from app.warehouse.controls import returned_quantity, return_facts
 from app.clients.models import Client
 
 
@@ -122,7 +123,8 @@ def source(db,body,exclude=None,locking=False):
         fail('Выдача должна относиться к производству клиента выбранной сметы')
     # An individual lot is selected explicitly. No undocumented FIFO/average-price policy is invented.
     received=D(str(line['quantity']));returned=returned_lines(db,receipt.id)[body.receipt_line]
-    issued=-D(str(movement.delta))
+    issued=-D(str(movement.delta))-returned_quantity(db,movement.id)
+    if any(not row['intact'] for row in return_facts(db,movement.id)): fail('Документ возврата отсутствует или изменён. Требуется сверка склада.',409)
     used_receipt=used_movement=D(0)
     for v in other:
         r=v.content['request']
@@ -142,7 +144,7 @@ def source(db,body,exclude=None,locking=False):
     if expected<=0 or body.gross_amount!=expected: fail('Сумма материалов по партии с учётом округления частичных выдач: '+money(expected)+' ₽')
     result['material']={'receipt_id':receipt.id,'receipt_line':body.receipt_line,'line':line,'supplier_id':receipt.supplier_id,
         'occurred_at':utc(receipt.occurred_at).isoformat(),'returned':str(returned.normalize()),'movement_id':movement.id,'delta':str(D(str(movement.delta)).normalize()),
-        'reason':movement.reason.value,'operation_id':movement.operation_id,'receipt_operation_id':receipt.operation_id,
+        'production_returns':return_facts(db,movement.id),'reason':movement.reason.value,'operation_id':movement.operation_id,'receipt_operation_id':receipt.operation_id,
         'inbound_movements':[{'id':m.id,'delta':str(D(str(m.delta)).normalize())} for m in sorted(received_movements,key=lambda m:m.id)],
         'currency':order.currency if order else 'RUB','valuation':valuation,'production_id':production.id,'issued_on':str(local_date(issued_at))}
     return result
