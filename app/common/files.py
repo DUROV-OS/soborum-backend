@@ -4,6 +4,7 @@ here as a FileAsset and references it by id. Kept out of any single business
 section since it's used by several of them."""
 
 import enum
+import hashlib
 import os
 import uuid
 from datetime import datetime
@@ -11,7 +12,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.core.config import settings
@@ -73,6 +74,8 @@ class FileAsset(Base):
     purpose: Mapped[FilePurpose] = mapped_column(Enum(FilePurpose, name="file_purpose"), nullable=False)
     uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
 
     uploaded_by: Mapped["User"] = relationship()  # noqa: F821
 
@@ -86,6 +89,8 @@ class FileAssetOut(BaseModel):
     purpose: FilePurpose
     uploaded_by_id: int
     created_at: datetime
+    sha256: str | None = None
+    size_bytes: int | None = None
 
 
 def _writable_storage_dir() -> str:
@@ -102,22 +107,7 @@ def _writable_storage_dir() -> str:
 def save_text_file(db: Session, filename: str, content: str, purpose: FilePurpose, user) -> FileAsset:
     """Persist AI-generated (or otherwise in-memory) text content as a FileAsset,
     for cases with no incoming UploadFile - see save_upload_file for that case."""
-    storage = _writable_storage_dir()
-    disk_name = f"{uuid.uuid4().hex}_{filename}"
-    path_on_disk = os.path.join(storage, disk_name)
-    with open(path_on_disk, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    asset = FileAsset(
-        filename=filename,
-        content_type="text/plain; charset=utf-8",
-        path_on_disk=path_on_disk,
-        purpose=purpose,
-        uploaded_by_id=user.id,
-    )
-    db.add(asset)
-    db.flush()
-    return asset
+    return save_bytes_file(db, filename, "text/plain; charset=utf-8", content.encode("utf-8"), purpose, user)
 
 
 def save_bytes_file(
@@ -126,7 +116,7 @@ def save_bytes_file(
     """Persist raw bytes (e.g. a file bundled with the code and attached by a
     one-off import script, not an incoming request) as a FileAsset."""
     storage = _writable_storage_dir()
-    disk_name = f"{uuid.uuid4().hex}_{filename}"
+    disk_name = uuid.uuid4().hex
     path_on_disk = os.path.join(storage, disk_name)
     with open(path_on_disk, "wb") as f:
         f.write(data)
@@ -137,6 +127,8 @@ def save_bytes_file(
         path_on_disk=path_on_disk,
         purpose=purpose,
         uploaded_by_id=user.id,
+        sha256=hashlib.sha256(data).hexdigest(),
+        size_bytes=len(data),
     )
     db.add(asset)
     db.flush()
@@ -145,10 +137,14 @@ def save_bytes_file(
 
 def save_upload_file(db: Session, upload_file: UploadFile, purpose: FilePurpose, user) -> FileAsset:
     storage = _writable_storage_dir()
-    disk_name = f"{uuid.uuid4().hex}_{upload_file.filename}"
+    disk_name = uuid.uuid4().hex
     path_on_disk = os.path.join(storage, disk_name)
+    digest, size = hashlib.sha256(), 0
     with open(path_on_disk, "wb") as f:
-        f.write(upload_file.file.read())
+        while chunk := upload_file.file.read(1024 * 1024):
+            f.write(chunk)
+            digest.update(chunk)
+            size += len(chunk)
 
     asset = FileAsset(
         filename=upload_file.filename or disk_name,
@@ -156,6 +152,8 @@ def save_upload_file(db: Session, upload_file: UploadFile, purpose: FilePurpose,
         path_on_disk=path_on_disk,
         purpose=purpose,
         uploaded_by_id=user.id,
+        sha256=digest.hexdigest(),
+        size_bytes=size,
     )
     db.add(asset)
     db.flush()
@@ -165,13 +163,35 @@ def save_upload_file(db: Session, upload_file: UploadFile, purpose: FilePurpose,
 router = APIRouter(tags=["files"])
 
 
+def file_integrity(asset: FileAsset) -> str:
+    """Compare actual bytes, never silently attest an old upload retrospectively."""
+    if not asset.sha256 or asset.size_bytes is None:
+        return "not_recorded"
+    try:
+        digest, size = hashlib.sha256(), 0
+        with open(asset.path_on_disk, "rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+    except OSError:
+        return "unavailable"
+    return "matches" if size == asset.size_bytes and digest.hexdigest() == asset.sha256 else "mismatch"
+
+
+def verified_file_response(asset: FileAsset):
+    # Caller must already enforce the document's business access policy.
+    if file_integrity(asset) in {"mismatch", "unavailable"}:
+        raise HTTPException(status_code=409, detail="Контрольная сумма документа не совпадает или файл недоступен. Требуется проверка оригинала.")
+    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
+
+
 @router.get("/files/{file_id}")
 def download_file(file_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     asset = db.get(FileAsset, file_id)
     if not asset:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл не найден")
     required_module = PURPOSE_MODULE.get(asset.purpose)
-    if required_module and not user.has_access(required_module):
+    if required_module is None or not user.has_access(required_module):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа к этому файлу")
     from app.crm.import_access import shared_imported_attachment, reviewed_response
     imported = shared_imported_attachment(db, user, asset)
@@ -179,4 +199,4 @@ def download_file(file_id: int, db: Session = Depends(get_db), user=Depends(get_
         _, item, content = imported
         if content is not None:
             return reviewed_response(item, content)
-    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
+    return verified_file_response(asset)

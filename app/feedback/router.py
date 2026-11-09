@@ -146,7 +146,8 @@ def download_feedback_file(
     if not attachment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл заявки не найден")
     asset = attachment.file_asset
-    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
+    from app.common.files import verified_file_response
+    return verified_file_response(asset)
 
 
 @app.get(
@@ -198,7 +199,8 @@ def export_request_file(request_id: int, file_id: int, db: Session = Depends(get
     if not attachment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл заявки не найден")
     asset = attachment.file_asset
-    return FileResponse(asset.path_on_disk, media_type=asset.content_type, filename=asset.filename)
+    from app.common.files import verified_file_response
+    return verified_file_response(asset)
 
 
 def _readable_request(db: Session, user: User, request_id: int) -> FeedbackRequest:
