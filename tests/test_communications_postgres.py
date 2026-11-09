@@ -110,7 +110,7 @@ def test_concurrent_dial_replays_never_start_twice(engine, monkeypatch):
 
 
 def test_migration_upgrade_downgrade_preserves_crm_and_starts_disabled(engine):
-    Base.metadata.create_all(engine, tables=[t for t in Base.metadata.sorted_tables if t.name not in TABLES])
+    Base.metadata.create_all(engine, tables=[t for t in Base.metadata.sorted_tables if t.name not in TABLES | {'browser_phone_calls', 'browser_phone_accounts'}])
     with Session(engine) as db:
         db.add(CRMEntity(kind='contact', name='Before migration', payload={'phone': '79001112233', 'customer': {'phone_2': '79002223344'}}))
         db.commit()
@@ -173,3 +173,58 @@ def test_concurrent_max_delivery_and_manual_creation_are_idempotent(engine):
         assert db.query(CRMChatLink).count() == 1
         assert db.query(CRMEvent).filter_by(action='max_message_received').count() == 2
         assert db.query(Notification).filter_by(read_at=None).count() == 0
+
+
+def test_browser_dial_concurrency_has_one_active_call(engine, monkeypatch):
+    from app.core.config import settings
+    from app.telephony import browser_phone
+    from app.telephony.models import BrowserPhoneCall, PhoneCall
+    monkeypatch.setattr(settings, 'browser_phone_gateway', 'http://voice-gateway:8188/janus')
+    monkeypatch.setattr(settings, 'browser_phone_gateway_secret', 'isolated-test-secret' * 3)
+    ids = seed(engine)
+    with Session(engine) as db:
+        user = db.get(User, ids[0])
+        browser_phone.save_account(db, user, user.id, 'synthetic', 'synthetic-password', True)
+        entry = CRMEntity(kind='contact', name='Concurrent caller', payload={'phone': '79000000001'})
+        db.add(entry); db.commit(); entity_id = entry.id
+    barrier = Barrier(8)
+    request_id = uuid4()
+    def prepare(index):
+        with Session(engine) as db:
+            barrier.wait(timeout=15)
+            try:
+                return browser_phone.prepare(db, db.get(User, ids[0]), entity_id, '79000000001',
+                                              request_id if index < 8 else uuid4())['id']
+            except HTTPException as error:
+                assert error.status_code == 409
+                return None
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(prepare, range(8)))
+    assert set(results) == {str(request_id)}
+    with Session(engine) as db:
+        assert db.query(PhoneCall).count() == 1
+        browser_phone.finish(db, db.get(BrowserPhoneCall, str(request_id)))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(prepare, range(8,16)))
+    assert sum(value is not None for value in results) == 1
+    with Session(engine) as db:
+        assert db.query(PhoneCall).count() == 2
+
+
+def test_browser_phone_migration_preserves_existing_calls_and_crm(engine):
+    tables = {'browser_phone_accounts', 'browser_phone_calls'}
+    Base.metadata.create_all(engine, tables=[t for t in Base.metadata.sorted_tables if t.name not in tables])
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO crm_entities (kind,name,payload,archived,version) VALUES ('contact','Existing buyer','{}',false,1)"))
+    spec = spec_from_file_location('browser_phone_migration', Path(__file__).parents[1] / 'alembic/versions/bp0911202601_browser_phone.py')
+    module = module_from_spec(spec); spec.loader.exec_module(module)
+    assert module.down_revision == 'ch0911202601'
+    with engine.begin() as conn:
+        module.op = Operations(MigrationContext.configure(conn))
+        before = conn.execute(text('SELECT id,name,payload::text FROM crm_entities')).all()
+        module.upgrade()
+        assert tables <= set(inspect(conn).get_table_names())
+        module.downgrade()
+        assert not tables.intersection(inspect(conn).get_table_names())
+        assert conn.execute(text('SELECT id,name,payload::text FROM crm_entities')).all() == before
+        assert 'phone_calls' in inspect(conn).get_table_names()

@@ -185,6 +185,8 @@ def main():
                 log.warning('Archive reconciliation failed kind=%s', type(error).__name__)
             next_sync = time.monotonic() + 600
         with SessionLocal() as db:
+            from app.telephony.local_recording import finalize_one
+            finalize_one(db)
             id = claim(db)
         if id is None:
             time.sleep(15)
