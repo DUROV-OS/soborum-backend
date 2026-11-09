@@ -135,6 +135,17 @@ class SectionAnalyticsOut(BaseModel):
     # Заполнено, если модель дала статус лучше, чем позволяют факты, и
     # сервер заменил его полом (см. app/ai/analytics.py::status_floor).
     status_floor_reason: str | None = None
+    data_as_of: datetime | None = None
+    checked_at: datetime | None = None
+    snapshot: dict = Field(default_factory=dict)
+    source_hash: str | None = None
+    analysis_version: str | None = None
+    model: str | None = None
+    citations: list[str] = Field(default_factory=list)
+    cached: bool = False
+    input_changed: bool = False
+    human_approved: Literal[False] = False
+    rule_findings: list[str] = Field(default_factory=list)
 
 
 class PriorityTaskOut(BaseModel):
