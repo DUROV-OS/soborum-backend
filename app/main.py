@@ -52,6 +52,7 @@ from app.purchasing.router import app as purchasing_app
 from app.sales.router import app as sales_app
 from app.costing.router import app as costing_app
 from app.telephony.router import router as telephony_router
+from app.integrity.router import app as integrity_app
 from app.telephony.browser_router import router as browser_phone_router
 
 app = FastAPI(title="Soborbum")
@@ -166,6 +167,7 @@ app.mount("/api/crm", crm_app)
 app.mount("/api/purchasing", purchasing_app)
 app.mount("/api/sales", sales_app)
 app.mount("/api/costing", costing_app)
+app.mount("/api/integrity", integrity_app)
 app.mount("/api/marketing", marketing_app)
 app.mount("/api/house-models", house_models_app)
 app.mount("/api/max", max_app)

@@ -34,3 +34,4 @@ from app.purchasing import models as _purchasing_models  # noqa: F401
 from app.sales import models as _sales_models  # noqa: F401
 from app.costing import models as _costing_models  # noqa: F401
 from app.telephony import models as _telephony_models  # noqa: F401
+from app.integrity import models as _integrity_models  # noqa: F401
