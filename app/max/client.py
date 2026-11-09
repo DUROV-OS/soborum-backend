@@ -8,8 +8,8 @@
 read-only, БД не трогаем — кроме upload_file (0015), которая реально
 загружает файл в MAX перед отправкой вложения.
 
-Токен берётся из настроек (``settings.max_token`` / переменная ``MAX_TOKEN``).
-Обновить: ``JSON.parse(localStorage.__oneme_auth).token`` на web.max.ru.
+Сессия хранится приватно на сервере. Повторный вход выполняется владельцем
+через QR-код; MAX_TOKEN используется только для первоначального переноса.
 """
 
 from __future__ import annotations
@@ -72,12 +72,17 @@ def _reason(reply: dict) -> str:
     return p.get("localizedMessage") or p.get("message") or str(p)
 
 
+class AuthRejected(HTTPException):
+    def __init__(self):
+        super().__init__(502, "Рабочий аккаунт MAX требует повторного входа владельцем")
+
+
 class MaxSession:
     """Одно websocket-соединение; HELLO + AUTH выполняются в open()."""
 
-    def __init__(self, token: str):
+    def __init__(self, token: str, *, device_id: str | None = None):
         self.token = token
-        self.device_id = str(uuid.uuid4())
+        self.device_id = device_id or str(uuid.uuid4())
         self.ws = None
         self.seq = 0
         self.login: dict = {}  # payload кадра AUTH (opcode 19)
@@ -100,7 +105,10 @@ class MaxSession:
 
     def _wait(self, opcode: int, seq: int | None = None, tries: int = 80) -> dict:
         """Пропускаем технические / асинхронные кадры до нужного нам."""
+        deadline = time.monotonic() + 20
         for _ in range(tries):
+            if time.monotonic() >= deadline:
+                break
             msg = self._recv()
             if msg.get("opcode") == opcode and (seq is None or msg.get("seq") == seq):
                 return msg
@@ -117,6 +125,10 @@ class MaxSession:
             raise
 
     def _open_authenticated(self) -> "MaxSession":
+        self.open_transport()
+        return self.authenticate()
+
+    def open_transport(self) -> "MaxSession":
         self.ws = websocket.WebSocket()
         self.ws.settimeout(15)
         self.ws.connect(WS_URL, origin=ORIGIN, header=[f"User-Agent: {UA}"])
@@ -124,9 +136,9 @@ class MaxSession:
         s = self._send(6, {
             "userAgent": {
                 "deviceType": "WEB", "locale": "ru", "deviceLocale": "ru",
-                "osVersion": "macOS", "deviceName": "Chrome",
+                "osVersion": "macOS", "deviceName": "Durov OS",
                 "headerUserAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                "appVersion": "25.12.14", "screen": "982x1512 2.0x",
+                "appVersion": settings.max_app_version, "screen": "982x1512 2.0x",
                 "timezone": "Europe/Moscow",
             },
             "deviceId": self.device_id,
@@ -134,7 +146,9 @@ class MaxSession:
         hello = self._wait(6, s)
         if hello.get("cmd") != 1 or (hello.get("payload") or {}).get("error"):
             raise HTTPException(502, "MAX не подтвердил соединение; повторите позже")
+        return self
 
+    def authenticate(self) -> "MaxSession":
         # chatsSync=0 -> сервер возвращает полный текущий список чатов
         s = self._send(19, {
             "interactive": False,
@@ -148,12 +162,20 @@ class MaxSession:
         frame = self._wait(19, s)
         payload = frame.get("payload")
         if frame.get("cmd") == 3 or (isinstance(payload, dict) and payload.get("error")):
-            raise HTTPException(502, "Рабочий аккаунт MAX требует повторного входа владельцем")
+            # Only a definite token rejection requires the owner. A provider
+            # outage/rate limit must remain recoverable without another QR.
+            code = payload.get('error') if isinstance(payload, dict) else None
+            if code in ('login.token', 'auth.token', 'token.invalid', 'token.expired', 'session.expired', 'session.revoked'):
+                raise AuthRejected()
+            raise HTTPException(502, "MAX временно не подтвердил вход; соединение будет повторено")
         if frame.get("cmd") != 1 or not isinstance(payload, dict) or not isinstance(payload.get("profile"), dict):
             raise HTTPException(502, "MAX не подтвердил аккаунт; подключение остановлено")
         self.login = payload
         if not self.viewer_id().isdigit() or int(self.viewer_id()) <= 0:
             raise HTTPException(502, "MAX не подтвердил аккаунт; подключение остановлено")
+        rotated = payload.get('token')
+        if isinstance(rotated, str) and 1 <= len(rotated) <= 16384:
+            self.token = rotated
         return self
 
     def close(self) -> None:
@@ -412,13 +434,9 @@ def session():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Пакет websocket-client не установлен",
         )
-    if not settings.max_token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="MAX_TOKEN не задан в конфигурации",
-        )
     try:
-        s = MaxSession(settings.max_token).open()
+        from app.max.connection import open_session
+        s = open_session()
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001

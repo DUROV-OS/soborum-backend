@@ -195,9 +195,10 @@ class Settings(BaseSettings):
         return bool(self.moysklad_mcp_url and self.moysklad_mcp_client_id and self.moysklad_mcp_client_secret)
 
     # --- Мессенджер MAX (app/max) ---
-    # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
-    # web.max.ru. Без него раздел /api/max отдаёт 503.
+    # Legacy token is imported once into private persistent storage.
     max_token: str = ""
+    max_session_file: str = ""
+    max_app_version: str = "26.8.4"
     # Кому агент предлагает сообщения в MAX (0112). 0 — сценарий выключен.
     agent_max_chat_id: int = 0
     agent_max_recipient: str = ""

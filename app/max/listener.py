@@ -20,7 +20,7 @@ push-кадры сервера:
 (проверено вживую 04.10.2026), поэтому слушатель шлёт пинг (opcode 1,
 ``{"interactive": false}``) каждые ``PING_INTERVAL`` с — сервер отвечает
 ``cmd 1``. Обрыв, ошибка или ни одного кадра дольше ``IDLE_TIMEOUT`` →
-переподключение с растущей паузой. ``deviceId`` один на процесс: переподключения не плодят у
+переподключение с растущей паузой. ``deviceId`` сохраняется с сессией: переподключения не плодят у
 аккаунта новых «устройств». После каждого переподключения фронту уходит
 ``resync`` — за время обрыва могли прийти сообщения без push.
 """
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import threading
 import time
 import uuid
@@ -38,6 +39,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.max import client as max_client
 from app.max import realtime
+from app.max import session_store as store
 
 log = logging.getLogger("app.max.listener")
 
@@ -59,6 +61,15 @@ RETRY_MAX_SECONDS = 300
 
 _started = False
 _device_id = str(uuid.uuid4())
+_wake = threading.Event()
+
+
+def wake():
+    _wake.set()
+
+
+class ReconnectRequested(Exception):
+    pass
 
 
 class FrameHandler:
@@ -101,8 +112,8 @@ class FrameHandler:
                 db.commit()
             finally:
                 db.close()
-        except Exception:  # noqa: BLE001 — уведомление не должно рвать сессию
-            log.exception("MAX listener: не удалось уведомить о сообщении в чате %r", chat_id)
+        except Exception as exc:  # noqa: BLE001 — без текстов ответов провайдера
+            log.warning("MAX listener: не удалось уведомить о сообщении (%s)", type(exc).__name__)
 
     def handle(self, frame: dict) -> None:
         if frame.get("cmd") != 0:
@@ -147,7 +158,7 @@ def start_max_listener() -> None:
     ``MAX_TOKEN``, с ``MAX_LIVE_UPDATES=false`` или без websocket-client —
     не запускается: онлайн-обновления нет, остальное работает как раньше."""
     global _started
-    if _started or not settings.max_live_updates or not settings.max_token or max_client.websocket is None:
+    if _started or not settings.max_live_updates or not (settings.max_token or store.configured()) or max_client.websocket is None:
         return
     _started = True
     threading.Thread(target=_run, name="max-listener", daemon=True).start()
@@ -155,18 +166,25 @@ def start_max_listener() -> None:
 
 
 def _open_session() -> max_client.MaxSession:
-    session = max_client.MaxSession(settings.max_token)
-    session.device_id = _device_id
-    session.open()
+    if store.configured():
+        from app.max.connection import open_session
+        session = open_session()
+    else:
+        session = max_client.MaxSession(settings.max_token)
+        session.device_id = _device_id
+        session.open()
     session.ws.settimeout(RECV_TIMEOUT)
     return session
 
 
 def _listen(session: max_client.MaxSession) -> None:
     handler = FrameHandler(lambda frame: session.ws.send(json.dumps(frame)), session=session)
-    last_ping = last_frame = time.monotonic()
+    opened = last_health = last_ping = last_frame = time.monotonic()
     while True:
         now = time.monotonic()
+        if _wake.is_set() or now - opened >= 6 * 60 * 60:
+            _wake.clear()
+            raise ReconnectRequested()
         if now - last_frame > IDLE_TIMEOUT:
             raise TimeoutError(f"MAX молчит дольше {IDLE_TIMEOUT} с")
         if now - last_ping >= PING_INTERVAL:
@@ -178,6 +196,12 @@ def _listen(session: max_client.MaxSession) -> None:
             continue
         last_frame = time.monotonic()
         handler.handle(frame)
+        if store.configured() and now - last_health >= PING_INTERVAL:
+            generation = getattr(session, 'managed_generation', None)
+            if store.read()['generation'] != generation:
+                raise ReconnectRequested()
+            store.record(generation, state='connected', last_event_at=time.time(), error_code=None, retry_at=None)
+            last_health = now
 
 
 def _run() -> None:
@@ -185,15 +209,32 @@ def _run() -> None:
     while True:
         session = None
         try:
+            if store.configured():
+                current = store.read()
+                if not current['token'] or current['state'] in ('reauth_required', 'account_mismatch'):
+                    _wake.wait(30)
+                    _wake.clear()
+                    continue
             session = _open_session()
             delay = RETRY_MIN_SECONDS
             log.info("MAX listener: сессия открыта")
             realtime.publish({"type": "resync"})
             _listen(session)
+        except ReconnectRequested:
+            delay = RETRY_MIN_SECONDS
+            continue
         except Exception as exc:  # noqa: BLE001 — любой сбой = переподключение
-            log.warning("MAX listener: сессия прервана (%s), повтор через %s с", exc, delay)
+            # Provider error strings can contain credential-bearing payloads.
+            log.warning("MAX listener: сессия прервана (%s), повтор через %s с", type(exc).__name__, delay)
+            if store.configured() and session is not None and not isinstance(exc, max_client.AuthRejected):
+                try:
+                    store.record(getattr(session, 'managed_generation', None), state='reconnecting',
+                                 error_code='connection_failed', retry_at=time.time() + delay)
+                except Exception:
+                    log.warning("MAX listener: приватное хранилище временно недоступно")
         finally:
             if session is not None:
                 session.close()
-        time.sleep(delay)
+        _wake.wait(delay * random.uniform(0.8, 1.2))
+        _wake.clear()
         delay = min(delay * 2, RETRY_MAX_SECONDS)
