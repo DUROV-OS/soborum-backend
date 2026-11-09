@@ -59,7 +59,7 @@ def lock(db):
 
 def settings_out(db):
     row = db.get(CostingSettings, 1)
-    return {"version": row.version if row else 0, "content": row.content if row else SettingsData().model_dump(mode="json")}
+    return {"version": row.version if row else 0, "content": SettingsData.model_validate(row.content).model_dump(mode='json') if row else SettingsData().model_dump(mode="json")}
 
 
 def audit(db, user, entity, id, action, before, after):
@@ -103,6 +103,7 @@ def profile_for(item, settings):
     if profile is None:
         fail("Не найден профиль расходов: " + data["profile"])
     profile = deepcopy(profile)
+    profile.setdefault('realtor','0')
     if data.get("margin") is not None:
         profile["margin"] = data["margin"]
     Profile.model_validate(profile)
@@ -164,7 +165,7 @@ def component(item, settings, materials, today, replacement=True):
     if not data["expenses"].get("evidence"):
         missing.append("Укажите основание фиксированных расходов, в том числе нулевых")
     base_cost = raw - credit + fixed
-    rates = sum((decimal(profile[k]) for k in ("labor", "management", "tax")), ZERO) / 100
+    rates = sum((decimal(profile[k]) for k in ("labor", "management", "tax", "realtor")), ZERO) / 100
     denominator = 1 - decimal(profile["margin"]) / 100 - rates
     if denominator <= 0:
         missing.append("Целевая маржа недостижима при заданных процентах")
@@ -206,11 +207,17 @@ def sources(db, previous=None):
     # Existing materials and item definitions stay frozen on ordinary edits.
     items.update(old.get("items", {}))
     materials.update(old.get("materials", {}))
-    return {"settings": settings, "items": items, "materials": materials,
-            "priced_on": old.get("priced_on") or datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()}
+    from app.costing.governance import populate_item_approvals
+    return populate_item_approvals(db, {"settings": settings, "items": items, "materials": materials,
+            "priced_on": old.get("priced_on") or datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()})
 
 
 def inspect_item(item, source):
+    if not source.get('production_approved',{}).get(str(item['id']),False):
+        from app.costing.technical_basis import item_basis
+        return {"price":None,"cost":None,"profit":None,"margin_percent":None,"recommended":None,
+                "missing":["До формирования цены состав должен согласовать начальник производства"],
+                "lines":[{**line,'price':None,'amount':None} for line in item_basis(item,source)['lines']]}
     if item["kind"] == "package":
         members, missing, listed, base, costs = [], [], ZERO, ZERO, ZERO
         for line in item["content"]["addons"]:
@@ -254,7 +261,12 @@ def inspect_item(item, source):
             "missing": list(dict.fromkeys(p["missing"])), "lines": p["lines"], "replacement_lines": p["replacement_lines"]}
 
 
-def build_snapshot(db, payload: EstimateInput, previous=None, refresh=False):
+def build_snapshot(db, payload: EstimateInput, previous=None, refresh=False, estimate_id=None):
+    from app.costing.governance import build_snapshot as controlled_snapshot
+    return controlled_snapshot(db,payload,previous,refresh,estimate_id)
+
+
+def calculate_snapshot(db, payload: EstimateInput, previous=None, refresh=False):
     source = sources(db, previous.get("sources") if previous and not refresh else None)
     item = deepcopy(source["items"].get(str(payload.template_id)))
     if not item or item["kind"] != "template" or item["archived"]:
@@ -347,9 +359,9 @@ def build_snapshot(db, payload: EstimateInput, previous=None, refresh=False):
         fail("Укажите либо итоговую договорную цену, либо скидку")
     ratio = price / listed if listed > 0 else ZERO
     rate_cost = sum((amount * ratio * p["rates"] for p, amount in priced_parts), ZERO)
-    revenue_expenses = [{"label": source["settings"][key + "_label"],
+    revenue_expenses = [{"label": source["settings"].get(key + "_label",'Комиссия риелтора'),
                          "amount": money(sum((amount * ratio * decimal(p["profile"][key]) / 100 for p, amount in priced_parts), ZERO))}
-                        for key in ("labor", "management", "tax")]
+                        for key in ("labor", "management", "tax", "realtor")]
     cost = base_cost + rate_cost
     profit = price - cost
     margin = profit / price * 100 if price > 0 else None
@@ -433,4 +445,12 @@ def estimate_out(db, row, user, number=None):
                        "priced_on": snap["sources"]["priced_on"],
                        "base_lines": inp["lines"] if inp["lines"] is not None else snap["sources"]["items"][str(inp["template_id"])]["content"]["lines"]})
         result["input"].update({k: inp[k] for k in ("lines", "profile", "expenses", "image")})
+        result['input']['overhead_plan_id']=inp.get('overhead_plan_id')
+        result['overhead_plan']=snap.get('overhead_plan')
+    from app.costing.governance import review_state
+    governance=review_state(db,row,revision)
+    result['governance']={key:value for key,value in governance.items() if cost_access(user) or key!='issues'}
+    if not cost_access(user) and not governance['director_approved']:
+        result['price']=result['list_price']=result['discount_amount']=None
+        result['commercial']=[{**line,'unit_price':None,'amount':None} for line in result['commercial']]
     return result

@@ -23,6 +23,7 @@ from app.db.session import get_db
 
 
 class FilePurpose(str, enum.Enum):
+    COSTING_EVIDENCE = "costing_evidence"
     CONTRACT = "contract"
     CONTRACT_APPENDIX = "contract_appendix"
     HOUSE_PROJECT = "house_project"

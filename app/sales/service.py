@@ -366,6 +366,8 @@ def edit_order(db, id, body, user):
 
 
 def confirm_order(db, id, body, user):
+    from app.costing.service import lock as costing_lock
+    costing_lock(db)
     row = get_order(db, id, True)
     if row.version != body.version or row.archived or row.status != "draft":
         fail("Подтвердить можно только действующий черновик. Обновите заказ.")

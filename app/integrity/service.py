@@ -16,6 +16,7 @@ stock_movements stock_reservations stock_reservation_events productions producti
 block_materials material_requests house_technical_cards local_recipes manufacture_runs
 organizations bank_accounts counterparties money_movements production_stage_templates
 template_blocks template_block_tasks template_block_materials
+costing_approval_policy costing_signoffs costing_overhead_plans costing_evidence_documents
 """.split())
 
 
@@ -30,7 +31,7 @@ def protection(db):
         SELECT c.relname, t.tgname, t.tgenabled, t.tgtype, p.proname
         FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
         JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid
-        WHERE n.nspname='public' AND t.tgname LIKE 'integrity_%' AND NOT t.tgisinternal
+        WHERE n.nspname='public' AND (t.tgname LIKE 'integrity_%' OR t.tgname='costing_version_immutable') AND NOT t.tgisinternal
     """)).all()
     installed = {(row[0], row[1]): row[2:] for row in rows}
     missing = []
@@ -49,6 +50,10 @@ def protection(db):
         value = installed.get(("integrity_events", name))
         if not value or value[0] not in {"O", "A"} or value[1:] != (kind, "integrity_reject_mutation"):
             missing.append("integrity_events." + name)
+    for table in ('costing_signoffs','costing_overhead_plans','costing_evidence_documents','costing_revisions'):
+        value=installed.get((table,'costing_version_immutable'))
+        if not value or value[0] not in {'O','A'} or value[1:] != (27,'integrity_reject_mutation'):
+            missing.append(table+'.costing_version_immutable')
     return {"state": "active" if not missing else "incomplete", "covered_tables": covered, "missing_controls": missing}
 
 

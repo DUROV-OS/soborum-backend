@@ -42,10 +42,11 @@ class Profile(Strict):
     labor: Percent = Decimal(10)
     management: Percent = Decimal(3)
     tax: Percent = Decimal(6)
+    realtor: Percent = Decimal(0)
 
     @model_validator(mode="after")
     def feasible(self):
-        if self.margin + self.labor + self.management + self.tax >= 100:
+        if self.margin + self.labor + self.management + self.tax + self.realtor >= 100:
             raise ValueError("Сумма маржи и расходов от выручки должна быть меньше 100%")
         return self
 
@@ -57,6 +58,7 @@ class SettingsData(Strict):
     labor_label: str = Field("Оплата труда", min_length=1, max_length=120)
     management_label: str = Field("Менеджмент", min_length=1, max_length=120)
     tax_label: str = Field("Налоги", min_length=1, max_length=120)
+    realtor_label: str = Field("Комиссия риелтора", min_length=1, max_length=120)
     rate_step: Money = Decimal(500)
     total_step: Money = Decimal(1000)
     addon_step: Money = Decimal(100)
@@ -187,6 +189,7 @@ class EstimateInput(Strict):
     sales_order_id: int | None = Field(None, gt=0)
     sales_order_line: int | None = Field(None, ge=0, le=499)
     template_id: int = Field(gt=0)
+    overhead_plan_id: int | None = Field(None, gt=0)
     quantity: Quantity = Decimal(1)
     selections: list[Selection] = Field(default_factory=list, max_length=100)
     discount: Percent = Decimal(0)

@@ -13,12 +13,15 @@ from app.moysklad.recipes import Recipe, ManufactureRun
 from app.sales.models import SalesOrder
 from app.warehouse.models import WarehouseMaterial, Warehouse, MaterialCategory, StockMovement
 from tests.test_costing import EXPENSES, PREFIX, request
+from tests.costing_scenarios import ApprovalScenario
 
 
 @pytest.fixture
 def native(db, api, make_user):
     owner = make_user(admin=True)
+    approvals=ApprovalScenario(db,api,make_user,owner)
     client = api(owner)
+    client.approvals=approvals
     raw = WarehouseMaterial(title='Доска интеграции', code='COST-RAW', warehouse=Warehouse.TECHNOLOGY,
         category=MaterialCategory.NONE, unit='м3', is_fractional=True, quantity_in_stock=100, purchase_price=50, threshold=0)
     product = WarehouseMaterial(title='Изделие интеграции', code='COST-PRODUCT', warehouse=Warehouse.TECHNOLOGY,
@@ -47,12 +50,8 @@ def imported(native, db):
 def approved(native, db, **extra):
     client, _, _, _, _, _, deal, _ = native
     template = imported(native, db)
-    response = client.post(PREFIX+'/estimates', json=request(template, quantity='2', crm_deal_id=deal.id, **extra))
-    assert response.status_code == 201, response.text
-    estimate = response.json()
-    response = client.post(f'{PREFIX}/estimates/{estimate["id"]}/approve', json={'version':1,'request_id':str(uuid4()),'reason':'Проверено'})
-    assert response.status_code == 200, response.text
-    return response.json()
+    estimate=client.approvals.priced(request(template,quantity='2',crm_deal_id=deal.id,**extra))
+    return client.approvals.approve(estimate)
 
 
 def new_order(native, estimate):
@@ -108,14 +107,14 @@ def test_changed_order_line_requires_new_approved_match(native, db):
     assert changed.status_code == 200, changed.text
     assert not client.get(PREFIX+'/context',params={'kind':'order','id':oid}).json()['links'][0]['fresh']
     assert client.post(f'/api/sales/orders/{oid}/confirm',json={'version':changed.json()['version']}).status_code == 409
-    assert client.post(f'{PREFIX}/integration/estimates/{estimate["id"]}/bind-order',json={'version':1,'request_id':str(uuid4()),'reason':'Интеграционная проверка','order_id':oid,'order_version':2,'line_index':0}).status_code == 422
+    assert client.post(f'{PREFIX}/integration/estimates/{estimate["id"]}/bind-order',json={'version':estimate['version'],'request_id':str(uuid4()),'reason':'Интеграционная проверка','order_id':oid,'order_version':2,'line_index':0}).status_code == 422
 
 
 def test_production_uses_pinned_bom_and_normal_atomic_stock_flow(native, db):
     client, _, raw, product, _, _, _, master = native
     original = deepcopy(master.content)
     estimate = approved(native, db); link, _ = new_order(native, estimate)
-    body = {'version':1,'request_id':str(uuid4()),'reason':'Интеграционная проверка','order_id':link['order_id'],'line_index':0}
+    body = {'version':estimate['version'],'request_id':str(uuid4()),'reason':'Интеграционная проверка','order_id':link['order_id'],'line_index':0}
     response = client.post(f'{PREFIX}/integration/estimates/{estimate["id"]}/production-recipe', json=body)
     assert response.status_code == 200, response.text
     rid = response.json()['recipe_id']

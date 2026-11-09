@@ -100,7 +100,7 @@ def item_detail(id: int, db: Session=Depends(get_db), user=Depends(read)):
     return {**catalog_brief(item,source), 'archived':item['archived'],
             'dimensions':{k:data.get(k) for k in ('length','width','modules')},
             'price_basis':'За м²' if data['mode']=='area' else 'За изделие',
-            'retail_rate':data.get('retail_rate') if data['mode']=='area' else None,
+            'retail_rate':data.get('retail_rate') if data['mode']=='area' and calc['price'] is not None else None,
             'packages':packages, 'connections':item_connections(db,user,item),
             'model_linked':bool(data.get('house_model_key')),
             'internal':s.cost_access(user),

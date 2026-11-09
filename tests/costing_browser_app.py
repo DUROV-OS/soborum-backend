@@ -21,8 +21,11 @@ from app.costing.router import app as costing_app
 from app.sales.router import app as sales_app
 from app.moysklad.recipes import router as recipes_router
 from app.users.models import User, UserRole, UserModuleAccess
+from app.costing.governance_models import CostingApprovalPolicy
 
 temporary = TemporaryDirectory(prefix="durov-costing-browser-")
+from app.core.config import settings
+settings.storage_dir=str(Path(temporary.name)/'files')
 engine = create_engine("sqlite:///" + str(Path(temporary.name) / "isolated.db"), connect_args={"check_same_thread": False})
 Base.metadata.create_all(engine)
 with Session(engine) as db:
@@ -30,6 +33,8 @@ with Session(engine) as db:
     worker = User(id=2, email="sales@example.test", full_name="Тестовый менеджер", role=UserRole.WORKER, job_role="manager", hashed_password="not-a-login", is_active=True)
     worker.module_access = [UserModuleAccess(module=Module.CLIENTS, level=AccessLevel.EDIT)]
     db.add(worker)
+    db.add(User(id=3,email='production@example.test',full_name='Тестовый начальник производства',role=UserRole.WORKER,job_role='production_manager',hashed_password='not-a-login',is_active=True))
+    db.add(User(id=4,email='accounting@example.test',full_name='Тестовый бухгалтер',role=UserRole.ADMIN,job_role='accountant',hashed_password='not-a-login',is_active=True))
     db.commit()
 
 
@@ -39,7 +44,7 @@ def database():
 
 
 def user(request: Request, db: Session = Depends(get_db)):
-    return db.get(User, 2 if request.headers.get("x-costing-test-role") == "sales" else 1)
+    return db.get(User, {'sales':2,'production':3,'accounting':4}.get(request.headers.get('x-costing-test-role'),1))
 
 
 app = FastAPI()
@@ -60,6 +65,8 @@ def reset():
     tables = [t for t in Base.metadata.sorted_tables if t.name not in ('users','user_module_access')]
     Base.metadata.drop_all(engine, tables=tables)
     Base.metadata.create_all(engine, tables=tables)
+    with Session(engine) as db:
+        db.add(CostingApprovalPolicy(id=1,director_user_id=1,production_user_id=3,accounting_user_id=4));db.commit()
     return {"isolated_database_reset": True}
 
 

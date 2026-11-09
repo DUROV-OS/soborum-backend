@@ -272,6 +272,8 @@ def freeze_package(id: int, body: VersionAction, db: Session = Depends(get_db), 
     check_version(row, body.version)
     if row.kind != "package" or row.archived:
         s.fail("Выберите действующий пакет")
+    from app.costing.governance import assert_item_price
+    assert_item_price(db,s.item_out(row))
     source = s.sources(db)
     prices = {}
     for line in row.content["addons"]:
@@ -307,6 +309,9 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
 def export_item(id: int, format: str, no_prices: bool = False, db: Session = Depends(get_db), user: User = Depends(cost_view)):
     from app.costing.exports import estimate_document
     item = s.item_out(existing(db, CostingItem, id))
+    if not no_prices:
+        from app.costing.governance import assert_item_price
+        assert_item_price(db,item)
     if item["kind"] == "package":
         s.fail("Для пакета используйте прайс или клиентскую смету")
     source = s.sources(db)
@@ -327,6 +332,8 @@ def save_prices(body: PriceChanges, db: Session = Depends(get_db), user: User = 
     for change in sorted(body.items, key=lambda p: p.id):
         row = existing(db, CostingItem, change.id)
         check_version(row, change.version)
+        from app.costing.governance import assert_item_price
+        assert_item_price(db,s.item_out(row))
         if row.kind == "package":
             s.fail("Цена пакета определяется его составом и скидкой")
         before = s.item_out(row)
@@ -354,6 +361,9 @@ def price_versions(db: Session = Depends(get_db), user: User = Depends(cost_view
 @app.post("/price-versions", status_code=201)
 def freeze_price_version(body: PriceVersionInput, db: Session = Depends(get_db), user: User = Depends(cost_edit)):
     s.lock(db)
+    from app.costing.governance import assert_item_price
+    for item in db.query(CostingItem).filter_by(archived=False):
+        assert_item_price(db,s.item_out(item))
     row = CostingPriceVersion(title=body.title, actor_id=user.id, snapshot=[s.item_out(i) for i in db.query(CostingItem).order_by(CostingItem.id)])
     db.add(row)
     db.flush()
@@ -378,6 +388,8 @@ def restore_prices(id: int, body: PriceRestore, db: Session = Depends(get_db), u
     for item in version.snapshot:
         row = existing(db, CostingItem, item["id"])
         check_version(row, body.versions[row.id])
+        from app.costing.governance import assert_item_price
+        assert_item_price(db,s.item_out(row))
         if row.kind != item["kind"] or row.content["mode"] != item["content"]["mode"]:
             s.fail("Базис цены изменился: " + row.title)
         if row.kind == "package" and not set(item["content"].get("package_prices", {})).issubset({str(l["addon_id"]) for l in row.content["addons"]}):
@@ -456,11 +468,12 @@ def preview(body: EstimateInput, estimate_id: int | None = Query(None, gt=0), db
         row = s.get_estimate(db, estimate_id, user)
         check_version(row, body.version)
         previous = s.get_revision(db, row).snapshot
-    snapshot = s.build_snapshot(db, body, previous)
+    snapshot = s.build_snapshot(db, body, previous, estimate_id=estimate_id)
     if s.cost_access(user):
         return {"result": snapshot["result"], "commercial": snapshot["commercial"], "bom": snapshot["bom"]}
-    return {"price": snapshot["result"]["price"], "commercial": snapshot["commercial"],
-            "ready": snapshot["result"]["status"] == "meets_target"}
+    # An edited preview is not the signed revision, even if its margin is sufficient.
+    return {"price": None, "commercial": [{**line, 'unit_price':None, 'amount':None} for line in snapshot['commercial']],
+            "ready": False}
 
 
 @app.get("/clients-catalog")
@@ -493,7 +506,7 @@ def save_estimate(db, user, body, id=None, refresh=False):
         previous = s.get_revision(db, row).snapshot
     else:
         previous = None
-    snapshot = s.build_snapshot(db, body, previous, refresh)
+    snapshot = s.build_snapshot(db, body, previous, refresh, estimate_id=id)
     if row:
         row.version += 1
     else:
@@ -531,7 +544,7 @@ def reprice_preview(id: int, body: EstimateInput, db: Session = Depends(get_db),
     row = s.get_estimate(db, id, user)
     check_version(row, body.version)
     previous = s.get_revision(db, row).snapshot
-    updated = s.build_snapshot(db, body, previous, refresh=True)
+    updated = s.build_snapshot(db, body, previous, refresh=True,estimate_id=id)
     return {"before": previous["result"], "after": updated["result"], "before_bom": previous["bom"], "after_bom": updated["bom"]}
 
 
@@ -549,6 +562,8 @@ def copy_estimate(id: int, body: VersionAction, db: Session = Depends(get_db), u
     snapshot = deepcopy(s.get_revision(db, original).snapshot)
     title = (original.title[:240] + " — копия")
     snapshot["input"].update(title=title, number="", version=None, request_id=str(body.request_id), reason=body.reason,sales_order_id=None,sales_order_line=None)
+    # A copied project never inherits another project's signatures or formed price.
+    snapshot=s.build_snapshot(db,EstimateInput.model_validate(snapshot['input']),snapshot)
     row = CostingEstimate(title=title, number="", client_id=original.client_id,crm_deal_id=original.crm_deal_id, actor_id=user.id, version=1, status="draft", archived=False)
     db.add(row)
     db.flush()
@@ -605,7 +620,7 @@ def history(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
     result = []
     for rev in db.query(CostingRevision).filter_by(estimate_id=row.id).order_by(CostingRevision.number.desc()):
         data = {"revision": rev.number, "created_at": rev.created_at, "actor_id": rev.actor_id,
-                "price": rev.snapshot["result"]["price"]}
+                "price": rev.snapshot["result"]["price"] if s.cost_access(user) else None}
         if s.cost_access(user):
             data.update(reason=rev.reason, cost=rev.snapshot["result"]["cost"], margin_percent=rev.snapshot["result"]["margin_percent"])
         result.append(data)
@@ -616,18 +631,8 @@ def history(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
 def approve(id: int, body: VersionAction, db: Session = Depends(get_db), user: User = Depends(cost_edit)):
     s.lock(db)
     row = s.get_estimate(db, id, user)
-    check_version(row, body.version)
-    if row.archived:
-        s.fail("Смета в архиве")
-    if row.status == "approved":
-        return s.estimate_out(db, row, user)
-    rev = s.get_revision(db, row)
-    if rev.snapshot["result"]["status"] != "meets_target":
-        s.fail("Для утверждения нужны полный расчёт и маржа не ниже 35%")
-    # Approval is for this frozen estimate revision, not a stock/CRM posting.
-    row.status = "approved"
-    s.audit(db, user, "estimate", id, "approve", None, {"revision": row.version, "reason": body.reason})
-    db.commit()
+    from app.costing.governance import approve_director
+    approve_director(db,user,row,body)
     return s.estimate_out(db, row, user)
 
 
@@ -668,6 +673,10 @@ def export_estimate(id: int, format: str, revision: int | None = Query(None, ge=
     if internal:
         s.require_cost(user)
     row = s.get_estimate(db, id, user)
+    if not no_prices:
+        from app.costing.governance import assert_approved
+        assert_approved(db,row)
+        if revision is not None and revision!=row.version: s.fail('Цены прошлой версии доступны только в истории, без повторной публикации',409)
     data = s.estimate_out(db, row, user, revision)
     raw, content_type = estimate_document(data, format, internal, no_prices)
     return Response(raw, media_type=content_type, headers={"Content-Disposition": f'attachment; filename="estimate-{id}-v{data["revision"]}.{format}"'})
@@ -675,3 +684,5 @@ def export_estimate(id: int, format: str, revision: int | None = Query(None, ge=
 
 from app.costing.integration import router as integration_router
 app.include_router(integration_router)
+from app.costing.governance_router import router as governance_router
+app.include_router(governance_router)

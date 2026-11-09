@@ -143,15 +143,20 @@ def link_out(db,link,order=None):
     estimate=db.get(CostingEstimate,link.estimate_id)
     fresh=link.line_index<len(order.lines) and fingerprint(order,link.line_index)==link.fingerprint
     if order.status=='draft':fresh=fresh and estimate.version==revision.number and estimate.status=='approved' and not estimate.archived
+    if order.status=='draft' and fresh:
+        from app.costing.governance import review_state
+        fresh=review_state(db,estimate)['director_approved']
     return {'order_id':order.id,'order_line':link.line_index,'estimate_id':estimate.id,'revision':revision.number,
         'fresh':bool(fresh),'production_recipe_id':link.recipe_id}
 
 
 def guard_order(db,order):
     links=db.query(CostingOrderLink).filter_by(order_id=order.id).all()
-    if not links:return
+    if not links:s.fail('Для подтверждения продажи нужна смета с согласованиями производства, бухгалтера и руководителя для каждой строки',409)
     if {l.line_index for l in links}!=set(range(len(order.lines))) or any(not link_out(db,l,order)['fresh'] for l in links):
         s.fail("Сверьте сметы всех строк заказа: цена, количество или утверждённая версия изменились",409)
+    from app.costing.governance import assert_approved
+    for link in links: assert_approved(db,db.get(CostingEstimate,link.estimate_id))
 
 
 class OrderBinding(VersionAction):
@@ -161,6 +166,8 @@ class OrderBinding(VersionAction):
 
 
 def bind(db,user,estimate,revision,order,index):
+    from app.costing.governance import assert_approved
+    assert_approved(db,estimate)
     other=db.query(CostingOrderLink).filter(CostingOrderLink.estimate_id==estimate.id,
         or_(CostingOrderLink.order_id!=order.id,CostingOrderLink.line_index!=index)).first()
     if other:s.fail("Смета уже закреплена за другой строкой заказа; для отдельного заказа создайте копию сметы",409)
@@ -194,6 +201,8 @@ def bind_order(id:int,body:OrderBinding,db:Session=Depends(get_db),user:User=Dep
     from app.sales.service import get_order
     estimate=s.get_estimate(db,id,user)
     if estimate.version!=body.version:s.fail("Версия сметы изменилась",409)
+    from app.costing.governance import assert_approved
+    assert_approved(db,estimate)
     order=get_order(db,body.order_id,True)
     if order.version!=body.order_version:s.fail("Заказ изменился",409)
     link=bind(db,user,estimate,s.get_revision(db,estimate),order,body.line_index)
@@ -212,6 +221,8 @@ def create_order(id:int,body:NewOrder,db:Session=Depends(get_db),user:User=Depen
     from app.sales.schemas import CreateOrder,Line
     estimate=s.get_estimate(db,id,user)
     if estimate.version!=body.version:s.fail("Версия сметы изменилась",409)
+    from app.costing.governance import assert_approved
+    assert_approved(db,estimate)
     revision=s.get_revision(db,estimate);snap=revision.snapshot
     if estimate.status!='approved' or snap['result']['status']!='meets_target':s.fail("Сначала утвердите расчёт")
     existing=db.query(CostingOrderLink).filter_by(estimate_id=id).first()
@@ -246,6 +257,8 @@ def production_recipe(id:int,body:ProductionHandoff,db:Session=Depends(get_db),u
     if order.archived or order.status=='cancelled':s.fail("Заказ не действует")
     link=db.query(CostingOrderLink).filter_by(order_id=order.id,line_index=body.line_index,estimate_id=id).first()
     if not link or not link_out(db,link,order)['fresh']:s.fail("Сначала свяжите актуальную утверждённую смету со строкой заказа")
+    from app.costing.governance import assert_approved
+    assert_approved(db,db.get(CostingEstimate,id))
     if link.recipe_id:return {'recipe_id':link.recipe_id,'created':False}
     revision=db.get(CostingRevision,link.revision_id)
     if revision.number!=body.version:s.fail("Проверьте версию производственной сметы",409)
