@@ -134,6 +134,7 @@ def fingerprint(order,index):
     data={'currency':order.currency,'material_id':line.get('material_id'),'stock_tracked':line.get('stock_tracked',True),
         'quantity':str(s.decimal(line['quantity']).normalize()),'unit_price':str(s.decimal(line['unit_price']).normalize()),
         'line_total':str(s.decimal(line['line_total']).normalize()),'unit':line['unit']}
+    if not line.get('stock_tracked',True): data['title']=line['title']
     return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
 
 
@@ -180,7 +181,11 @@ def bind(db,user,estimate,revision,order,index):
     snap=revision.snapshot
     product=snap['sources']['items'][str(snap['input']['template_id'])]['content'].get('warehouse_product_id')
     line=order.lines[index]
-    if not product or line.get('material_id')!=product:s.fail("Изделие сметы должно совпадать с общей номенклатурой строки заказа")
+    template=snap['sources']['items'][str(snap['input']['template_id'])]
+    if template['content'].get('service_only'):
+        if line.get('stock_tracked',True) or line.get('material_id') or line['title']!=template['title'] or line['unit']!=template['content']['unit']:
+            s.fail('Наименование и единица услуги должны совпадать со сметой; складское движение для неё недопустимо')
+    elif not product or line.get('material_id')!=product or not line.get('stock_tracked',True):s.fail("Изделие сметы должно совпадать с общей номенклатурой строки заказа")
     if s.decimal(line['quantity'])!=s.decimal(snap['input']['quantity']) or s.decimal(line['line_total'])!=s.decimal(snap['result']['price']):
         s.fail("Количество и итоговая цена сметы должны совпадать со строкой заказа")
     old=db.query(CostingOrderLink).filter_by(order_id=order.id,line_index=index).first()
@@ -232,12 +237,14 @@ def create_order(id:int,body:NewOrder,db:Session=Depends(get_db),user:User=Depen
             s.fail("Смета уже связана с заказом. Сверьте его строку; для другого заказа создайте копию сметы",409)
         return link_out(db,existing,order)
     product=snap['sources']['items'][str(snap['input']['template_id'])]['content'].get('warehouse_product_id')
-    if not product:s.fail("Свяжите типовое изделие с общей номенклатурой и актуализируйте смету")
+    template=snap['sources']['items'][str(snap['input']['template_id'])]
+    service_only=template['content'].get('service_only',False)
+    if not product and not service_only:s.fail("Свяжите типовое изделие с общей номенклатурой и актуализируйте смету")
     quantity=s.decimal(snap['input']['quantity']);price=s.decimal(snap['result']['price'])
     unit_price=(price/quantity).quantize(Decimal('.00000001'),rounding=ROUND_HALF_UP)
     if (quantity*unit_price).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)!=price:s.fail("Цена не делится на количество с допустимой точностью")
     order_body=CreateOrder(request_id=body.request_id,counterparty_id=body.counterparty_id,organization_id=body.organization_id,
-        lines=[Line(material_id=product,quantity=quantity,unit_price=unit_price)],note=f'Смета №{id}, версия {revision.number}')
+        lines=[Line(material_id=product,stock_tracked=not service_only,title=template['title'],unit=template['content']['unit'],quantity=quantity,unit_price=unit_price)],note=f'Смета №{id}, версия {revision.number}')
     result=sales.create_order(db,order_body,user,commit=False)
     order=db.get(SalesOrder,result['id'])
     link=bind(db,user,estimate,revision,order,0);db.commit();return link_out(db,link,order)
@@ -257,6 +264,9 @@ def production_recipe(id:int,body:ProductionHandoff,db:Session=Depends(get_db),u
     if order.archived or order.status=='cancelled':s.fail("Заказ не действует")
     link=db.query(CostingOrderLink).filter_by(order_id=order.id,line_index=body.line_index,estimate_id=id).first()
     if not link or not link_out(db,link,order)['fresh']:s.fail("Сначала свяжите актуальную утверждённую смету со строкой заказа")
+    frozen=db.get(CostingRevision,link.revision_id).snapshot
+    if frozen['sources']['items'][str(frozen['input']['template_id'])]['content'].get('service_only'):
+        s.fail('Для услуги без материалов производственный норматив и выдача со склада не создаются')
     from app.costing.governance import assert_approved
     assert_approved(db,db.get(CostingEstimate,id))
     if link.recipe_id:return {'recipe_id':link.recipe_id,'created':False}

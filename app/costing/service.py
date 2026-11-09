@@ -151,6 +151,7 @@ def component(item, settings, materials, today, replacement=True):
     data = item["content"]
     profile = profile_for(item, settings)
     raw, missing, detail = materials_cost(data["lines"], materials, today)
+    if data.get('service_only') and not data['lines']: missing=[]
     credit, credit_detail = ZERO, []
     if data.get("replacements") and replacement:
         credit, credit_missing, credit_detail = materials_cost(data["replacements"], materials, today)
@@ -440,6 +441,7 @@ def estimate_out(db, row, user, number=None):
     template=snap['sources']['items'][str(inp['template_id'])]['content']
     source_fields=('source_recipe_id','source_recipe_version','warehouse_product_id','house_model_key') if cost_access(user) else ('warehouse_product_id','house_model_key')
     result['source']={k:template.get(k) for k in source_fields}
+    result['source']['service_only']=template.get('service_only',False)
     if cost_access(user):
         result.update({"result": snap["result"], "bom": snap["bom"], "profile": snap["profile"], "expenses": snap["expenses"],
                        "priced_on": snap["sources"]["priced_on"],

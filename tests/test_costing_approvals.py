@@ -244,3 +244,32 @@ def test_sale_needs_all_signatures_and_unchanged_proofs_at_confirmation(flow):
     response=client.post(f'/api/sales/orders/{oid}/confirm',json={'version':1})
     assert response.status_code==200,response.text
     assert response.json()['status']=='confirmed'
+
+
+def test_documented_service_can_be_sold_without_fake_stock_or_materials(flow):
+    from app.accounting.models import Counterparty,Organization
+    from app.warehouse.models import StockMovement
+    from app.sales.models import SalesOrder
+    f=flow;client=f['api'](f['owner'])
+    response=client.post(P+'/items',json={'kind':'template','title':'Проектирование','content':{'service_only':True,'unit':'усл','expenses':f['expenses'],'retail_price':'1000'}})
+    assert response.status_code==201,response.text
+    f['template']=response.json()
+    detail,_=production(f,draft(f,approve_month(f)))
+    assert detail['bom']==[] and detail['result']['cost']=='230.00'
+    detail,_,_=accounting(f,detail);client=f['api'](f['owner'])
+    assert client.post(f'{P}/estimates/{detail["id"]}/approve',json=review(2)).status_code==200
+    buyer=Counterparty(name='Покупатель услуги',is_active=True);f['db'].add(buyer);f['db'].commit()
+    response=client.post(f'{P}/integration/estimates/{detail["id"]}/create-order',json={**review(2),'counterparty_id':buyer.id,'organization_id':f['db'].query(Organization).first().id})
+    assert response.status_code==201,response.text
+    oid=response.json()['order_id'];order=f['db'].get(SalesOrder,oid)
+    assert order.lines[0]['stock_tracked']==False and order.lines[0]['material_id'] is None
+    assert client.post(f'/api/sales/orders/{oid}/confirm',json={'version':1}).status_code==200
+    assert client.post(f'{P}/integration/estimates/{detail["id"]}/production-recipe',json={**review(2),'order_id':oid,'line_index':0}).status_code==422
+    assert f['db'].query(StockMovement).count()==0
+
+
+def test_service_flag_cannot_hide_materials_or_inventory_product(flow):
+    f=flow;client=f['api'](f['owner'])
+    for patch in ({'lines':[{'material_id':f['material']['id'],'quantity':'1'}]},{'warehouse_product_id':f['product'].id}):
+        response=client.post(P+'/items',json={'kind':'template','title':'Недопустимая услуга','content':{'service_only':True,**patch}})
+        assert response.status_code==422,response.text

@@ -17,6 +17,7 @@ def item_basis(item, source):
     data=item['content']
     keys=('source_recipe_id','source_recipe_version','warehouse_product_id','house_model_key','unit','mode','area','length','width','modules','note')
     result={k:data.get(k) for k in keys}
+    result['service_only']=data.get('service_only',False)
     result.update(id=item['id'],title=item['title'],kind=item['kind'],archived=item['archived'])
     for key in ('lines','replacements'):
         result[key]=[]
@@ -37,6 +38,8 @@ def prepare(payload, source):
     source=deepcopy(source)
     base=deepcopy(source['items'].get(str(payload.template_id)))
     if not base or base['kind']!='template' or base['archived']: s.fail('Выберите действующую типовую смету')
+    service_only=base['content'].get('service_only',False)
+    if service_only and (payload.lines or payload.selections): s.fail('Услуга без складского учёта не может содержать материалы или опции')
     if payload.lines is not None: base['content']['lines']=[x.model_dump(mode='json') for x in payload.lines]
     parts=[(base,D(1),'base','')]
     selected=[]
@@ -53,7 +56,7 @@ def prepare(payload, source):
     available, consumed, bom, commercial={}, {}, {}, []
     for item,count,kind,package in parts:
         basis=item_basis(item,source)
-        if not basis['lines']: s.fail('Не заполнен состав: '+item['title'])
+        if not basis['lines'] and not service_only: s.fail('Не заполнен состав: '+item['title'])
         if any(row['archived'] for row in basis['lines']+basis['replacements']): s.fail('В составе есть архивный материал')
         commercial.append({'item_id':item['id'],'kind':kind,'title':item['title'],'package':package,
                            'quantity':number(count*payload.quantity),'unit_price':None,'amount':None})
@@ -67,7 +70,7 @@ def prepare(payload, source):
                 if mid not in bom: bom[mid]={**line,'quantity':D(0),'price':None,'amount':None,'category':''}
                 bom[mid]['quantity']+=sign*quantity*payload.quantity
     lines=[{**line,'quantity':number(line['quantity'])} for _,line in sorted(bom.items()) if line['quantity']>0]
-    if not lines: s.fail('После замен состав изделия пуст')
+    if not lines and not service_only: s.fail('После замен состав изделия пуст')
     basis={'quantity':number(payload.quantity),'template':item_basis(base,source),
            'parts':[{'item':item_basis(item,source),'quantity':number(count)} for item,count,_,_ in parts],
            'selections':selected,'client_id':payload.client_id,'crm_deal_id':payload.crm_deal_id,'note':payload.note,'bom':lines}

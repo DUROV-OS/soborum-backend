@@ -130,6 +130,7 @@ class ModuleGeometry(Strict):
 
 
 class ItemData(Strict):
+    service_only: bool = False
     source_recipe_id: int | None = Field(None, gt=0)
     source_recipe_version: int | None = Field(None, gt=0)
     warehouse_product_id: int | None = Field(None, gt=0)
@@ -160,6 +161,8 @@ class ItemData(Strict):
 
     @model_validator(mode="after")
     def unique(self):
+        if self.service_only and (self.lines or self.replacements or self.addons or self.warehouse_product_id or self.source_recipe_id or self.mode!='unit'):
+            raise ValueError('Услуга без складского учёта не может содержать материалы, складское изделие, техкарту или пакеты')
         for rows, key in ((self.lines, "material_id"), (self.replacements, "material_id"), (self.addons, "addon_id")):
             if len({getattr(r, key) for r in rows}) != len(rows):
                 raise ValueError("Объедините повторяющиеся позиции в одну строку")
@@ -172,6 +175,12 @@ class ItemInput(Strict):
     title: str = Field(min_length=1, max_length=255)
     archived: bool = False
     content: ItemData
+
+    @model_validator(mode='after')
+    def service_kind(self):
+        if self.content.service_only and self.kind!='template':
+            raise ValueError('Услуга без складского учёта оформляется отдельной типовой сметой')
+        return self
 
 
 class Selection(Strict):

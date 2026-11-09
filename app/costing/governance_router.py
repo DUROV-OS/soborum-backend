@@ -119,7 +119,7 @@ def item_approval(id:int,body:Review,db:Session=Depends(get_db),user=Depends(get
             s.fail('В пакете есть неполная или архивная комплектация')
     issues=g.recipe_problems(db,used)
     if issues: s.fail('; '.join(issues),409)
-    if not basis['lines'] and row.kind!='package': s.fail('Не заполнен состав изделия')
+    if not basis['lines'] and row.kind!='package' and not basis['service_only']: s.fail('Не заполнен состав изделия')
     if any(line['archived'] for line in basis['lines']+basis['replacements']): s.fail('В составе есть архивные материалы')
     g.record(db,user,'item',id,'production',row.version,g.item_digest(s.item_out(row),source),body,technical_basis=basis,work_scope=body.work_scope)
     db.commit();return item(id,db,user)
