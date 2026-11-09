@@ -129,6 +129,15 @@ def receipt_basis(row):
                    'occurred_at': (row.occurred_at.replace(tzinfo=timezone.utc) if row.occurred_at.tzinfo is None else row.occurred_at.astimezone(timezone.utc)).isoformat(), 'number': row.number, 'lines': row.lines, 'operation_id': row.operation_id})
 
 
+def receipt_price_matches(line, item):
+    try:
+        actual = D(str(line.get('unit_price')))
+        ordered = D(str(item.get('unit_price')))
+        return actual.is_finite() and actual > 0 and actual == ordered
+    except (ValueError, ArithmeticError):
+        return False
+
+
 def price(db, row, body, user):
     governance.require_person(db, user, 'accounting')
     old = replay(db, 'price', row.supplier_id, row.id, body, user)
@@ -156,6 +165,12 @@ def price(db, row, body, user):
             fail('Укажите проведённую приёмку этого заказа', 422)
         if receipt.occurred_at.date() > today():
             fail('Приёмка датирована будущим', 422)
+        for received in receipt.lines:
+            index = received.get('order_line')
+            if (not isinstance(index, int) or index < 0 or index >= len(row.items)
+                    or received.get('material_id') != row.items[index].get('warehouse_material_id')
+                    or not receipt_price_matches(received, row.items[index])):
+                fail('Фактическая цена или позиция приёмки не совпадает с заказом. Сверьте документы; цена заказа не заменяет фактическую цену.', 422)
         citations.append(body.receipt_evidence)
     return record(db, 'price', row.supplier_id, row.id, body, user, basis=order_basis(row),
                   receipt_basis=receipt_basis(receipt) if receipt else None, proofs=proofs(db, row.supplier_id, citations))
@@ -206,6 +221,9 @@ def historical(db, row, index):
             proof, valid = price_state(db, previous)
             base = {'order_id': previous.id, 'number': previous.number or str(previous.id), 'receipt_id': receipt.id,
                     'line': pi, 'price_record_id': proof.id if proof else None}
+            if not receipt_price_matches(line, previous.items[pi]):
+                base['issue'] = 'Фактическая цена приёмки отличается от заказа или не указана. Нужна сверка документов.'
+                return base, None, None
             if (not valid or proof.content['request']['receipt_id'] != receipt.id
                     or proof.content['receipt_basis'] != receipt_basis(receipt)):
                 return base, None, None
@@ -317,7 +335,7 @@ def review(db, row, user=None):
         if not prior:
             issues.append('Нет предыдущей фактической закупки этого материала у поставщика')
         elif not prior_terms:
-            issues.append('Последняя закупка требует подтверждения цены, условий и документа приёмки')
+            issues.append(prior.get('issue') or 'Последняя закупка требует подтверждения цены, условий и документа приёмки')
         elif terms:
             if not comparable(terms, prior_terms, D(str(item['quantity'])), prior_quantity):
                 issues.append('НДС, доставка, условия оплаты или диапазоны партии несопоставимы')

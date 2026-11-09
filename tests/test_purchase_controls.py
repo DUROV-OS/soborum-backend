@@ -184,3 +184,20 @@ def test_approved_new_revision_cannot_validate_old_sale_link(native, db, api, mo
     data = review(client, row)
     assert data['decision'] == 'manual_review'
     assert any('прежней версией' in text for text in data['lines'][0]['issues'])
+
+
+@pytest.mark.parametrize('actual', [30, None, 0])
+def test_receipt_price_cannot_be_replaced_by_order_price(native, db, api, actual):
+    client, row, previous, receipt, proof, oid, accountant = ready(native, db, api)
+    receipt.lines = [{**receipt.lines[0], 'unit_price': actual}]
+    # Simulate previously attested/imported contradictory evidence. Freshness alone
+    # must not make a nominal order price equivalent to the actual received price.
+    checked = c.latest(db, 'price', previous.supplier_id, previous.id)
+    checked.content = {**checked.content, 'receipt_basis': c.receipt_basis(receipt)}
+    db.commit()
+    data = review(client, row)
+    assert data['decision'] == 'manual_review'
+    assert any('Фактическая цена' in issue for issue in data['lines'][0]['issues'])
+    response = api(accountant).post(f'{P}/orders/{previous.id}/price-evidence', json=price_body(
+        previous, proof, expected_id=checked.id, receipt_id=receipt.id, receipt_evidence=proof))
+    assert response.status_code == 422
