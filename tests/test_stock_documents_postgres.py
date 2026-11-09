@@ -82,7 +82,7 @@ def test_competing_transfers_and_inventory_cannot_replay_or_overwrite_stock():
                 try:
                     result = post(
                         doc["id"],
-                        Post(version=doc["version"], request_id=key or uuid4()),
+                        Post(version=doc["version"], request_id=key or uuid4(),act_id=doc.get("act_id"),confirmed=bool(doc.get("act_id"))),
                         db,
                         actor,
                     )
@@ -117,6 +117,11 @@ def test_competing_transfers_and_inventory_cannot_replay_or_overwrite_stock():
                 db,
                 actor,
             )
+            from tests.warehouse_control_helpers import evidence
+            from app.warehouse.inventory_evidence import attach, Attach
+            scan=evidence(db,actor)
+            act=attach(db,db.get(StockDocument,count['id']),Attach(request_id=uuid4(),version=count['version'],file_id=scan.id,locator='Synthetic count, page 1',confirmed=True),actor)
+            count['act_id']=act.id;db.commit()
         # Two identical request IDs on one document produce just one count loss.
         gate = threading.Barrier(2)
         key = uuid4()

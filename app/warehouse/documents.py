@@ -70,6 +70,8 @@ class Version(BaseModel):
 
 class Post(Version):
     request_id: UUID
+    act_id: int | None = Field(default=None, gt=0)
+    confirmed: bool = False
 
 
 class Archive(Version):
@@ -417,6 +419,7 @@ def record(db, material, delta, reason, user, op):
 
 
 def post_document(db, row, body, user):
+    from app.warehouse import inventory_evidence as evidence
     if row.kind == "inventory":
         full(user)
     if (
@@ -424,12 +427,14 @@ def post_document(db, row, body, user):
         and row.post_request_id == str(body.request_id)
         and row.posted_by_id == user.id
     ):
+        if row.kind == "inventory": evidence.check_replay(db, row, body, user)
         return row
     draft(row, body.version)
     if any(l.get("quantity") is None for l in row.lines):
         fail("Заполните фактическое количество во всех строках", 422)
     if not row.note.strip():
         fail("Укажите основание операции", 422)
+    prepared_act = evidence.require_act(db, row, body) if row.kind == "inventory" else None
     originals = {
         m.id: m
         for m in db.query(WarehouseMaterial).filter(
@@ -556,6 +561,7 @@ def post_document(db, row, body, user):
     row.status, row.post_request_id = "posted", str(body.request_id)
     row.posted_by_id, row.posted_at = user.id, datetime.now(timezone.utc)
     row.version += 1
+    if prepared_act: evidence.posted(db, row, body, user, prepared_act)
     db.flush()
     return row
 

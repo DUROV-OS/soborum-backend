@@ -655,3 +655,8 @@ app.include_router(document_router)
 app.include_router(reservation_router)
 
 app.include_router(control_router)
+
+from app.warehouse.inventory_evidence import router as inventory_evidence_router
+from app.warehouse.reconciliation import router as reconciliation_router
+app.include_router(inventory_evidence_router)
+app.include_router(reconciliation_router)

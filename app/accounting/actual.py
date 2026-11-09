@@ -123,6 +123,9 @@ def source(db,body,exclude=None,locking=False):
         fail('Выдача должна относиться к производству клиента выбранной сметы')
     # An individual lot is selected explicitly. No undocumented FIFO/average-price policy is invented.
     received=D(str(line['quantity']));returned=returned_lines(db,receipt.id)[body.receipt_line]
+    from app.warehouse.reconciliation import evidence as allocation_evidence
+    reconciled = allocation_evidence(db, movement)
+    if reconciled and not reconciled['intact']: fail('Повреждено основание сверки выдачи. Требуется проверка склада.',409)
     issued=-D(str(movement.delta))-returned_quantity(db,movement.id)
     if any(not row['intact'] for row in return_facts(db,movement.id)): fail('Документ возврата отсутствует или изменён. Требуется сверка склада.',409)
     used_receipt=used_movement=D(0)
@@ -144,7 +147,7 @@ def source(db,body,exclude=None,locking=False):
     if expected<=0 or body.gross_amount!=expected: fail('Сумма материалов по партии с учётом округления частичных выдач: '+money(expected)+' ₽')
     result['material']={'receipt_id':receipt.id,'receipt_line':body.receipt_line,'line':line,'supplier_id':receipt.supplier_id,
         'occurred_at':utc(receipt.occurred_at).isoformat(),'returned':str(returned.normalize()),'movement_id':movement.id,'delta':str(D(str(movement.delta)).normalize()),
-        'production_returns':return_facts(db,movement.id),'reason':movement.reason.value,'operation_id':movement.operation_id,'receipt_operation_id':receipt.operation_id,
+        **({'reconciliation': reconciled} if reconciled else {}),'production_returns':return_facts(db,movement.id),'reason':movement.reason.value,'operation_id':movement.operation_id,'receipt_operation_id':receipt.operation_id,
         'inbound_movements':[{'id':m.id,'delta':str(D(str(m.delta)).normalize())} for m in sorted(received_movements,key=lambda m:m.id)],
         'currency':order.currency if order else 'RUB','valuation':valuation,'production_id':production.id,'issued_on':str(local_date(issued_at))}
     return result

@@ -34,10 +34,10 @@ def engine():
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE integrity_events"))
         conn.execute(text("ALTER TABLE file_assets DROP COLUMN sha256, DROP COLUMN size_bytes"))
-        for table in ('warehouse_control_records','warehouse_control_documents','actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
+        for table in ('warehouse_inventory_acts','warehouse_control_records','warehouse_control_documents','actual_cost_closures','actual_cost_decisions','actual_cost_versions','actual_cost_records','actual_cost_documents','payment_evidence_checks','payment_evidence_versions','payment_evidence_documents','costing_signoffs','costing_evidence_documents','costing_overhead_plans','costing_approval_policy'):
             conn.execute(text('DROP TABLE '+table))
         covered = set()
-        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py','wc0911202601_warehouse_control.py'):
+        for name in ('oc0911202601_integrity_ledger.py','ca0911202601_costing_approvals.py','pe0911202601_payment_evidence.py','ac0911202601_actual_costs.py','jo0911202601_order_journey.py','wc0911202601_warehouse_control.py','wr1011202601_inventory_evidence.py'):
             filename = Path(__file__).resolve().parents[1] / 'alembic/versions' / name
             spec = spec_from_file_location('migration_'+name, filename)
             migration = module_from_spec(spec); spec.loader.exec_module(migration)
@@ -370,3 +370,67 @@ def test_actual_cost_concurrency_and_immutable_decisions(engine):
         db.execute(text('ALTER TABLE actual_cost_closures DISABLE TRIGGER actual_cost_immutable'))
         assert protection(db)['state']=='incomplete';db.rollback()
         assert protection(db)['state']=='active' and verify(db)['state']=='consistent'
+
+
+def test_inventory_act_concurrent_post_and_immutable_snapshot(engine):
+    from app.warehouse import documents as d, inventory_evidence as e
+    from app.warehouse.models import WarehouseMaterial,Warehouse,MaterialCategory,StockDocument,StockMovement
+    from app.warehouse.control_models import WarehouseInventoryAct
+    from tests.warehouse_control_helpers import evidence
+    with Session(engine) as db:
+        actor=new_user(db);uid=actor.id
+        material=WarehouseMaterial(title='Inventory race',code='COUNT-'+str(uuid4()),warehouse=Warehouse.TECHNOLOGY,category=MaterialCategory.NONE,unit='шт',quantity_in_stock=10,is_fractional=False)
+        db.add(material);db.commit();mid=material.id
+        doc=d.create(d.Create(request_id=uuid4(),kind='inventory',warehouse=Warehouse.TECHNOLOGY,note='Synthetic physical count',lines=[{'material_id':mid,'quantity':'8'}]),db,actor)
+        scan=evidence(db,actor)
+        act=e.attach(db,db.get(StockDocument,doc['id']),e.Attach(request_id=uuid4(),version=doc['version'],file_id=scan.id,locator='Synthetic act, row 1',confirmed=True),actor)
+        body=d.Post(request_id=uuid4(),version=doc['version'],act_id=act.id,confirmed=True);db.commit()
+    barrier=Barrier(2)
+    def worker(_):
+        with Session(engine) as db:
+            actor=db.get(User,uid);bind_actor(db,actor);barrier.wait(timeout=10)
+            return d.post(doc['id'],body,db,actor)['status']
+    with ThreadPoolExecutor(max_workers=2) as pool: assert list(pool.map(worker,range(2)))==['posted','posted']
+    with Session(engine) as db:
+        assert db.get(WarehouseMaterial,mid).quantity_in_stock==8
+        assert db.query(StockMovement).filter_by(warehouse_material_id=mid).count()==1
+        acts=db.query(WarehouseInventoryAct).filter_by(document_id=doc['id']).all()
+        assert len(acts)==2 and all(e.act_out(db,a,db.get(StockDocument,doc['id']))['current'] for a in acts if a.stage=='posted')
+        for sql in ('UPDATE warehouse_inventory_acts SET content=content WHERE id=:id','DELETE FROM warehouse_inventory_acts WHERE id=:id','TRUNCATE warehouse_inventory_acts CASCADE'):
+            with pytest.raises(DBAPIError):db.execute(text(sql),{'id':acts[0].id})
+            db.rollback()
+        db.execute(text('ALTER TABLE warehouse_inventory_acts DISABLE TRIGGER warehouse_control_immutable'))
+        assert protection(db)['state']=='incomplete';db.rollback()
+        assert protection(db)['state']=='active' and verify(db)['state']=='consistent'
+
+
+def test_concurrent_legacy_reconciliation_cannot_double_attribute_blocks(engine, monkeypatch):
+    import tests.test_warehouse_control as fixture
+    original=fixture._material
+    monkeypatch.setattr(fixture, "_material", lambda db,title,stock:original(db,title+str(uuid4()),stock))
+    from tests.test_warehouse_reconciliation import legacy,confirm_body
+    from app.warehouse import reconciliation as r,service as s
+    from app.warehouse.models import StockMovement,WarehouseMaterial
+    from app.production.models import BlockMaterial
+    from app.warehouse.control_models import WarehouseControlRecord
+    from fastapi import HTTPException
+    with Session(engine,expire_on_commit=False) as db:
+        keeper,producer,m,p,b,b2,scan,first=legacy(db,lambda *args:new_user(db),3)
+        op=s.issue_by_techcard(db,p,keeper,received_by='Second synthetic legacy',lines=[(m.id,3)]);db.commit()
+        second=db.query(StockMovement).filter_by(operation_id=op.id).one()
+        # Both historic issues could have used the first block; only four units were actually supplied there.
+        bodies=[(move.id,confirm_body(db,move,scan,[(b.id,3)])) for move in (first,second)]
+        uid,pid,mid,bid,b2id=producer.id,p.id,m.id,b.id,b2.id
+        stock,provided=(m.quantity_in_stock,(b.quantity_provided,b2.quantity_provided))
+    barrier=Barrier(2)
+    def worker(item):
+        with Session(engine) as db:
+            actor=db.get(User,uid);bind_actor(db,actor);barrier.wait(timeout=10)
+            try:r.confirm(db,item[0],item[1],actor);db.commit();return 200
+            except HTTPException as exc:db.rollback();return exc.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:assert sorted(pool.map(worker,bodies))==[200,409]
+    with Session(engine) as db:
+        assert db.get(WarehouseMaterial,mid).quantity_in_stock==stock
+        assert (db.get(BlockMaterial,bid).quantity_provided,db.get(BlockMaterial,b2id).quantity_provided)==provided
+        assert db.query(WarehouseControlRecord).filter_by(production_id=pid,kind='reconcile').count()==1
+        assert verify(db)['state']=='consistent'

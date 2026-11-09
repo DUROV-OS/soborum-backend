@@ -160,6 +160,26 @@ def test_production_return_invalidates_cost_and_caps_new_recognition(f):
     assert next(v for v in options['movements'] if v['id']==f['movement'].id)['quantity']=='1'
 
 
+def test_legacy_allocation_proof_is_part_of_accounting_source(f):
+    from tests.test_warehouse_issue import _block,_norm
+    from tests.warehouse_control_helpers import evidence
+    from tests.test_warehouse_reconciliation import confirm_body
+    from app.warehouse import reconciliation as r
+    db=f['db'];owner=f['owner'];db.get(CostingApprovalPolicy,1).production_user_id=owner.id
+    block=_norm(db,_block(db,f['production'],'Legacy frame',1),f['material'],0,provided=2)
+    doc=evidence(db,owner);db.commit()
+    row=create(f,material_body(f));assert decision(f,row).status_code==200
+    r.confirm(db,f['movement'].id,confirm_body(db,f['movement'],doc,[(block.id,2)]),owner);db.commit()
+    assert f['api'](owner).get(P).json()['records'][0]['review']['state']=='stale'
+    assert decision(f,row,'void').status_code==200
+    corrected=material_body(f);corrected['expected_version']=1
+    response=f['api'](f['accountant']).post(P+f'/records/{row["id"]}/versions',json=corrected)
+    assert response.status_code==201,response.text
+    assert decision(f,response.json()).status_code==200
+    Path(doc.path_on_disk).write_bytes(b'changed')
+    assert f['api'](owner).get(P).json()['records'][0]['review']['state']=='stale'
+
+
 def test_material_quantity_caps_and_wrong_price(f):
     assert f['api'](f['accountant']).post(P+'/records',json=material_body(f,'3')).status_code==409
     data=material_body(f);data['gross_amount']='100';data['allocations'][0]['amount']='100'

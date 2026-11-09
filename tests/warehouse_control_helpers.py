@@ -52,3 +52,17 @@ def legacy_issue_client(client,db):
         return original(url,*args,**kwargs)
     client.post=post
     return client
+
+
+def inventory_act(client, doc):
+    if doc.get('kind') != 'inventory': return {}
+    history=client.get(f"/api/warehouse/inventory-evidence/{doc['id']}")
+    if history.status_code!=200:return {}
+    for act in history.json():
+        if act['stage']=='prepared' and act['snapshot']['version']==doc['version']:
+            return {'act_id':act['id'],'confirmed':True}
+    raw=BytesIO();Image.new('RGB',(2,2),'white').save(raw,'PNG')
+    upload=client.post('/api/warehouse/control/documents',files={'file':('synthetic-count.png',raw.getvalue(),'image/png')})
+    if upload.status_code!=201:return {}
+    result=client.post(f"/api/warehouse/inventory-evidence/{doc['id']}",json={'request_id':str(uuid4()),'version':doc['version'],'file_id':upload.json()['file_id'],'locator':'Synthetic count table, every row','confirmed':True})
+    return {'act_id':result.json()['id'],'confirmed':True} if result.status_code==201 else {}

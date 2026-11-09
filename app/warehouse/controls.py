@@ -139,6 +139,9 @@ def original_allocations(db, movement, records=None):
     for row in rows:
         for allocation in row.content['allocations']:
             if allocation['movement_id']==movement.id:return row.production_id,allocation['blocks']
+    from app.warehouse.reconciliation import resolved
+    reconciled = resolved(db, movement)
+    if reconciled: return reconciled
     # Older request issues identify exactly one block; old aggregated techcard issues do not.
     if movement.reason==StockMovementReason.ISSUED:
         req=db.get(MaterialRequest,movement.reference_id)
