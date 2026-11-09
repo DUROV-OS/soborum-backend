@@ -8,7 +8,7 @@ from collections import defaultdict
 from decimal import Decimal as D, ROUND_CEILING
 
 from app.accounting.models import SupplierOrder, MoneyMovement
-from app.costing.models import CostingOrderLink, CostingRevision
+from app.costing.models import CostingEstimate, CostingOrderLink, CostingRevision
 from app.purchasing.control_models import PurchaseControlRecord as Record
 from app.purchasing.models import PurchaseReceipt
 from app.sales.models import SalesEvent
@@ -81,8 +81,9 @@ def review(db, current, allocations):
         order = db.get(SalesOrder, oid)
         link = db.query(CostingOrderLink).filter_by(order_id=oid, line_index=index).first()
         revision = db.get(CostingRevision, link.revision_id) if link else None
-        if not order or not revision:
-            result.append({'order_id': oid, 'line_index': index, 'issues': ['Нет связи с утверждённой сметой']})
+        estimate = db.get(CostingEstimate, link.estimate_id) if link else None
+        if not order or not revision or not estimate or estimate.archived:
+            result.append({'order_id': oid, 'line_index': index, 'issues': ['Нет связи с действующей утверждённой сметой; обязательства требуют сверки']})
             continue
         snapshot = revision.snapshot
         bom = defaultdict(lambda: {'quantity': D(0), 'amount': D(0), 'unit': None})

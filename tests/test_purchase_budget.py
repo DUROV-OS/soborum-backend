@@ -137,6 +137,17 @@ def test_two_active_orders_share_one_budget(native, db, api):
     assert data['decision'] == 'manual_review'
 
 
+def test_archived_project_shows_a_blocker_instead_of_breaking_review(native, db, api):
+    from app.costing.models import CostingEstimate
+    client, row, *_ = ready(native, db, api)
+    budget = review(client, row)['budgets'][0]
+    db.get(CostingEstimate, budget['estimate_id']).archived = True; db.commit()
+    data = review(client, row)
+    assert data['decision'] == 'manual_review'
+    assert data['budgets'][0]['issues']
+    assert 'available' not in data['budgets'][0]
+
+
 def test_reapproval_carries_forward_previous_amount(native, db, api):
     client, row, previous, receipt, proof, oid, accountant = ready(native, db, api)
     for price in (50, 40):
