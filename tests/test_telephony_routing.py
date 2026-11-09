@@ -98,6 +98,68 @@ def test_live_event_without_call_id_remembers_manager_without_inventing_call(db,
     assert db.get(PhoneRoutingConfig, 1).cursor == 0
 
 
+@pytest.fixture
+def login_pool(db, pool):
+    first, second, actor = pool
+    first.telephony_extension, second.telephony_extension = '101', '102'
+    db.get(PhoneRoutingMember, first.id).pbx_user = 'manager_one'
+    db.get(PhoneRoutingMember, second.id).pbx_user = 'manager_two'
+    db.commit()
+    return pool
+
+
+@pytest.mark.parametrize('call_id', [None, 'extension-event'])
+@pytest.mark.parametrize('identity', [{'ext': '102'}, {'user': 'manager_two'}, {'user': 'manager_two', 'ext': '102'}])
+def test_live_answer_maps_pbx_login_and_extension(db, login_pool, call_id, identity):
+    body = {'cmd': 'event', 'type': 'ACCEPTED', 'phone': '79001112233', **identity}
+    if call_id:
+        body['callid'] = call_id
+    service.ingest(db, body)
+    assert db.get(PhoneRoutingMemory, '79001112233').user_id == login_pool[1].id
+    assert incoming(db, '79001112233')['responsible'] == 'manager_two'
+    assert db.query(PhoneCall).count() == int(call_id is not None)
+    assert connections.status(db, login_pool[1])['megafon']['extension'] == '102'
+
+
+def test_overflow_reported_by_extension_keeps_original_login_owner(db, login_pool):
+    assert incoming(db, '79001112233')['responsible'] == 'manager_one'
+    service.ingest(db, {'cmd': 'event', 'type': 'ACCEPTED', 'phone': '79001112233', 'ext': '102'})
+    memory = db.get(PhoneRoutingMemory, '79001112233')
+    assert memory.confirmed and memory.user_id == login_pool[0].id
+    assert incoming(db, '79001112233')['responsible'] == 'manager_one'
+
+
+@pytest.mark.parametrize('identity', [
+    {'user': 'manager_one', 'ext': '102'},
+    {'user': 'manager_one', 'ext': '999'},
+    {'ext': '999'},
+])
+def test_conflicting_or_unknown_event_identifiers_do_not_assign_owner(db, login_pool, identity):
+    service.ingest(db, {'cmd': 'event', 'type': 'ACCEPTED', 'phone': '79001112233', **identity})
+    assert db.query(PhoneRoutingMemory).count() == 0
+
+
+@pytest.mark.parametrize('second_enabled', [True, False])
+def test_extension_collision_after_profile_edit_does_not_assign_owner(db, login_pool, second_enabled):
+    first, second, actor = login_pool
+    second.telephony_extension = first.telephony_extension
+    db.get(PhoneRoutingMember, second.id).enabled = second_enabled
+    db.commit()
+    service.ingest(db, {'cmd': 'event', 'type': 'ACCEPTED', 'phone': '79001112233', 'ext': '101'})
+    assert db.query(PhoneRoutingMemory).count() == 0
+
+
+def test_configuration_rejects_login_colliding_with_another_extension(db, login_pool):
+    first, second, actor = login_pool
+    before = routing.read_config(db)
+    candidate = {key: value for key, value in before.items() if key != 'fallback'}
+    candidate['members'][1]['pbx_user'] = '101'
+    with pytest.raises(HTTPException) as error:
+        routing.save_config(db, routing.Configuration(**candidate), actor)
+    assert error.value.status_code == 422
+    assert db.get(PhoneRoutingMember, second.id).pbx_user == 'manager_two'
+
+
 def test_unmapped_imported_owner_falls_back_without_invalid_user_fk(db, pool):
     db.add(CRMEntity(kind='contact', name='Imported', payload={'phone': '79001112233', 'responsible_user_id': 999999999}))
     db.commit()

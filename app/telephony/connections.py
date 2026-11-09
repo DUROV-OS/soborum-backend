@@ -25,7 +25,7 @@ def status(db, user):
             'state': checked.get('megafon', {}).get('state', 'unchecked') if provider.configured() else 'not_configured',
             'checked_at': checked.get('checked_at'),
             'can_call': bool(provider.configured() and member and member.enabled and eligible(user)),
-            'extension': member.pbx_user if member else None,
+            'extension': (user.telephony_extension or member.pbx_user) if member else None,
         },
         'max': {
             'configured': bool(settings.max_token),

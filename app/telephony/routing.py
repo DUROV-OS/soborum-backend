@@ -99,16 +99,27 @@ def eligible(user):
     return user and user.is_active and user.access_level(Module.CLIENTS) >= AccessLevel.EDIT
 
 
+def member_identifiers(member, user):
+    # The provider accepts the PBX login for routing/dialling but can report
+    # only the extension in live events. Extensions are admin-managed user data.
+    return {value for value in (member.pbx_user, user.telephony_extension) if value}
+
+
 def save_config(db, body, actor):
     config = locked_config(db)
     if body.version != config.version:
         raise HTTPException(409, 'Настройки уже изменены. Обновите страницу.')
+    identifiers = set()
     for member in body.members:
         member_user = db.get(User, member.user_id)
         if member_user is None:
             raise HTTPException(422, 'Учётная запись участника не найдена')
         if member.enabled and not eligible(member_user):
             raise HTTPException(422, 'Участнику нужны активная учётная запись и право редактирования клиентов')
+        aliases = member_identifiers(member, member_user)
+        if identifiers.intersection(aliases):
+            raise HTTPException(422, 'Логин и внутренний номер ВАТС не должны указывать на разных сотрудников')
+        identifiers.update(aliases)
     before = read_config(db)
     # Remove first so changing/swapping logins does not collide with old rows.
     db.query(PhoneRoutingMember).delete(synchronize_session=False)
@@ -193,6 +204,23 @@ def contact(db, body):
     return response
 
 
+def answered_member(db, row, body):
+    identifiers = {str(body[key]).strip() for key in ('user', 'ext') if body.get(key)}
+    if not identifiers and row.employee:
+        identifiers = {str(row.employee).strip()}
+    matches = []
+    for member, user in db.query(PhoneRoutingMember, User).join(User, User.id == PhoneRoutingMember.user_id):
+        aliases = member_identifiers(member, user)
+        if identifiers.intersection(aliases):
+            matches.append((member, user, aliases))
+    # A profile can be edited after the routing configuration was saved.
+    # Ambiguous aliases (including disabled users) must never assign a client.
+    if len(matches) != 1:
+        return None
+    member, user, aliases = matches[0]
+    return member if identifiers.issubset(aliases) and member.enabled and eligible(user) else None
+
+
 def observe_answer(db, row, body):
     # Only confirm a live first assignment. Historical replay cannot create or
     # replace ownership, and answering an overflow call never steals a client.
@@ -208,8 +236,8 @@ def observe_answer(db, row, body):
     memory = db.get(PhoneRoutingMemory, row.phone)
     if memory and (memory.confirmed or memory.source != 'assigned'):
         return
-    member = db.query(PhoneRoutingMember).filter_by(pbx_user=row.employee, enabled=True).first()
-    if member and eligible(db.get(User, member.user_id)):
+    member = answered_member(db, row, body)
+    if member:
         if memory is None:
             db.add(PhoneRoutingMemory(phone=row.phone, user_id=member.user_id, source='answered', confirmed=True))
         else:
