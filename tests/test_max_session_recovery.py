@@ -235,6 +235,9 @@ def test_qr_exchange_requires_owner_confirmation_before_persist(private_store, f
     def request(session, opcode, payload):
         expected, body = next(frames)
         assert opcode == expected
+        if opcode == 291:
+            assert job.phase == 'verifying' and job.qr_image is None
+            assert job.expires_at > time.time() + 250
         return body
     monkeypatch.setattr(auth, '_request', request)
     auth._run(job)
