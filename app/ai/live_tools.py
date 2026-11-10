@@ -48,7 +48,13 @@ def _schedule_sales_followup(db,user,entry_id,title,due_at=None,responsible_user
     domains=[ChatDomain.GENERAL],
 )
 def _live_company_pulse(db, user) -> dict:
-    return connectors.live_briefing(db)
+    from app.dashboard.service import SECTION_BUILDERS, _snapshot_tasks
+    data = {key: (_snapshot_tasks(db, user) if key == 'tasks' else builder(db))
+            for key, (module, builder) in SECTION_BUILDERS.items() if user.has_access(module)}
+    if user.has_access(Module.CLIENTS) and user.has_access(Module.ACCOUNTING):
+        data['finance'] = connectors._finance_facts(db)
+    return {'source': 'durovos_database', 'sections': data,
+            'scope': 'Доступные пользователю разделы; отсутствующий раздел не означает нулевые показатели.'}
 
 
 @register(
@@ -61,7 +67,10 @@ def _live_company_pulse(db, user) -> dict:
     domains=[ChatDomain.GENERAL],
 )
 def _live_clients_and_money(db, user) -> dict:
-    data = connectors.live_briefing(db)
+    from fastapi import HTTPException
+    if not user.has_access(Module.CLIENTS) or not user.has_access(Module.ACCOUNTING):
+        raise HTTPException(403, 'Для общей сводки клиентов и денег нужен доступ к продажам и бухгалтерии')
+    data = _live_company_pulse(db, user)['sections']
     return {
         "source": "durovos_database",
         "clients": data.get("clients", {}),
@@ -79,6 +88,10 @@ def _live_clients_and_money(db, user) -> dict:
     domains=[ChatDomain.GENERAL],
 )
 def _search_company_vault(db, user, query: str) -> dict:
+    from fastapi import HTTPException
+    from app.users.models import UserRole
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(403, 'Общая база знаний доступна только руководителю: права на отдельные документы пока не настроены')
     root = settings.vault_root
     if not root:
         return {"hits": [], "detail": "VAULT_ROOT не задан."}
