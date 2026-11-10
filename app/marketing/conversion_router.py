@@ -53,3 +53,17 @@ def record_quality(request_id: int, payload: QualityReview, db: Session = Depend
 @router.get('/conversions-export')
 def prepare_export(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     return conversions.export_csv(db)
+
+
+@router.get('/economics')
+def get_economics(date_from: date | None = None, date_to: date | None = None,
+                  db: Session = Depends(get_db),
+                  user: User = Depends(require_view(Module.MARKETING)),
+                  _clients: User = Depends(require_view(Module.CLIENTS)),
+                  _accounting: User = Depends(require_view(Module.ACCOUNTING)),
+                  _costing: User = Depends(require_view(Module.COSTING))):
+    from app.marketing.economics import report
+    from app.costing.service import require_cost
+    require_cost(user)
+    today = datetime.now(ZoneInfo('Europe/Moscow')).date()
+    return report(db, date_from or today.replace(day=1), date_to or today)
