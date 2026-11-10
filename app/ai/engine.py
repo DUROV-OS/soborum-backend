@@ -15,6 +15,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.ai import attachments as ai_attachments
+from app.ai import answer_provenance as evidence
 from app.ai import mcp_auth
 from app.ai.guardian import authorize_tool, decision_record
 from app.ai.models import Chat, ChatDomain, ChatMode, Message, PendingAction, PendingActionStatus
@@ -96,21 +97,11 @@ def _describe_api_error(error: BaseException) -> str:
 
 
 def _system_for(chat: Chat, db: Session | None = None, *, voice_lead: bool = False) -> str:
-    text = SYSTEM_PROMPTS[chat.domain]
+    text = SYSTEM_PROMPTS[chat.domain] + evidence.INSTRUCTION
     if chat.domain != ChatDomain.GENERAL:
         return text
-    try:
-        from app.agents.connectors import live_briefing_text
-
-        extra = live_briefing_text(db)
-        if extra:
-            text += "\n\n" + extra
-    except Exception as error:
-        logger.warning("живой срез для консультации: %s", error)
-        text += (
-            "\n\nЖивой срез базы DurovOS не собрался. "
-            "Не утверждай числа по клиентам, складу, производству и задачам — данных нет."
-        )
+    # Read company data through the authorized tools only. The previous global
+    # briefing bypassed per-user module permissions and had no saved sources.
     # Только «Совещание» и «Агенты → Консультация» реально озвучивают ответ —
     # см. VOICE_LEAD_INSTRUCTION. Обычный текстовый чат «Марина» этот формат
     # не разбирает и показал бы «Голосом: …» пользователю сырым текстом.
@@ -146,6 +137,8 @@ def _drop_null_fields(block: dict) -> dict:
 def _resolve_content(db: Session, content: list) -> list:
     resolved = []
     for block in content:
+        if block.get('type') == evidence.BLOCK:
+            continue  # Server metadata is never replayed as a provider content block.
         if block.get("type") == "file_ref":
             asset = db.get(FileAsset, block["file_id"])
             if asset is None:
@@ -203,6 +196,7 @@ def _prune_dangling_tool_blocks(history: list[dict]) -> list[dict]:
 
 
 def _build_history(db: Session, chat: Chat) -> list[dict]:
+    evidence.assert_history_access(chat, chat.owner)
     history = [{"role": m.role, "content": _resolve_content(db, m.content)} for m in chat.messages]
     return _prune_dangling_tool_blocks(history)
 
@@ -268,6 +262,8 @@ def _stream_claude(db: Session, system: str, messages: list[dict], tools: list[d
 
 def _to_tool_result(tool_use_id: str, resolution: dict) -> dict:
     content = resolution.get("content")
+    if resolution.get('evidence') and not resolution.get('is_error'):
+        content = {'source': resolution['evidence'], 'data': content}
     text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
     return {
         "type": "tool_result",
@@ -287,7 +283,8 @@ def _execute_tool(db: Session, name: str, tool_input: dict, user: User, chat: Ch
             result = tool_def.handler(db, user, **tool_input)
         if commit:
             db.commit()
-        return {"content": result, "is_error": False, "guardian": decision_record(user, approved=approved)}
+        failed_read = tool_def.read_only and isinstance(result, dict) and bool(result.get('error') or result.get('isError'))
+        return {"content": result, "is_error": failed_read, "guardian": decision_record(user, approved=approved)}
     except HTTPException as e:
         if commit:
             db.rollback()
@@ -326,7 +323,7 @@ _STEP_LIMIT_NOTE = "Достигнут лимит шагов обработки 
 
 
 def _persist_assistant(db: Session, chat: Chat, content_blocks: list[dict]) -> Message:
-    message = Message(chat_id=chat.id, role="assistant", content=content_blocks)
+    message = Message(chat_id=chat.id, role="assistant", content=[b for b in content_blocks if b.get('type') != evidence.BLOCK])
     db.add(message)
     db.commit()
     db.refresh(message)
@@ -348,7 +345,7 @@ def _run_tool_round(
     resolutions: dict[str, dict] = {}
     pending: list[PendingAction] = []
 
-    for block in tool_use_blocks:
+    for index, block in enumerate(tool_use_blocks, 1):
         tool_use_id, name, tool_input = block["id"], block["name"], block.get("input", {})
         try:
             tool_def = authorize_tool(chat, user, name, tool_input, proposal=True)
@@ -372,6 +369,8 @@ def _run_tool_round(
             resolutions[tool_use_id] = {"status": "pending", "guardian": decision_record(user, approved=True)}
         else:
             outcome = _execute_tool(db, name, tool_input, user, chat)
+            if not outcome.get('is_error'):
+                outcome['evidence'] = evidence.tool_evidence(assistant_message.id, index, name, tool_input, outcome['content'])
             resolutions[tool_use_id] = {"status": "executed", **outcome}
 
     assistant_message.tool_resolutions = resolutions
@@ -389,7 +388,7 @@ def _run_tool_round(
 
 
 def _advance(db: Session, chat: Chat, user: User, *, voice_lead: bool = False) -> TurnResult:
-    # Build system once: the DurovOS-database briefing must not re-fetch on every tool round.
+    # The same system instructions apply to every tool round.
     system = _system_for(chat, db, voice_lead=voice_lead)
     for _ in range(MAX_ITERATIONS):
         history = _build_history(db, chat)
@@ -408,7 +407,7 @@ def _advance(db: Session, chat: Chat, user: User, *, voice_lead: bool = False) -
             # An unfinished tool_use cannot be replayed without a matching tool_result.
             # Preserve the user-visible partial answer, never the unexecuted tool block.
             assistant_message.content = [{"type": "text", "text": reply}]
-            db.commit()
+            evidence.record_answer(db, chat, assistant_message, user, system=system, stop_reason=response.stop_reason)
             return TurnResult(status="completed", reply=reply)
 
         if response.stop_reason == "pause_turn":
@@ -419,6 +418,7 @@ def _advance(db: Session, chat: Chat, user: User, *, voice_lead: bool = False) -
 
         if response.stop_reason != "tool_use":
             text = "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
+            evidence.record_answer(db, chat, assistant_message, user, system=system, stop_reason=response.stop_reason)
             return TurnResult(status="completed", reply=text)
 
         outcome, pending = _run_tool_round(db, chat, user, assistant_message, content_blocks)
@@ -540,7 +540,7 @@ def _advance_stream(db: Session, chat: Chat, user: User, *, voice_lead: bool = F
         if final.stop_reason == "max_tokens":
             reply = _max_tokens_reply(content_blocks)
             assistant_message.content = [{"type": "text", "text": reply}]
-            db.commit()
+            evidence.record_answer(db, chat, assistant_message, user, system=system, stop_reason=final.stop_reason)
             yield {"type": "block_start"}
             yield {"type": "text", "text": reply}
             yield {"type": "block_end"}
@@ -552,6 +552,7 @@ def _advance_stream(db: Session, chat: Chat, user: User, *, voice_lead: bool = F
             continue
 
         if final.stop_reason != "tool_use":
+            evidence.record_answer(db, chat, assistant_message, user, system=system, stop_reason=final.stop_reason)
             yield {"type": "done", "chat_id": chat.id}
             return
 

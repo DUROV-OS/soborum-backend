@@ -14,6 +14,7 @@ from app.tasks import service as task_service
 
 class _FakeToolUse:
     type = "tool_use"
+    name = "submit_daily_plan"
 
     def __init__(self, input_):
         self.input = input_

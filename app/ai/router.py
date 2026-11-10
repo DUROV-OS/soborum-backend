@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.ai import analytics as ai_analytics
 from app.ai import attachments as ai_attachments
 from app.ai import engine
+from app.ai import answer_provenance
 from app.ai import growth_ideation as ai_growth_ideation
 from app.ai import mcp_auth
 from app.ai import mcp_write
@@ -407,7 +408,16 @@ def list_chats(domain: ChatDomain | None = None, db: Session = Depends(get_db), 
 
 @app.get("/chats/{chat_id}", response_model=ChatDetailOut)
 def get_chat(chat_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
-    return ai_service.get_own_chat_or_404(db, user, chat_id)
+    chat = ai_service.get_own_chat_or_404(db, user, chat_id)
+    answer_provenance.assert_history_access(chat, user)
+    return chat
+
+
+@app.get('/chats/{chat_id}/messages/{message_id}/sources/{source_id}')
+def get_answer_source(chat_id: int, message_id: int, source_id: str,
+                      db: Session = Depends(get_db), user: User = Depends(require_ai_view)):
+    chat = ai_service.get_own_chat_or_404(db, user, chat_id)
+    return answer_provenance.source_snapshot(db, chat, user, message_id, source_id)
 
 
 @app.patch("/chats/{chat_id}/mode", response_model=ChatOut)

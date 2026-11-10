@@ -151,6 +151,22 @@ class SectionAnalyticsOut(BaseModel):
 class PriorityTaskOut(BaseModel):
     task: TaskOut
     reason: str
+    source_snapshot: dict = Field(default_factory=dict)
+
+
+class TaskSelectionEvidence(BaseModel):
+    source: Literal['ai', 'rules'] = 'rules'
+    checked_at: datetime | None = None
+    source_hash: str | None = None
+    analysis_version: str | None = None
+    model: str | None = None
+    cached: bool = False
+    input_changed: bool = False
+    fallback_reason: str | None = None
+    candidate_count: int = 0
+    considered_count: int = 0
+    human_approved: Literal[False] = False
+    quality_assessed: Literal[False] = False
 
 
 # --- План на день (0070-e) - отдельная от TaskPrioritiesOut механика: та выбирает
@@ -163,9 +179,10 @@ class PriorityTaskOut(BaseModel):
 class DailyPlanItemOut(BaseModel):
     task: TaskOut
     reason: str
+    source_snapshot: dict = Field(default_factory=dict)
 
 
-class DailyPlanOut(BaseModel):
+class DailyPlanOut(TaskSelectionEvidence):
     generated_at: datetime
     plan: list[DailyPlanItemOut]
 
@@ -253,7 +270,7 @@ class MeetingDetailOut(MeetingOut):
     ai_enabled: bool = False
 
 
-class TaskPrioritiesOut(BaseModel):
+class TaskPrioritiesOut(TaskSelectionEvidence):
     generated_at: datetime
     priorities: list[PriorityTaskOut]
 

@@ -219,7 +219,9 @@ def test_stream_yields_tokens_then_done_and_persists(db, make_user, monkeypatch)
     assert "".join(e["text"] for e in events if e["type"] == "text") == "40 м²"
     db.refresh(chat)
     assert [m.role for m in chat.messages] == ["assistant"]
-    assert chat.messages[0].content == [{"type": "text", "text": "40 м²"}]
+    assert chat.messages[0].content[0] == {"type": "text", "text": "40 м²"}
+    assert chat.messages[0].content[1]['type'] == 'answer_evidence'
+    assert chat.messages[0].content[1]['sources'] == []
 
 
 def test_stream_reports_web_search_as_status(db, make_user, monkeypatch):

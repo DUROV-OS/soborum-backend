@@ -128,7 +128,9 @@ def test_streaming_turn_on_openai_yields_status_text_and_persists_answer(db, mak
         {"type": "done", "chat_id": chat.id},
     ]
     db.refresh(chat)
-    assert chat.messages[-1].content == [{"type": "text", "text": "Курс найден."}]
+    assert chat.messages[-1].content[0] == {"type": "text", "text": "Курс найден."}
+    assert chat.messages[-1].content[1]["type"] == "answer_evidence"
+    assert chat.messages[-1].content[1]["sources"] == []
 
 
 def test_failed_openai_stream_surfaces_as_provider_error(monkeypatch):
