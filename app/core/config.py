@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://soborbum:soborbum@db:5432/soborbum"
 
     jwt_secret: str = ""
-    jwt_algorithm: str = "HS256"
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
     jwt_expire_minutes: int = 60 * 12
 
     storage_dir: str = "/tmp/soborum-storage"

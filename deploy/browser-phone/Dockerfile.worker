@@ -4,5 +4,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends janus-tools ffm
     && rm -rf /var/lib/apt/lists/*
 COPY requirements-calls.txt /tmp/requirements-calls.txt
 COPY requirements-worker.txt /tmp/requirements-worker.txt
-RUN pip install --no-cache-dir -r /tmp/requirements-worker.txt -r /tmp/requirements-calls.txt
+RUN python -m pip install --no-cache-dir pip==26.3 \
+    && python -m pip install --no-cache-dir -r /tmp/requirements-worker.txt -r /tmp/requirements-calls.txt
 ENTRYPOINT ["python", "-m", "app.telephony.worker"]

@@ -164,7 +164,9 @@ def _image_ocr(path: str) -> str:
     except ImportError:
         return ""
     try:
-        with Image.open(path) as image:
+        with Image.open(path, formats=('JPEG', 'PNG', 'WEBP', 'TIFF', 'BMP')) as image:
+            if image.width * image.height > 40_000_000:
+                return ""
             return _ocr_image(image.convert("RGB")).strip()
     except Exception as error:
         log.warning("картинка для OCR не открылась: %s", error)

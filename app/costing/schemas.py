@@ -27,8 +27,8 @@ def image_value(value):
         raw = base64.b64decode(data, validate=True)
         if len(raw) > 5 * 1024 * 1024:
             raise ValueError()
-        with Image.open(BytesIO(raw)) as img:
-            if img.width * img.height > 16000000:
+        with Image.open(BytesIO(raw), formats=('PNG', 'JPEG', 'WEBP', 'GIF')) as img:
+            if Image.MIME.get(img.format) != prefix[5:-7] or img.width * img.height > 16000000:
                 raise ValueError()
             img.verify()
     except Exception as exc:

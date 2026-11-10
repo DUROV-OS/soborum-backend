@@ -69,7 +69,7 @@ async def upload(id:int,file:UploadFile,db:Session=Depends(get_db),user=Depends(
             content_type='application/pdf'
         else:
             from PIL import Image
-            with Image.open(BytesIO(raw)) as image:
+            with Image.open(BytesIO(raw), formats=('PNG', 'JPEG', 'WEBP')) as image:
                 if image.format not in ('PNG','JPEG','WEBP') or image.width*image.height>40_000_000: raise ValueError()
                 content_type=Image.MIME[image.format];image.verify()
     except Exception: e.fail('Файл не распознан как PDF или скан PNG/JPEG/WEBP')
