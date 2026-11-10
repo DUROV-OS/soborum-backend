@@ -91,6 +91,14 @@ def unlinked_chat(chat_id: int, db: Session = Depends(get_db), user: User = Depe
     return pending(db, chat_id)
 
 
+@app.get('/my-work')
+def my_work(bucket: str | None = Query(None, pattern='^(overdue|today|no_deadline|no_next_step|upcoming)$'),
+            offset: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=100),
+            db: Session = Depends(get_db), user: User = Depends(view)):
+    from app.crm.work_queue import personal_queue
+    return personal_queue(db, user, bucket=bucket, offset=offset, limit=limit)
+
+
 @app.get('/attention')
 def attention(
     offset: int = Query(0, ge=0),
@@ -200,6 +208,7 @@ def entries(
     pipeline_id: int | None = None,
     stage_id: int | None = None,
     owner_id: int | None = Query(None, ge=0),
+    entity_id: int | None = Query(None, ge=1),
     date_from: date | None = None,
     date_to: date | None = None,
     date_unknown: bool = False,
@@ -212,7 +221,7 @@ def entries(
     user: User = Depends(view),
 ):
     return service.list_entries(db, kind, query, archive, pipeline_id, stage_id, limit, offset, owner_id=owner_id,
-                                date_from=date_from, date_to=date_to, date_unknown=date_unknown, priority=priority, spam=spam, temperature=temperature, user=user)
+                                date_from=date_from, date_to=date_to, date_unknown=date_unknown, priority=priority, spam=spam, temperature=temperature, user=user, entity_id=entity_id)
 
 
 @app.get("/kanban-summary")

@@ -185,7 +185,7 @@ def _task_priority_expression():
 
 
 def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, owner_id=None,
-                   date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal", temperature=None, user=None):
+                   date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal", temperature=None, user=None, entity_id=None):
     """One filter contract for paginated registers and unpaginated board totals."""
     if kind not in SCHEMAS:
         raise HTTPException(422, "Неизвестный раздел продаж")
@@ -197,6 +197,11 @@ def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage
     if spam not in ("normal", "spam", "all"):
         raise HTTPException(422, "Неизвестный фильтр спама")
     stmt = db.query(CRMEntity).filter_by(kind=kind)
+    if entity_id is not None:
+        if kind != 'task':
+            raise HTTPException(422, 'Связанная карточка доступна только в фильтре задач')
+        get(db, entity_id)
+        stmt = stmt.filter(CRMEntity.payload['entity_id'].as_integer() == entity_id)
     if temperature is not None:
         if kind not in ('contact', 'deal', 'inquiry') or temperature not in ('hot', 'warm', 'cold', 'unknown'):
             raise HTTPException(422, 'Температура доступна для контактов, сделок и входящих заявок')
@@ -251,12 +256,12 @@ def _entries_query(db, kind, query="", archive="active", pipeline_id=None, stage
 
 
 def list_entries(db, kind, query="", archive="active", pipeline_id=None, stage_id=None, limit=50, offset=0, owner_id=None,
-                 date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal", temperature=None, user=None):
+                 date_from=None, date_to=None, date_unknown=False, priority=None, spam="normal", temperature=None, user=None, entity_id=None):
     from sqlalchemy import literal
     from app.crm.dates import source_date_expressions, source_date_fields
 
     stmt = _entries_query(db, kind, query, archive, pipeline_id, stage_id, owner_id,
-                          date_from, date_to, date_unknown, priority, spam, temperature, user)
+                          date_from, date_to, date_unknown, priority, spam, temperature, user, entity_id=entity_id)
     epoch, origin = source_date_expressions(db, kind)
     order = [epoch.desc().nulls_last(), CRMEntity.id.desc()] if kind in ("deal", "inquiry") else [CRMEntity.id.desc()]
     priority_column = _task_priority_expression() if kind == "task" else literal(None)
@@ -456,17 +461,22 @@ def patch(db, id, payload, user):
 
 
 def history(db, row, limit=100, offset=0, user=None):
-    local = db.query(CRMEvent).filter_by(entity_id=row.id).order_by(CRMEvent.id.desc()).all()
+    from app.users.models import User
+    from app.crm.work_queue import deadline
+    local = (db.query(CRMEvent, User.full_name).outerjoin(User, User.id == CRMEvent.actor_id)
+             .filter(CRMEvent.entity_id == row.id).order_by(CRMEvent.id.desc()).all())
     entries = [
         {
             "id": "local-" + str(e.id),
-            "created_at": e.created_at.isoformat(),
+            "created_at": deadline(e.created_at).astimezone(timezone.utc).isoformat(),
+            "action": e.action,
+            "actor": {"id": e.actor_id, "name": actor_name} if actor_name else None,
             "text": e.details.get("text")
             or ("Запись создана" if e.action == "created" else "Карточка изменена"),
             "details": e.details,
             "source": "soborum",
         }
-        for e in local
+        for e, actor_name in local
     ]
     entity = {"deal": "leads", "contact": "contacts", "company": "companies"}.get(row.kind)
     if entity and row.source_id and row.source_id.isdigit():
@@ -546,7 +556,7 @@ def history(db, row, limit=100, offset=0, user=None):
                 }
             )
     entries = visible_history(entries, row, user)
-    entries.sort(key=lambda r: r["created_at"], reverse=True)
+    entries.sort(key=lambda r: (deadline(r["created_at"]) or datetime.min.replace(tzinfo=timezone.utc), r['id']), reverse=True)
     return {"total": len(entries), "items": entries[offset : offset + limit]}
 
 
