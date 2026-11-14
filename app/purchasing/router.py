@@ -23,6 +23,8 @@ app = FastAPI(title="Закупки и приёмки")
 app.include_router(returns_router)
 from app.purchasing.control_router import router as control_router
 app.include_router(control_router)
+from app.purchasing.receipt_editing import router as receipt_edit_router
+app.include_router(receipt_edit_router)
 view = require_view(Module.ACCOUNTING)
 edit = require_edit(Module.ACCOUNTING)
 
@@ -121,11 +123,7 @@ def update(
     row = service.get_order(db, id, lock=True)
     if row.version != version or row.archived:
         raise HTTPException(409, "Заказ изменён или находится в архиве")
-    if body.items is not None and any(service.dec(i.get("received_quantity")) for i in row.items):
-        raise HTTPException(409, "После приёмки состав заказа не меняется. Оформите отдельный заказ.")
-    if body.items is not None and any(i.received_quantity for i in body.items):
-        raise HTTPException(422, "Количество полученного заполняется приёмками")
-    return service.out(db, accounting.update_supplier_order(db, row, body))
+    return service.out(db, accounting.update_supplier_order(db, row, body, actor_id=user.id))
 
 
 @app.post("/orders/{id}/archive")

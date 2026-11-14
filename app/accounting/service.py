@@ -1666,7 +1666,7 @@ def create_supplier_order(db: Session, data: SupplierOrderCreate) -> SupplierOrd
     return order
 
 
-def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrderUpdate) -> SupplierOrder:
+def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrderUpdate, *, actor_id=None) -> SupplierOrder:
     order = (
         db.query(SupplierOrder)
         .filter_by(id=order.id)
@@ -1676,43 +1676,16 @@ def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrder
     )
     if order.archived:
         raise _conflict("Заказ находится в архиве")
-    if order.status not in _ORDER_EDITABLE_STATUSES:
-        raise _conflict(f"Заказ в статусе «{order.status.value}» редактировать нельзя")
-
-    payload = data.model_dump(exclude_unset=True)
-    if "items" in payload:
-        from app.purchasing.models import PurchaseReceipt
-
-        if (
-            any(i.get("received_quantity", 0) for i in order.items)
-            or db.query(PurchaseReceipt.id).filter_by(order_id=order.id, status="posted").first()
-        ):
-            raise _conflict("После приёмки состав заказа не меняется")
-        if any(i.received_quantity for i in data.items):
-            raise _bad_request("Количество полученного заполняется приёмками")
-        _validate_order_items(data.items)
-        order.items = [item.model_dump() for item in data.items]
-        order.total_cost = _compute_order_total(data.items)
-        from decimal import Decimal
-
-        used = Decimal(str(order.opening_paid or 0)) + sum(
-            (
-                Decimal(str(m.amount))
-                for m in db.query(MoneyMovement).filter(
-                    MoneyMovement.supply_id == order.id, MoneyMovement.status != MoneyMovementStatus.CANCELLED
-                )
-            ),
-            Decimal(0),
-        )
-        if Decimal(str(order.total_cost)) < used:
-            raise _conflict("Стоимость заказа меньше уже оплаченной суммы и платежей на согласовании")
-    if "expected_at" in payload:
-        order.expected_at = data.expected_at
-    if "comment" in payload:
-        order.comment = data.comment
+    from app.purchasing.editing import order_snapshot, apply_order, record_order_edit
+    before = order_snapshot(order)
+    prior_supplier = order.supplier_id
+    apply_order(db, order, data)
     order.version += 1
-    db.commit()
-    warehouse_service.recalculate_supplier_totals(db, order.supplier_id)
+    record_order_edit(db, order, before, data, actor_id or db.info.get('integrity_actor', {}).get('id'))
+    warehouse_service.recalculate_supplier_totals(db, prior_supplier)
+    if order.supplier_id != prior_supplier:
+        warehouse_service.recalculate_supplier_totals(db, order.supplier_id)
+        db.expire(order, ['supplier'])
     db.commit()
     db.refresh(order)
     return order

@@ -518,10 +518,10 @@ def update_supplier_order(
     order_id: int,
     payload: SupplierOrderUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_accounting_edit),
+    user: User = Depends(require_accounting_edit),
 ):
     order = accounting_service.get_supplier_order_or_404(db, order_id)
-    order = accounting_service.update_supplier_order(db, order, payload)
+    order = accounting_service.update_supplier_order(db, order, payload, actor_id=user.id)
     return SupplierOrderOut.from_order(order)
 
 

@@ -39,6 +39,7 @@ class WarehouseMaterialCreate(MaterialCharacteristics):
 
 
 class WarehouseMaterialUpdate(MaterialCharacteristics):
+    edit_token: str | None = Field(default=None, max_length=64)
     category: MaterialCategory | None = None
     title: str | None = None
     code: str | None = None
@@ -56,6 +57,7 @@ class RequestBreakdownItem(BaseModel):
 
 
 class WarehouseMaterialOut(BaseModel):
+    edit_token: str = ""
     model_config = ConfigDict(from_attributes=True)
 
     id: int

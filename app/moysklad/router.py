@@ -33,7 +33,8 @@ def records(
 @app.get("/records/{record_id}")
 def record(record_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     r = service.get_record(db, user, record_id)
-    return {**service.brief(r), "payload": r.payload}
+    from app.moysklad.working_links import links
+    return {**service.brief(r), "payload": r.payload, "working_links": links(db, user, r)}
 
 
 @app.get("/records/{record_id}/files/{index}")
