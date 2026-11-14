@@ -45,8 +45,8 @@ def test_no_signals_means_on_schedule(db):
     db.commit()
     result = deadlines.generate_deadline_insight(db, production)
     assert result.source == "none"
-    assert result.title == "По графику"
-    assert result.impact == ""
+    assert result.title == "Сигналов задержки не найдено"
+    assert 'не подтверждение' in result.impact
     assert result.generated_at is not None
 
 
@@ -175,4 +175,4 @@ def test_home_endpoint_returns_deadlines_without_anthropic_key(api, make_user, d
     assert resp.status_code == 200
     body = resp.json()["deadlines"]
     assert body["source"] == "none"
-    assert body["title"] == "По графику"
+    assert body["title"] == "Сигналов задержки не найдено"

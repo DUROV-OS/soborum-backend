@@ -85,9 +85,9 @@ def llm_client(*, timeout: float = 60.0, max_retries: int = 3):
 
 # --- OpenAI adapter -----------------------------------------------------------
 
-# Anthropic effort levels -> OpenAI reasoning.effort. OpenAI has no xhigh/max.
+# Preserve the common effort levels used by the existing callers.
 _EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
-# On reasoning models (gpt-5*, o*) hidden reasoning tokens are counted against
+# On reasoning models (gpt-5*, gpt-6*, o*) hidden reasoning tokens are counted against
 # max_output_tokens. Callers size max_tokens for the visible answer only (some
 # as low as 1024), so without headroom the budget can be spent on thinking and
 # the answer comes back empty. Unused headroom is not billed.
@@ -99,7 +99,7 @@ _DEFAULT_REASONING_EFFORT = "low"
 
 def _is_reasoning_model(model: str) -> bool:
     name = (model or "").lower()
-    return name.startswith(("gpt-5", "o1", "o3", "o4"))
+    return name.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 class OpenAIMessagesClient:

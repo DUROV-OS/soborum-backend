@@ -48,7 +48,13 @@ def _schedule_sales_followup(db,user,entry_id,title,due_at=None,responsible_user
     domains=[ChatDomain.GENERAL],
 )
 def _live_company_pulse(db, user) -> dict:
-    return connectors.live_briefing(db)
+    from app.dashboard.service import SECTION_BUILDERS, _snapshot_tasks
+    data = {key: (_snapshot_tasks(db, user) if key == 'tasks' else builder(db))
+            for key, (module, builder) in SECTION_BUILDERS.items() if user.has_access(module)}
+    if user.has_access(Module.CLIENTS) and user.has_access(Module.ACCOUNTING):
+        data['finance'] = connectors._finance_facts(db)
+    return {'source': 'durovos_database', 'sections': data,
+            'scope': 'Доступные пользователю разделы; отсутствующий раздел не означает нулевые показатели.'}
 
 
 @register(
@@ -61,7 +67,10 @@ def _live_company_pulse(db, user) -> dict:
     domains=[ChatDomain.GENERAL],
 )
 def _live_clients_and_money(db, user) -> dict:
-    data = connectors.live_briefing(db)
+    from fastapi import HTTPException
+    if not user.has_access(Module.CLIENTS) or not user.has_access(Module.ACCOUNTING):
+        raise HTTPException(403, 'Для общей сводки клиентов и денег нужен доступ к продажам и бухгалтерии')
+    data = _live_company_pulse(db, user)['sections']
     return {
         "source": "durovos_database",
         "clients": data.get("clients", {}),
@@ -79,6 +88,10 @@ def _live_clients_and_money(db, user) -> dict:
     domains=[ChatDomain.GENERAL],
 )
 def _search_company_vault(db, user, query: str) -> dict:
+    from fastapi import HTTPException
+    from app.users.models import UserRole
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(403, 'Общая база знаний доступна только руководителю: права на отдельные документы пока не настроены')
     root = settings.vault_root
     if not root:
         return {"hits": [], "detail": "VAULT_ROOT не задан."}
@@ -118,7 +131,7 @@ def _read_imported_moysklad(db,user,record_id):
     ['query'],required_module=Module.CLIENTS,read_only=True,domains=list(ChatDomain))
 def _search_local_sales(db,user,query,kind='deal',archive='active'):
     from app.crm.service import list_entries
-    return list_entries(db,kind,query,archive,limit=20)
+    return list_entries(db,kind,query,archive,limit=20,user=user)
 
 
 @register('read_local_sales_card',
@@ -128,7 +141,7 @@ def _search_local_sales(db,user,query,kind='deal',archive='active'):
 def _read_local_sales_card(db,user,entry_id):
     from app.crm.service import get,out,history,files
     row=get(db,entry_id)
-    return {**out(row),'history':history(db,row,limit=20),'files':files(db,entity=row,limit=20)}
+    return {**out(row,user=user),'history':history(db,row,limit=20,user=user),'files':files(db,entity=row,limit=20,user=user)}
 
 
 @register('search_local_techcards',
@@ -158,8 +171,14 @@ def _read_imported_attachment(db,user,source_record_id,attachment_index=0):
     if row is None:raise HTTPException(404,'Запись не найдена')
     if row.entity_type in ('amocrm/files','amocrm/file_versions'):
         if not user.has_access(Module.CLIENTS):raise HTTPException(403,'Нет доступа к файлам продаж')
-    else:row=get_record(db,user,source_record_id)
-    path,item=attachment_path(row,attachment_index)
+        from app.crm.import_access import authorized_attachment,extract_reviewed_text
+        path,item,content=authorized_attachment(db,user,row,attachment_index)
+        if content is not None:
+            result=extract_reviewed_text(row.id,item,content)
+            return {k:v for k,v in result.items() if k not in ('file_id','purpose')}|{'source_record_id':row.id,'attachment_index':attachment_index}
+    else:
+        row=get_record(db,user,source_record_id)
+        path,item=attachment_path(row,attachment_index)
     if path.stat().st_size>25*1024*1024:return {'filename':item['filename'],'error':'Для чтения в чате размер файла должен быть не больше 25 МБ. Оригинал доступен в разделе файлов.'}
     asset=SimpleNamespace(id=row.id,filename=item['filename'],path_on_disk=str(path),content_type=item.get('content_type',''),purpose=FilePurpose.AI_CHAT_ATTACHMENT)
     result=extract_asset_text(asset,max_chars=20000)

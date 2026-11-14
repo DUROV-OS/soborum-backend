@@ -960,6 +960,9 @@ def delete_money_movement(db: Session, mm: MoneyMovement) -> None:
     )
     if mm.status is not MoneyMovementStatus.DRAFT:
         raise _conflict("Удалять можно только черновик; для остального — отмена с основанием")
+    from app.accounting.evidence_models import PaymentEvidenceDocument, PaymentEvidenceVersion
+    if db.query(PaymentEvidenceDocument.id).filter_by(movement_id=mm.id).first() or db.query(PaymentEvidenceVersion.id).filter_by(movement_id=mm.id).first():
+        raise _conflict("У платежа есть документальная история; используйте отмену с основанием")
     db.delete(mm)
     db.commit()
 

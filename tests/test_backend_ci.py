@@ -111,6 +111,48 @@ class BoundaryTests(unittest.TestCase):
         after['app/a.py'] = (0o644, b'b')
         self.assertNotEqual(ci.manifest(before, runtime=True), ci.manifest(after, runtime=True))
 
+    def test_pinned_image_preserves_integration_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            voice_config = {'services': {
+                'backend': {'env_file': ['browser-phone.env'],
+                            'extra_hosts': {'voice-gateway': '172.25.0.1'}},
+                'call-worker': {'image': 'existing-worker'}}}
+            path = state / 'compose-ci.json'
+            path.write_text(json.dumps(voice_config))
+            with patch.object(ci, 'STATE', state), patch.object(ci, 'run') as run:
+                ci.compose(Path('/release'), 'up', '-d', 'backend', image='sha256:' + '1' * 64)
+            args = run.call_args.args[0]
+            files = [args[index + 1] for index, item in enumerate(args) if item == '-f']
+            self.assertIn(str(path), files)
+            pinned = state / 'compose-rollback.json'
+            self.assertGreater(files.index(str(pinned)), files.index(str(path)))
+            self.assertEqual(json.loads(pinned.read_text()), {
+                'services': {'backend': {'image': 'sha256:' + '1' * 64}}})
+            self.assertEqual(json.loads(path.read_text()), voice_config)
+
+    def test_configured_openai_environment_is_preserved_when_pinning_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            (state / 'config').mkdir()
+            path = state / 'config' / 'openai.env'
+            path.write_text('OPENAI_TEST_SETTING=example\n')
+            with patch.object(ci, 'STATE', state), patch.object(ci, 'run') as run:
+                ci.compose(Path('/release'), 'config', '--quiet', image='sha256:' + '1' * 64)
+            args = run.call_args.args[0]
+            files = [args[index + 1] for index, item in enumerate(args) if item == '--env-file']
+            self.assertIn(str(path), files)
+
+    def test_unconfigured_openai_environment_is_optional(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            with patch.object(ci, 'STATE', state), patch.object(ci, 'run') as run:
+                ci.compose(Path('/release'), 'config', '--quiet')
+            args = run.call_args.args[0]
+            files = [args[index + 1] for index, item in enumerate(args) if item == '--env-file']
+            self.assertNotIn(str(state / 'config' / 'openai.env'), files)
+            self.assertEqual(len(files), 2)
+
     def test_checks_must_be_successful_from_github_actions_for_exact_sha(self):
         good = {'name': 'checks / checks', 'head_sha': SHA, 'app': {'slug': 'github-actions'},
                 'status': 'completed', 'conclusion': 'success'}

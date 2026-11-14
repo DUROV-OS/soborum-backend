@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 
 from app.core.config import settings
@@ -24,7 +24,14 @@ def create_access_token(subject: str) -> str:
 
 def decode_access_token(token: str) -> str | None:
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        return payload.get("sub")
-    except JWTError:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm],
+                             options={"require": ["sub", "exp"]})
+        subject = payload["sub"]
+        # User IDs are positive SQL INTEGERs. Malformed signed claims must be
+        # unauthorized, not ValueError/overflow failures in the database layer.
+        if (not isinstance(subject, str) or not subject.isascii() or not subject.isdecimal()
+                or len(subject) > 10 or not 0 < int(subject) <= 2147483647):
+            return None
+        return subject
+    except jwt.InvalidTokenError:
         return None

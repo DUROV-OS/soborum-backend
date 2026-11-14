@@ -181,7 +181,7 @@ def test_section_signal_checked_only_for_sections_with_attention_entry(db, make_
 
 
 def test_cycle_stuck_over_14_days_is_a_real_attention_signal(db, make_user):
-    """0045 (по просьбе Арсения): «Цикл клиента» должен реально проверяться —
+    """0045 (по просьбе Разработчика): «Цикл клиента» должен реально проверяться —
     цикл считается зависшим, если не продвинулся дальше текущей стадии за
     14 дней (created_at связанной по стадии записи)."""
     user = make_user(Module.CYCLE, admin=True)

@@ -41,6 +41,13 @@ def task_kind(task: Task) -> TaskKind:
 
 
 def review_policy(task: Task) -> ReviewPolicy:
+    # Project tasks use the existing report/review workflow, including the
+    # prohibition on accepting one's own work, even after reviewer edits.
+    from sqlalchemy.orm import object_session
+    from app.collaboration.models import ProjectTask
+    db = object_session(task)
+    if db is not None and task.id and db.query(ProjectTask.id).filter_by(task_id=task.id).first():
+        return ReviewPolicy.REVIEW_REQUIRED
     return REVIEW_POLICY[task_kind(task)]
 
 

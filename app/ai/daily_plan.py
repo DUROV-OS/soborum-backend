@@ -126,65 +126,7 @@ def _serialize_candidate(task: Task, user: User, now: datetime) -> dict:
     }
 
 
-def generate_daily_plan(db: Session, user: User, force: bool = False) -> DailyPlanOut:
-    now = datetime.now(timezone.utc)
-    today = now.date().isoformat()
-    all_candidates_by_id = {t.id: t for t in _load_candidate_tasks(db, user)}
-
-    cache_key = f"daily_plan:{user.id}:{today}"
-    cached = ai_cache.get(db, cache_key, force, ttl=CACHE_TTL)
-    if cached is not None:
-        plan = []
-        for item in cached.get("plan", []):
-            task = all_candidates_by_id.get(item.get("task_id"))
-            if task is not None:
-                plan.append(DailyPlanItemOut(task=TaskOut.from_model(task), reason=item.get("reason", "")))
-        return DailyPlanOut(generated_at=cached["generated_at"], plan=plan)
-
-    candidates = sorted(all_candidates_by_id.values(), key=lambda t: _urgency_key(t, now))
-    if not candidates:
-        return DailyPlanOut(generated_at=now, plan=[])
-
-    candidates = candidates[:MAX_CANDIDATES]
-    by_id = {t.id: t for t in candidates}
-
-    others_average_load = story_points_stats.average_open_points(db, exclude_user_id=user.id)
-
-    client = _get_client()
-    response = client.messages.create(
-        model=settings.llm_model,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Открытые задачи сотрудника «{user.full_name}» на "
-                f"{today}, где он исполнитель или проверяющий. Средняя текущая "
-                f"загруженность остальных сотрудников: {others_average_load:.1f} очков.\n\n"
-                + json.dumps(
-                    [_serialize_candidate(t, user, now) for t in candidates],
-                    ensure_ascii=False,
-                    default=str,
-                ),
-            }
-        ],
-        tools=[TOOL_SCHEMA],
-        tool_choice={"type": "tool", "name": SUBMIT_TOOL_NAME},
-    )
-
-    tool_use = next((block for block in response.content if block.type == "tool_use"), None)
-    if tool_use is None:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="ИИ не вернул план на день")
-
-    plan: list[DailyPlanItemOut] = []
-    seen: set[int] = set()
-    for item in tool_use.input.get("plan", []):
-        task = by_id.get(item.get("task_id"))
-        if task is None or task.id in seen:
-            continue
-        seen.add(task.id)
-        plan.append(DailyPlanItemOut(task=TaskOut.from_model(task), reason=item.get("reason", "")))
-
-    picks = [{"task_id": p.task.id, "reason": p.reason} for p in plan]
-    ai_cache.set(db, cache_key, {"plan": picks, "generated_at": now.isoformat()}, now)
-    return DailyPlanOut(generated_at=now, plan=plan)
+def generate_daily_plan(db: Session, user: User, force: bool = False):
+    from app.ai.task_recommendations import generate
+    return generate(db, user, daily=True, load_candidates=_load_candidate_tasks,
+                    get_client=_get_client, prompt=SYSTEM_PROMPT, tool_schema=TOOL_SCHEMA, force=force)

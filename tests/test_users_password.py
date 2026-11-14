@@ -1,13 +1,21 @@
 from app.core.security import hash_password, verify_password
-from app.users.service import DEFAULT_RESET_PASSWORD
 
 
-def test_admin_can_reset_worker_password_to_default(api, make_user):
+def test_admin_reset_allows_login_with_owner_requested_password(api, make_user):
     admin = make_user(admin=True)
     worker = make_user()
     response = api(admin).post(f"/api/auth/users/{worker.id}/reset-password")
     assert response.status_code == 200
-    assert verify_password(DEFAULT_RESET_PASSWORD, worker.hashed_password)
+    assert verify_password("12345678", worker.hashed_password)
+    login = api(worker).post("/api/auth/login", data={"username": worker.email, "password": "12345678"})
+    assert login.status_code == 200
+    assert login.json()["access_token"]
+    old_default = api(worker).post("/api/auth/login", data={"username": worker.email, "password": "password1234"})
+    assert old_default.status_code == 401
+    changed = api(worker).post("/api/auth/me/password", json={"current_password": "12345678", "new_password": "personal-password"})
+    assert changed.status_code == 200
+    assert api(worker).post("/api/auth/login", data={"username": worker.email, "password": "personal-password"}).status_code == 200
+    assert api(worker).post("/api/auth/login", data={"username": worker.email, "password": "12345678"}).status_code == 401
 
 
 def test_worker_cannot_reset_password(api, make_user):

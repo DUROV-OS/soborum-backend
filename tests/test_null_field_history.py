@@ -42,7 +42,9 @@ def test_persisted_assistant_message_has_no_null_fields(db, make_user, monkeypat
 
     db.refresh(chat)
     assistant_message = next(m for m in chat.messages if m.role == "assistant")
-    assert assistant_message.content == [{"type": "text", "text": "Всего 3 клиента."}]
+    assert assistant_message.content[0] == {"type": "text", "text": "Всего 3 клиента."}
+    assert assistant_message.content[1]["type"] == "answer_evidence"
+    assert assistant_message.content[1]["sources"] == []
 
 
 def test_resolve_content_heals_already_corrupted_history(db):

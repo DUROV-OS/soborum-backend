@@ -181,6 +181,16 @@ def _read_attached_file(db: Session, user: User, file_id: int) -> dict:
     asset = db.get(FileAsset, file_id)
     if asset is None:
         return {"error": "Файл не найден"}
+    from app.crm.import_access import shared_imported_attachment, extract_reviewed_text
+    imported = shared_imported_attachment(db, user, asset)
+    if imported is not None:
+        from app.common.files import PURPOSE_MODULE
+        required = PURPOSE_MODULE.get(asset.purpose)
+        if required and not user.has_access(required):
+            raise HTTPException(403, 'Нет доступа к этому файлу')
+        _, item, content = imported
+        if content is not None:
+            return extract_reviewed_text(asset.id, item, content)
     return extract_asset_text(asset)
 
 

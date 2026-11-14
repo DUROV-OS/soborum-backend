@@ -17,6 +17,8 @@ from app.agents.legal import scan
 from app.agents.runtime import _live_hit, _rank_hits
 from app.agents.types import LegalDecision, LegalVerdict, SharedContext
 from app.core.config import settings
+from app.ai.provenance import fingerprint
+from app.agents.legal import RULES_VERSION
 
 log = logging.getLogger("app.agents.shift")
 
@@ -43,6 +45,11 @@ class ShiftReview:
     escalate: bool
     kind: str = "ops"
     status: str = REVIEW_NOT_CHECKED
+    method: str = 'unavailable'
+    input_hash: str | None = None
+    input_text: str | None = None
+    rules_version: str | None = None
+    matched_rules: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -133,17 +140,20 @@ def run_shift(db: Session | None = None, vault_root: str | None = None) -> Shift
 
 def _review(reviewer: AgentId, item: ShiftItemDraft, by_id: dict[AgentId, ShiftItemDraft]) -> ShiftReview:
     if reviewer == AgentId.LAWYER:
-        legal = scan(item.daily_question + "\n" + _stance_for_legal(item.stance))
+        input_text = item.daily_question + "\n" + _stance_for_legal(item.stance)
+        legal = scan(input_text)
         escalate = legal.verdict != LegalVerdict.ALLOW
         return ShiftReview(
             reviewer=reviewer,
             kind="legal",
             escalate=escalate,
             status=REVIEW_CHECKED_ESCALATE if escalate else REVIEW_CHECKED_OK,
+            method='rules', input_hash=fingerprint(input_text), input_text=input_text,
+            rules_version=RULES_VERSION, matched_rules=[f.rule_id for f in legal.findings],
             text=(
                 _legal_reviewer_line(legal)
                 if escalate
-                else "Юрист черновик посмотрел: детерминированный фильтр стоп-факторов не нашёл."
+                else "Автоматический фильтр не нашёл совпадений с настроенными правилами. Юридическое согласование не выполнено."
             ),
         )
     # Проверки у роли нет — не выдаём отсутствие проверки за её результат.

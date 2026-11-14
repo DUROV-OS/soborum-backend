@@ -1,3 +1,4 @@
+from tests.warehouse_control_helpers import legacy_issue_client, inventory_act
 from uuid import uuid4
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -28,7 +29,7 @@ def setup(db, api, make_user, quantity=10, fractional=False):
     )
     db.add(m)
     db.commit()
-    return api(owner), owner, m
+    return legacy_issue_client(api(owner), db), owner, m
 
 
 def test_recipes_and_new_source_snapshots_cannot_bypass_holds(db, api, make_user):
@@ -376,7 +377,7 @@ def test_physical_count_can_reveal_a_shortage_but_never_silently_drops_holds(
     assert (
         client.post(
             f"/api/warehouse/documents/{doc['id']}/post",
-            json={"version": 1, "request_id": str(uuid4())},
+            json={"version": 1, "request_id": str(uuid4()), **inventory_act(client, doc)},
         ).status_code
         == 200
     )

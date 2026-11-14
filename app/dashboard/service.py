@@ -155,6 +155,7 @@ def _snapshot_installation(db: Session) -> dict:
 
 
 def _snapshot_marketing(db: Session) -> dict:
+    from app.marketing.conversions import acquisition_summary
     today = date.today()
     week_ahead = today + timedelta(days=7)
     not_released = [ContentStage.IDEA, ContentStage.GATHERING, ContentStage.EDITING]
@@ -164,6 +165,7 @@ def _snapshot_marketing(db: Session) -> dict:
         stage_counts[stage.value] = count
 
     return {
+        "acquisition": acquisition_summary(db),
         "total_content_items": sum(stage_counts.values()),
         "stage_counts": stage_counts,
         "release_due_next_7_days": db.query(ContentItem)
