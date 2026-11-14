@@ -36,9 +36,13 @@ def test_order_edit_after_receipt_keeps_actual_stock_and_version(db, api, make_u
     assert order['has_receipts']
     items = deepcopy(order['items']); items[0].update(quantity=4, unit_price=25)
     path = f'{P}/orders/{order["id"]}?version={order["version"]}'
+    db.autoflush = False  # Match the production session when recalculating supplier totals.
     result = c.patch(path, json={'number': 'Уточнённый', 'items': items, 'reason': 'Новый счёт'})
     assert result.status_code == 200, result.text
     assert result.json()['total_cost'] == 100
+    from app.warehouse.models import Supplier
+    db.refresh(db.get(Supplier, order['supplier_id']))
+    assert db.get(Supplier, order['supplier_id']).total_ordered == 100
     db.refresh(m); assert m.quantity_in_stock == 13
     assert c.get(f'{P}/receipts/{row["id"]}').json()['lines'][0]['unit_price'] == 20
     assert c.patch(path, json={'comment': 'Старая форма'}).status_code == 409

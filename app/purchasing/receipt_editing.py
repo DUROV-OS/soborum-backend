@@ -48,6 +48,7 @@ class Correction(Strict):
     reason: str = Field(min_length=3, max_length=1000)
     lines: list[Line] = Field(min_length=1, max_length=500)
     evidence: Citation | None = None
+    reconciliation_id: int | None = Field(default=None, gt=0)
 
 
 @router.get('/receipts/{id}/history')
@@ -72,6 +73,9 @@ def correct(db, id, body, user):
             fail('Номер запроса уже использован для другого действия')
         return receipt_summary(db, receipt(db, id))
     initial = receipt(db, id)
+    if initial.source_id and not initial.operation_id:
+        from app.purchasing.reconciliation import lock_sources
+        lock_sources(db)
     order = get_order(db, initial.order_id, lock=True) if initial.order_id else None
     base = receipt(db, id, lock=True)
     if not base.supplier_id:
@@ -120,19 +124,23 @@ def correct(db, id, body, user):
                 mid = old.get('material_id')
                 if not mid:
                     fail('Сначала сопоставьте товар со складской карточкой')
-                if not base.operation_id:
+                if not base.operation_id and not base.source_id:
                     fail('Эта приёмка перенесена вместе с начальным остатком. Для изменения чисел нужна сверка начального остатка и себестоимости; реквизиты можно изменить сейчас.')
                 deltas[mid] = deltas.get(mid, Decimal(0)) + difference
                 values[mid] = values.get(mid, Decimal(0)) + new.quantity * new.unit_price - dec(old['quantity']) * dec(old['unit_price'])
             old.update(quantity=str(new.quantity), unit_price=str(new.unit_price))
         materials = _lock_materials(db, list(deltas))
+        historical = bool(base.source_id and not base.operation_id)
+        if historical:
+            from app.purchasing.reconciliation import assert_ready
+            assert_ready(db, base, body.reconciliation_id, user)
         from app.warehouse.reservation_service import assert_available
         for mid, delta in sorted(deltas.items()):
             material = materials.get(mid)
             if not material or material.is_archived:
                 fail('Товар не найден или находится в архиве')
-            first = db.query(StockMovement).filter_by(operation_id=base.operation_id, warehouse_material_id=mid).order_by(StockMovement.id).first()
-            if not first or db.query(StockMovement.id).filter(StockMovement.warehouse_material_id == mid, StockMovement.id > first.id, StockMovement.delta < 0).first():
+            first = db.query(StockMovement).filter_by(operation_id=base.operation_id, warehouse_material_id=mid).order_by(StockMovement.id).first() if not historical else None
+            if not historical and (not first or db.query(StockMovement.id).filter(StockMovement.warehouse_material_id == mid, StockMovement.id > first.id, StockMovement.delta < 0).first()):
                 fail('После этой приёмки товар уже расходовался. Нужен перерасчёт связанных выдач и себестоимости; реквизиты можно изменить сейчас.')
             if not material.is_fractional and delta % 1:
                 fail('Товар учитывается целыми единицами', 422)
@@ -142,6 +150,8 @@ def correct(db, id, body, user):
             value = dec(material.quantity_in_stock) * dec(material.purchase_price) + values[mid]
             if quantity <= 0 or value < 0 or quantity >= Decimal('1e12') or value >= Decimal('1e18'):
                 fail('Корректировка несовместима с текущим количеством или стоимостью остатка')
+            if value / quantity >= Decimal('1e12'):
+                fail('Учётная цена после корректировки превышает допустимый предел')
             if delta < 0:
                 assert_available(db, [(material, -delta)])
             stock_changes.append({'material_id': mid, 'quantity_before': str(material.quantity_in_stock),

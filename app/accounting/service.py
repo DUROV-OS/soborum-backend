@@ -1682,6 +1682,7 @@ def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrder
     apply_order(db, order, data)
     order.version += 1
     record_order_edit(db, order, before, data, actor_id or db.info.get('integrity_actor', {}).get('id'))
+    db.flush()
     warehouse_service.recalculate_supplier_totals(db, prior_supplier)
     if order.supplier_id != prior_supplier:
         warehouse_service.recalculate_supplier_totals(db, order.supplier_id)

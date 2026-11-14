@@ -25,6 +25,8 @@ from app.purchasing.control_router import router as control_router
 app.include_router(control_router)
 from app.purchasing.receipt_editing import router as receipt_edit_router
 app.include_router(receipt_edit_router)
+from app.purchasing.reconciliation import router as reconciliation_router
+app.include_router(reconciliation_router)
 view = require_view(Module.ACCOUNTING)
 edit = require_edit(Module.ACCOUNTING)
 
