@@ -187,7 +187,7 @@ def receipts(
         from sqlalchemy import or_, cast, String
         term = journal.search_term(query.strip())
         stmt = stmt.outerjoin(Supplier).filter(or_(*[col.ilike(term, escape="\\") for col in
-            (PurchaseReceipt.number, PurchaseReceipt.note, Supplier.name, cast(PurchaseReceipt.lines, String))]))
+            (PurchaseReceipt.number, PurchaseReceipt.note, Supplier.name)], journal.item_search(db, PurchaseReceipt.lines, 'title', term)))
     stmt = journal.period(stmt, PurchaseReceipt.occurred_at, date_from, date_to)
     return {
         "total": stmt.count(),

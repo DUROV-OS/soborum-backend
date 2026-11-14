@@ -30,6 +30,15 @@ def search_term(value):
     return '%' + value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
 
 
+def item_search(db, column, field, term):
+    # JSON text can store Cyrillic as \u escapes. Search decoded item names.
+    if db.get_bind().dialect.name == 'postgresql':
+        from sqlalchemy.dialects.postgresql import JSONB
+        return cast(cast(column, JSONB), String).ilike(term, escape='\\')
+    entries = func.json_each(column).table_valued('key', 'value')
+    return select(1).select_from(entries).where(func.json_extract(entries.c.value, '$.' + field).ilike(term, escape='\\')).exists()
+
+
 def balances():
     paid_rows = (select(func.coalesce(func.sum(MoneyMovement.amount), 0))
                  .where(MoneyMovement.supply_id == SupplierOrder.id, MoneyMovement.status == MoneyMovementStatus.POSTED)
@@ -62,7 +71,7 @@ def orders(db: Session, *, query='', archive='active', supplier_id=None, payment
     if query.strip():
         term = search_term(query.strip())
         stmt = stmt.filter(or_(*[col.ilike(term, escape='\\') for col in
-            (SupplierOrder.number, Supplier.name, SupplierOrder.comment, cast(SupplierOrder.items, String))]))
+            (SupplierOrder.number, Supplier.name, SupplierOrder.comment)], item_search(db, SupplierOrder.items, 'material', term)))
     stmt = period(stmt, SupplierOrder.created_at, date_from, date_to)
     if delivery == 'overdue':
         stmt = stmt.filter(SupplierOrder.expected_at < datetime.now(MOSCOW).date(), SupplierOrder.status != SupplierOrderStatus.RECEIVED)
@@ -75,9 +84,9 @@ def orders(db: Session, *, query='', archive='active', supplier_id=None, payment
     if condition is not None:
         stmt = stmt.filter(condition)
     totals = stmt.with_entities(SupplierOrder.currency.label('currency'), SupplierOrder.total_cost.label('total'),
-                               paid.label('paid'), pending.label('pending'), net.label('net'), unpaid.label('unpaid')).subquery()
-    summary = [dict(currency=r.currency, total=float(r.total), paid=float(r.paid), pending=float(r.pending), net=float(r.net), unpaid=float(r.unpaid))
-               for r in db.query(totals.c.currency, *[func.sum(totals.c[k]).label(k) for k in ('total', 'paid', 'pending', 'net', 'unpaid')])
+                               paid.label('paid'), pending.label('pending'), net.label('net'), unpaid.label('unpaid'), case((paid > net, paid - net), else_=0).label('overpaid')).subquery()
+    summary = [dict(currency=r.currency, total=float(r.total), paid=float(r.paid), pending=float(r.pending), net=float(r.net), unpaid=float(r.unpaid), overpaid=float(r.overpaid))
+               for r in db.query(totals.c.currency, *[func.sum(totals.c[k]).label(k) for k in ('total', 'paid', 'pending', 'net', 'unpaid', 'overpaid')])
                .group_by(totals.c.currency).order_by(totals.c.currency)]
     ordering = {
         'newest': SupplierOrder.created_at.desc(), 'oldest': SupplierOrder.created_at.asc(),

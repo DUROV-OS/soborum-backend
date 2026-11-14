@@ -14,13 +14,16 @@ def test_journal_filters_totals_and_pagination(db, api, make_user):
     db.commit()
     result = client.get('/api/purchasing/orders?limit=1').json()
     assert result['total'] == 2 and len(result['items']) == 1
-    assert result['summary'][0] == dict(currency='RUB', total=280, paid=130, pending=0, net=280, unpaid=150)
-    for query in ('payment=partial', 'delivery=overdue', 'query=100%25', f'supplier_id={supplier.id}&sort=oldest&limit=1'):
+    assert result['summary'][0] == dict(currency='RUB', total=280, paid=130, pending=0, net=280, unpaid=150, overpaid=0)
+    for query in ('payment=partial', 'delivery=overdue', 'query=100%25', 'query=Брус', f'supplier_id={supplier.id}&sort=oldest&limit=1'):
         r = client.get('/api/purchasing/orders?' + query)
         assert r.status_code == 200, r.text
         assert r.json()['items'][0]['id'] == order['id']
     assert client.get('/api/purchasing/orders?payment=paid').json()['items'][0]['number'] == 'B'
-    assert client.get('/api/purchasing/orders?archive=all&payment=overpaid').json()['items'][0]['number'] == 'C'
+    overpaid = client.get('/api/purchasing/orders?archive=all&payment=overpaid').json()
+    assert overpaid['items'][0]['number'] == 'C' and overpaid['summary'][0]['overpaid'] == 5
+    totals = client.get('/api/purchasing/orders?archive=all').json()['summary'][0]
+    assert totals['net'] + totals['overpaid'] == totals['paid'] + totals['unpaid']
     assert client.get('/api/purchasing/orders?date_from=2026-11-10&date_to=2026-11-01').status_code == 422
     assert client.get('/api/purchasing/orders?sort=unknown').status_code == 422
 
@@ -48,4 +51,5 @@ def test_journal_return_credit_and_pending_are_not_paid(db, api, make_user, defa
     assert documents['opening_paid'] == 0
     assert client.get('/api/purchasing/orders/99999/documents').status_code == 404
     assert client.get('/api/purchasing/receipts?query=Поставщик').json()['total'] == 1
+    assert client.get('/api/purchasing/receipts?query=Брус').json()['total'] == 1
     assert client.get('/api/purchasing/receipts?query=несуществующий').json()['total'] == 0
