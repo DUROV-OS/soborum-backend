@@ -26,7 +26,11 @@ def chain():
 
 def test_integrity_migration_follows_the_current_private_schema():
     from app.core.readiness import expected_heads
-    assert expected_heads() == frozenset({"cp1411202601"})
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    assert expected_heads() == frozenset({"cal1611202601"})
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert scripts.get_revision("cal1611202601").down_revision == "cp1411202601"
 
 
 def test_checks_payload_chain_order_projection_and_checkpoint():
