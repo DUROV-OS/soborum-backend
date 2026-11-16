@@ -40,14 +40,17 @@ def get_me(user: User = Depends(get_current_user)):
 
 @app.get("/me/workspace", response_model=WorkspacePreferences | None)
 def get_my_workspace(user: User = Depends(get_current_user)):
-    return user.workspace_preferences
+    preferences = user.workspace_preferences or {}
+    return preferences if 'view' in preferences else None
 
 
 @app.put("/me/workspace", response_model=WorkspacePreferences)
 def update_my_workspace(payload: WorkspacePreferences, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    user = db.query(User).filter_by(id=user.id).populate_existing().with_for_update().one()
     if user.job_role is not None and payload.view != user.job_role:
         raise HTTPException(status_code=403, detail="Рабочий экран определяется назначенной должностью")
-    user.workspace_preferences = payload.model_dump()
+    calendar = (user.workspace_preferences or {}).get('calendar')
+    user.workspace_preferences = {**payload.model_dump(), **({'calendar': calendar} if calendar else {})}
     db.commit()
     return user.workspace_preferences
 
@@ -110,7 +113,8 @@ def update_user(
         user.full_name = payload.full_name
     if "job_role" in payload.model_fields_set and user.job_role != payload.job_role:
         user.job_role = payload.job_role
-        user.workspace_preferences = None
+        calendar = (user.workspace_preferences or {}).get('calendar')
+        user.workspace_preferences = {'calendar': calendar} if calendar else None
     if payload.password is not None:
         user.hashed_password = hash_password(payload.password)
     for field in ("work_phone", "telephony_extension"):

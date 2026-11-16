@@ -16,6 +16,8 @@ from app.accounting.evidence_schemas import Strict
 from app.warehouse.documents import advisory
 
 router = APIRouter(prefix='/calendar')
+from .calendar_preferences import router as preferences_router
+router.include_router(preferences_router)
 
 class Event(Base):
     __tablename__ = 'team_calendar_events'

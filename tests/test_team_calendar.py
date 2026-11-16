@@ -71,3 +71,31 @@ def test_suggestions_skip_nonexistent_dst_times(api,make_user):
     r=c.post(P+'/suggestions',json=dict(start='2026-03-29T00:00:00Z',end='2026-03-29T05:00:00Z',timezone='Europe/Berlin',weekdays=[6],work_start=120,work_end=240,duration_minutes=30))
     assert r.status_code==200,r.text
     assert all(datetime.fromisoformat(s['start']).hour>=3 for s in r.json()['slots'])
+
+def test_calendar_preferences_private_versioned_and_dashboard_independent(api,make_user,db):
+    owner, other = make_user(), make_user()
+    client=api(owner)
+    prefs=client.get(P+'/preferences').json()
+    assert prefs['version']==0
+    prefs.update(timezone='Asia/Yekaterinburg',work_start=600)
+    result=client.put(P+'/preferences',json=prefs)
+    assert result.status_code==200,result.text
+    saved=result.json();assert saved['version']==1
+    assert client.get('/api/auth/me/workspace').json() is None
+    assert client.put(P+'/preferences',json=prefs).status_code==409
+    assert api(other).get(P+'/preferences').json()['timezone']=='Europe/Moscow'
+    workspace={'view':'general','blocks':['personal_tasks'],'sections':['tasks']}
+    client=api(owner)
+    assert client.put('/api/auth/me/workspace',json=workspace).json()==workspace
+    assert client.get(P+'/preferences').json()==saved
+    saved['categories']['meeting']['label']='Планёрки'
+    saved['categories']['meeting']['color']='#123456'
+    assert client.put(P+'/preferences',json=saved).status_code==200
+    assert client.get('/api/auth/me/workspace').json()==workspace
+
+def test_calendar_preferences_validation(api,make_user):
+    client=api(make_user());prefs=client.get(P+'/preferences').json()
+    for change in ({'timezone':'Unknown/Zone'},{'weekdays':[]},{'weekdays':[1,1]}, {'work_start':1100,'work_end':1000},{'categories':{}},{'user_id':999}):
+        assert client.put(P+'/preferences',json={**prefs,**change}).status_code==422
+    prefs['categories']['meeting']['color']='javascript:alert(1)'
+    assert client.put(P+'/preferences',json=prefs).status_code==422
