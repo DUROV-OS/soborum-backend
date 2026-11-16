@@ -25,6 +25,8 @@ from app.tasks.schemas import TaskOut, TaskScope
 from .models import Project, Member, ProjectMessage as Message, ProjectFile, ProjectTask, ProjectEvent
 
 app = FastAPI(title='Durov OS — Проекты')
+from .calendar import router as calendar_router
+app.include_router(calendar_router)
 MAX_FILE = 10 * 1024 * 1024
 
 
