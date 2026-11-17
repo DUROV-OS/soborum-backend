@@ -335,6 +335,9 @@ def _finalize_status(
 
 
 def set_status(db: Session, task: Task, new_status: TaskStatus, actor: User) -> Task:
+    if (task.link_meta or {}).get('calendar_event_id'):
+        from app.collaboration.calendar_tasks import lock_for_board
+        task=lock_for_board(db,task,actor)
     if task.status == new_status:
         return task
 

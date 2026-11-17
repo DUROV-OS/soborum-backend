@@ -79,6 +79,11 @@ def test_task_is_native_private_synchronized_and_archived(api,make_user,db):
     assert api(assignee).get('/api/tasks/',params={'scope':'mine'}).json()[0]['id']==task_id
     assert api(outsider).get('/api/tasks/',params={'scope':'all'}).json()==[]
     assert api(outsider).get(f'/api/tasks/{task_id}').status_code==404
+    from app.ai.tools import _get_task,_list_tasks,_accept_task
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as denied: _get_task(db,outsider,task_id)
+    assert denied.value.status_code==404
+    assert _list_tasks(db,outsider)['tasks']==[]
     assert api(assignee).patch(f'/api/tasks/{task_id}',json={'title':'Drift'}).status_code==409
     assert api(assignee).patch(f'/api/tasks/{task_id}/status',json={'status':'in_progress'}).status_code==200
     row=api(owner).get(P+'/events',params=PERIOD).json()[0];assert row['task']['status']=='in_progress'
@@ -90,6 +95,16 @@ def test_task_is_native_private_synchronized_and_archived(api,make_user,db):
     assert api(assignee).get('/api/tasks/',params={'scope':'mine'}).json()==[]
     assert api(assignee).patch(f'/api/tasks/{task_id}/status',json={'status':'in_review'}).status_code in (400,404)
     assert db.get(Task,task_id) is not None
+    with pytest.raises(HTTPException) as archived: _accept_task(db,assignee,task_id)
+    assert archived.value.status_code==404
+    from app.tasks.story_points_stats import workload_by_user,open_points_by_user
+    assert open_points_by_user(db)=={}
+    assert all(w.open_tasks_count==0 for w in workload_by_user(db))
+    from app.ai.daily_plan import _load_candidate_tasks
+    assert _load_candidate_tasks(db,assignee)==[]
+    from app.dashboard.service import _snapshot_tasks,_snapshot_users
+    assert _snapshot_tasks(db)['open_tasks']==0
+    assert all(w['tasks_in_work_as_assignee']==0 for w in _snapshot_users(db)['top_workload'])
 
 def test_invalid_task_does_not_leave_calendar_or_task(api,make_user,db):
     owner=make_user();a,b=make_user(Module.TASKS),make_user(Module.TASKS)

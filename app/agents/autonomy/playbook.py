@@ -94,6 +94,9 @@ def task_stalled(db: Session) -> list[Finding]:
     admins = _admin_ids(db)
     out: list[Finding] = []
     for task in tasks:
+        # Calendar tasks are private to their participants; the global agent's
+        # escalation recipients are not necessarily members of the event.
+        if (task.link_meta or {}).get('calendar_event_id'): continue
         if not task.assignees:
             continue
         # Не работаем с карточками самого агента.

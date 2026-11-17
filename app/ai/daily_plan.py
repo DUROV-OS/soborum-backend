@@ -92,7 +92,7 @@ def _get_client():
 
 
 def _load_candidate_tasks(db: Session, user: User) -> list[Task]:
-    return (
+    tasks = (
         db.query(Task)
         .filter(
             Task.status != TaskStatus.DONE,
@@ -100,6 +100,9 @@ def _load_candidate_tasks(db: Session, user: User) -> list[Task]:
         )
         .all()
     )
+
+    from app.collaboration.calendar_tasks import visible_task
+    return [t for t in tasks if visible_task(t,user)]
 
 
 def _urgency_key(task: Task, now: datetime):
