@@ -5,7 +5,7 @@ from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import Field, model_validator, HttpUrl
+from pydantic import Field, model_validator, HttpUrl, ValidationError
 from sqlalchemy import ForeignKey, JSON, String, Integer
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from app.db.base import Base
@@ -69,7 +69,7 @@ class Input(Strict):
             raise ValueError('Укажите начало и окончание с часовым поясом')
         if self.end - self.start > timedelta(days=31): raise ValueError('Событие не может длиться больше 31 дня')
         try: ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError: raise ValueError('Неизвестный часовой пояс')
+        except (ZoneInfoNotFoundError,ValueError): raise ValueError('Неизвестный часовой пояс')
         if self.all_day:
             zone = ZoneInfo(self.timezone)
             if any(d.astimezone(zone).time().isoformat() != '00:00:00' for d in (self.start, self.end)):
@@ -262,7 +262,10 @@ def write(db,user,body,id=None):
     if row:
         additions=('coorganizers','editors','tags','links','attachment_ids','task_assignee_id','task_reviewer_id')
         preserved={k:row.data[k] for k in additions if k not in body.model_fields_set and k in row.data}
-        body=Input.model_validate({**body.model_dump(),**preserved})
+        for name in ('coorganizers','editors'):
+            if name in preserved: preserved[name]=[p for p in preserved[name] if p in body.participants]
+        try: body=Input.model_validate({**body.model_dump(),**preserved})
+        except ValidationError: raise HTTPException(422,'Проверьте участников и роли записи')
     if db.query(User).filter(User.id.in_(body.participants),User.is_active.is_(True)).count()!=len(body.participants): raise HTTPException(422,'Участник не найден')
     if row and row.owner_id!=user.id:
         for name in ('participants','coorganizers','editors'):

@@ -113,3 +113,13 @@ def test_private_templates_preserved_by_old_settings_client(api,make_user):
     old=saved.json();old.pop('templates');old['work_start']=600
     result=api(owner).put(P+'/preferences',json=old);assert result.status_code==200,result.text
     assert result.json()['templates'][0]['title']=='Еженедельная планёрка'
+
+def test_old_client_removes_participant_and_associated_role(api,make_user):
+    owner,editor=make_user(),make_user()
+    original=body(participants=[editor.id],editors=[editor.id])
+    row=api(owner).post(P+'/events',json=original).json()
+    change={**original,'participants':[],'version':1,'request_id':str(uuid4())};change.pop('editors')
+    r=api(owner).patch(P+f'/events/{row["id"]}',json=change)
+    assert r.status_code==200,r.text
+    assert r.json()['editors']==[]
+    assert api(editor).get(P+'/events',params=PERIOD).json()==[]
