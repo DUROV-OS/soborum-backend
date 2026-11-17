@@ -51,9 +51,10 @@ def sync_task(db,user,row,data,before):
     meta={'calendar_event_id':row.id,'calendar_start':data['start'],'calendar_participants':sorted({row.owner_id,*data['participants']}),'calendar_deleted':bool(data['cancelled'])}
     if task_id:
         task=db.query(Task).filter_by(id=task_id).populate_existing().with_for_update().one()
-        # Reassigning a task under review would change who signs an existing report.
-        if task.status.value in ('in_review','done') and (assignee!=(before or {}).get('task_assignee_id') or reviewer!=(before or {}).get('task_reviewer_id')):
-            raise HTTPException(409,'Нельзя менять исполнителя и проверяющего после сдачи задачи')
+        # Preserve the report's author; the organizer may replace a reviewer
+        # while acceptance is pending (e.g. the previous reviewer left).
+        if (task.status.value in ('in_review','done') and assignee!=(before or {}).get('task_assignee_id')) or (task.status.value=='done' and reviewer!=(before or {}).get('task_reviewer_id')):
+            raise HTTPException(409,'Нельзя менять исполнителя после сдачи и проверяющего после приёмки')
         update_task(db,task,title=data['title'],description=data['description'],deadline=deadline,assignee_ids=[assignee],reviewer_ids=[reviewer],responsible_id=row.owner_id,depends_on_ids=None,image_ids=None)
         task.link_meta={**(task.link_meta or {}),**meta}
     else:

@@ -138,3 +138,17 @@ def test_old_client_removes_participant_and_associated_role(api,make_user):
     assert r.status_code==200,r.text
     assert r.json()['editors']==[]
     assert api(editor).get(P+'/events',params=PERIOD).json()==[]
+
+def test_calendar_task_report_and_reviewer_replacement(api,make_user,db):
+    owner,worker,reviewer,replacement=[make_user(Module.TASKS) for _ in range(4)]
+    original=body(category='work',participants=[worker.id,reviewer.id,replacement.id],task_assignee_id=worker.id,task_reviewer_id=reviewer.id)
+    row=api(owner).post(P+'/events',json=original).json();id=row['task']['id']
+    assert api(worker).patch(f'/api/tasks/{id}/status',json={'status':'in_progress'}).status_code==200
+    r=api(worker).post(f'/api/tasks/{id}/report',data={'comment':'Выполнено, результат передан'});assert r.status_code==200,r.text
+    assert r.json()['status']=='in_review'
+    r=api(owner).patch(P+f'/events/{row["id"]}',json={**original,'version':1,'request_id':str(uuid4()),'task_reviewer_id':replacement.id})
+    assert r.status_code==200,r.text
+    assert api(reviewer).post(f'/api/tasks/{id}/review',data={'accept':'true','comment':'Старый проверяющий'}).status_code==403
+    r=api(replacement).post(f'/api/tasks/{id}/review',data={'accept':'true','comment':'Результат принят'});assert r.status_code==200,r.text
+    assert r.json()['status']=='done' and len(r.json()['reports'])==2
+    assert api(owner).get(P+'/events',params=PERIOD).json()[0]['task']['status']=='done'

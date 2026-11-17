@@ -41,6 +41,8 @@ def task_kind(task: Task) -> TaskKind:
 
 
 def review_policy(task: Task) -> ReviewPolicy:
+    if (task.link_meta or {}).get('calendar_event_id'):
+        return ReviewPolicy.REVIEW_REQUIRED
     # Project tasks use the existing report/review workflow, including the
     # prohibition on accepting one's own work, even after reviewer edits.
     from sqlalchemy.orm import object_session
