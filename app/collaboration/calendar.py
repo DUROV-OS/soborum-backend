@@ -49,6 +49,8 @@ class Input(Strict):
     count: int = Field(default=1, ge=1, le=366)
     participants: list[int] = Field(default_factory=list, max_length=100)
     cancelled: bool = False
+    all_day: bool = False
+    reminder_minutes: Literal[0,5,15,30,60,1440] | None = None
 
     @model_validator(mode='after')
     def valid(self):
@@ -57,6 +59,10 @@ class Input(Strict):
         if self.end - self.start > timedelta(days=31): raise ValueError('Событие не может длиться больше 31 дня')
         try: ZoneInfo(self.timezone)
         except ZoneInfoNotFoundError: raise ValueError('Неизвестный часовой пояс')
+        if self.all_day:
+            zone = ZoneInfo(self.timezone)
+            if any(d.astimezone(zone).time().isoformat() != '00:00:00' for d in (self.start, self.end)):
+                raise ValueError('Событие на весь день должно начинаться и заканчиваться в полночь своего часового пояса')
         if len(set(self.participants)) != len(self.participants): raise ValueError('Участники повторяются')
         return self
 
@@ -73,7 +79,11 @@ def occurrences(data, start, end):
             month = first.year*12+first.month-1+i; year, m = divmod(month,12)
             if first.day > monthrange(year,m+1)[1]: continue
             at = first.replace(year=year,month=m+1)
-        finish = at.astimezone(timezone.utc)+duration
+        if data.get('all_day'):
+            days = (datetime.fromisoformat(data['end']).astimezone(zone).date()-first.date()).days
+            finish = (at+timedelta(days=days)).astimezone(timezone.utc)
+        else:
+            finish = at.astimezone(timezone.utc)+duration
         if at < end and finish > start: result.append((at,finish))
     return result
 
@@ -164,6 +174,40 @@ def events(start: datetime,end: datetime,query: str=Query('',max_length=200),db:
             result.append(dict(out(row,user),occurrence_start=at.isoformat(),occurrence_end=finish.isoformat()))
     return sorted(result,key=lambda r:r['occurrence_start'])
 
+
+@router.get('/invitations')
+def invitations(db: Session=Depends(get_db), user: User=Depends(get_current_user)):
+    """One upcoming occurrence per unanswered series, independent of the visible month."""
+    now = datetime.now(timezone.utc)
+    result = []
+    for row in db.query(Event):
+        if row.owner_id == user.id or user.id not in row.data['participants']: continue
+        if row.data.get('responses', {}).get(str(user.id), 'pending') != 'pending': continue
+        upcoming = occurrences(row.data, now, now+timedelta(days=366*32))
+        if upcoming:
+            at, finish = upcoming[0]
+            result.append(dict(out(row,user),occurrence_start=at.isoformat(),occurrence_end=finish.isoformat()))
+    return sorted(result,key=lambda r: datetime.fromisoformat(r['occurrence_start']))
+
+
+def due_reminders(db, user, now):
+    result = []
+    for row in db.query(Event):
+        lead = row.data.get('reminder_minutes')
+        if lead is None or not visible(row,user): continue
+        if row.owner_id != user.id and row.data.get('responses',{}).get(str(user.id)) == 'declined': continue
+        for at, finish in occurrences(row.data,now,now+timedelta(days=1,seconds=1)):
+            if at-timedelta(minutes=lead) <= now < finish:
+                result.append(dict(out(row,user),occurrence_start=at.isoformat(),occurrence_end=finish.isoformat(),
+                    reminder_key=f'{row.id}:{row.version}:{at.isoformat()}:{lead}'))
+    return sorted(result,key=lambda r: datetime.fromisoformat(r['occurrence_start']))[:50]
+
+
+@router.get('/reminders')
+def reminders(db: Session=Depends(get_db), user: User=Depends(get_current_user)):
+    # Read-only polling while the application is open; no email/push delivery claimed.
+    return due_reminders(db,user,datetime.now(timezone.utc))
+
 @router.get('/busy')
 def busy(start: datetime,end: datetime,person_id: list[int]=Query(),db: Session=Depends(get_db),user: User=Depends(get_current_user)):
     period(start,end)
@@ -174,7 +218,7 @@ def busy(start: datetime,end: datetime,person_id: list[int]=Query(),db: Session=
         if row.data['availability']=='free': continue
         for at,finish in occurrences(row.data,start,end):
             for person in involved:
-                if row.data.get('responses',{}).get(str(person))=='declined': continue
+                if person != row.owner_id and row.data.get('responses',{}).get(str(person))=='declined': continue
                 result.append({'person_id':person,'start':at.isoformat(),'end':finish.isoformat()})
     return result
 
