@@ -5,7 +5,7 @@ from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import Field, model_validator
+from pydantic import Field, model_validator, HttpUrl
 from sqlalchemy import ForeignKey, JSON, String, Integer
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from app.db.base import Base
@@ -34,6 +34,10 @@ class Change(Base):
     request_id: Mapped[str] = mapped_column(String(36), unique=True)
     data: Mapped[dict] = mapped_column(JSON)
 
+class DocumentLink(Strict):
+    label: str = Field(min_length=1,max_length=120)
+    url: HttpUrl
+
 class Input(Strict):
     request_id: UUID
     version: int = Field(default=0, ge=0)
@@ -48,6 +52,13 @@ class Input(Strict):
     recurrence: Literal['none','daily','weekly','monthly'] = 'none'
     count: int = Field(default=1, ge=1, le=366)
     participants: list[int] = Field(default_factory=list, max_length=100)
+    coorganizers: list[int] = Field(default_factory=list,max_length=20)
+    editors: list[int] = Field(default_factory=list,max_length=100)
+    tags: list[str] = Field(default_factory=list,max_length=20)
+    links: list[DocumentLink] = Field(default_factory=list,max_length=10)
+    attachment_ids: list[UUID] = Field(default_factory=list,max_length=10)
+    task_assignee_id: int | None = Field(default=None,gt=0)
+    task_reviewer_id: int | None = Field(default=None,gt=0)
     cancelled: bool = False
     all_day: bool = False
     reminder_minutes: Literal[0,5,15,30,60,1440] | None = None
@@ -64,10 +75,16 @@ class Input(Strict):
             if any(d.astimezone(zone).time().isoformat() != '00:00:00' for d in (self.start, self.end)):
                 raise ValueError('Событие на весь день должно начинаться и заканчиваться в полночь своего часового пояса')
         if len(set(self.participants)) != len(self.participants): raise ValueError('Участники повторяются')
+        if not self.title.strip(): raise ValueError('Укажите тему')
+        if not set(self.coorganizers+self.editors).issubset(self.participants): raise ValueError('Редакторы и соорганизаторы должны быть участниками')
+        if len(set(self.coorganizers+self.editors)) != len(self.coorganizers+self.editors): raise ValueError('Роли участников повторяются')
+        if len(set(self.attachment_ids)) != len(self.attachment_ids): raise ValueError('Вложения повторяются')
+        if any(not t.strip() or len(t)>40 for t in self.tags): raise ValueError('Тег должен содержать от 1 до 40 символов')
+        object.__setattr__(self,'tags',list(dict.fromkeys(t.strip() for t in self.tags)))
         return self
 
 def occurrences(data, start, end):
-    if data['cancelled']: return []
+    if data['cancelled'] or data.get('deleted'): return []
     zone = ZoneInfo(data['timezone'])
     first = datetime.fromisoformat(data['start']).astimezone(zone)
     duration = datetime.fromisoformat(data['end']).astimezone(timezone.utc) - first.astimezone(timezone.utc)
@@ -88,7 +105,11 @@ def occurrences(data, start, end):
     return result
 
 def visible(row, user): return row.owner_id == user.id or user.id in row.data['participants']
-def out(row, user): return dict(id=row.id,owner_id=row.owner_id,version=row.version,can_edit=row.owner_id==user.id,**row.data)
+def can_edit(row,user): return visible(row,user) and (row.owner_id==user.id or user.id in row.data.get('coorganizers',[])+row.data.get('editors',[]))
+def can_delete(row,user): return row.owner_id==user.id or user.id in row.data.get('coorganizers',[])
+def out(row, user):
+    from .calendar_tasks import task_summary
+    return dict(id=row.id,owner_id=row.owner_id,version=row.version,can_edit=can_edit(row,user),can_delete=can_delete(row,user),can_manage_access=row.owner_id==user.id,can_respond=user.id in row.data['participants'] and user.id!=row.owner_id,**row.data,task=task_summary(row,user))
 def period(start,end):
     if start.tzinfo is None or end.tzinfo is None or end<=start or end-start>timedelta(days=93):
         raise HTTPException(422,'Период должен быть от 1 минуты до 93 дней, с часовым поясом')
@@ -126,7 +147,7 @@ def suggestions(body: SlotSearch, db: Session=Depends(get_db), user: User=Depend
         raise HTTPException(422, 'Выберите действующих сотрудников')
     if body.exclude_event_id:
         excluded = db.get(Event, body.exclude_event_id)
-        if not excluded or excluded.owner_id != user.id:
+        if not excluded or not can_edit(excluded,user):
             raise HTTPException(403, 'Исключить из проверки можно только свою встречу')
     intervals = []
     for row in db.query(Event):
@@ -163,13 +184,14 @@ def suggestions(body: SlotSearch, db: Session=Depends(get_db), user: User=Depend
 
 @router.get('/people')
 def people(db: Session=Depends(get_db),user: User=Depends(get_current_user)):
-    return [{'id':u.id,'name':u.full_name} for u in db.query(User).filter_by(is_active=True).order_by(User.full_name)]
+    from app.common.module_access import Module, AccessLevel
+    return [{'id':u.id,'name':u.full_name,'can_work_tasks':u.access_level(Module.TASKS)>=AccessLevel.EDIT} for u in db.query(User).filter_by(is_active=True).order_by(User.full_name)]
 
 @router.get('/events')
 def events(start: datetime,end: datetime,query: str=Query('',max_length=200),db: Session=Depends(get_db),user: User=Depends(get_current_user)):
     period(start,end);result=[]
     for row in db.query(Event):
-        if not visible(row,user) or query.casefold() not in (row.data['title']+' '+row.data['description']).casefold(): continue
+        if not visible(row,user) or query.casefold() not in (' '.join([row.data['title'],row.data['description'],row.data.get('location',''),*row.data.get('tags',[])])).casefold(): continue
         for at,finish in occurrences(row.data,start,end):
             result.append(dict(out(row,user),occurrence_start=at.isoformat(),occurrence_end=finish.isoformat()))
     return sorted(result,key=lambda r:r['occurrence_start'])
@@ -228,18 +250,39 @@ def write(db,user,body,id=None):
     payload=body.model_dump(mode='json')
     if previous:
         if previous.actor_id!=user.id or previous.data['request']!=payload or previous.data['route_id']!=id: raise HTTPException(409,'Запрос уже использован')
-        return out(db.get(Event,previous.event_id),user)
+        existing=db.get(Event,previous.event_id)
+        if not visible(existing,user) or existing.data.get('deleted'): raise HTTPException(404,'Запись недоступна')
+        return out(existing,user)
     row=db.query(Event).filter_by(id=id).populate_existing().with_for_update().first() if id else None
-    if id and (not row or row.owner_id!=user.id): raise HTTPException(403,'Изменить встречу может организатор')
+    if id and (not row or not can_edit(row,user)): raise HTTPException(403,'Нет права редактировать запись')
+    if row and row.data.get('deleted'): raise HTTPException(409,'Запись удалена')
     if row and row.version!=body.version: raise HTTPException(409,'Событие изменено. Обновите календарь.')
     if not id and body.version: raise HTTPException(422,'У нового события нет предыдущей версии')
+    # Old open clients must not silently erase fields introduced in this release.
+    if row:
+        additions=('coorganizers','editors','tags','links','attachment_ids','task_assignee_id','task_reviewer_id')
+        preserved={k:row.data[k] for k in additions if k not in body.model_fields_set and k in row.data}
+        body=Input.model_validate({**body.model_dump(),**preserved})
     if db.query(User).filter(User.id.in_(body.participants),User.is_active.is_(True)).count()!=len(body.participants): raise HTTPException(422,'Участник не найден')
+    if row and row.owner_id!=user.id:
+        for name in ('participants','coorganizers','editors'):
+            if set(getattr(body,name))!=set(row.data.get(name,[])): raise HTTPException(403,'Права и участников изменяет организатор')
+        for name in ('task_assignee_id','task_reviewer_id'):
+            if getattr(body,name)!=row.data.get(name): raise HTTPException(403,'Исполнителя и проверяющего изменяет организатор')
+        if body.cancelled != row.data['cancelled'] and not can_delete(row,user): raise HTTPException(403,'Редактор не может удалять запись')
     before=row.data if row else None
     data=body.model_dump(mode='json',exclude={'request_id','version'})
-    data['responses']={str(p):'pending' for p in body.participants}
+    scheduling=('title','start','end','timezone','location','recurrence','count','all_day')
+    changed=before is None or any(before.get(k)!=data.get(k) for k in scheduling)
+    data['responses']={str(p):'pending' if changed else before.get('responses',{}).get(str(p),'pending') for p in body.participants}
     if row: row.data=data;row.version+=1
     else: row=Event(owner_id=user.id,data=data);db.add(row)
     db.flush()
+    from .calendar_files import bind_files
+    data={**data,'attachments':bind_files(db,user,row,data['attachment_ids'])}
+    from .calendar_tasks import sync_task
+    data=sync_task(db,user,row,data,before)
+    row.data=data
     db.add(Change(event_id=row.id,actor_id=user.id,request_id=str(body.request_id),data={'route_id':id,'request':payload,'before':before,'after':data,'at':datetime.now(timezone.utc).isoformat()}))
     db.commit();return out(row,user)
 
@@ -262,3 +305,28 @@ def respond(id:int,body:Reply,db:Session=Depends(get_db),user:User=Depends(get_c
     from uuid import uuid4
     db.add(Change(event_id=id,actor_id=user.id,request_id=str(uuid4()),data={'route_id':id,'request':body.model_dump(),'before':before,'after':row.data,'at':datetime.now(timezone.utc).isoformat()}))
     db.commit();return out(row,user)
+
+
+class DeleteInput(Strict):
+    version: int = Field(ge=1)
+    request_id: UUID
+
+@router.delete('/events/{id}')
+def delete_event(id:int,body:DeleteInput,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
+    advisory(db,'calendar-request:'+str(body.request_id))
+    request={'action':'delete','version':body.version}
+    previous=db.query(Change).filter_by(request_id=str(body.request_id)).first()
+    if previous:
+        if previous.actor_id!=user.id or previous.event_id!=id or previous.data['request']!=request: raise HTTPException(409,'Запрос уже использован')
+        return {'deleted':True,'id':id}
+    row=db.query(Event).filter_by(id=id).populate_existing().with_for_update().first()
+    if not row or not can_delete(row,user): raise HTTPException(403,'Нет права удалить запись')
+    if row.version!=body.version or row.data.get('deleted'): raise HTTPException(409,'Запись изменилась. Обновите календарь.')
+    before=row.data;row.data={**before,'deleted':True,'cancelled':True};row.version+=1
+    from .calendar_tasks import archive_task
+    archive_task(db,row)
+    db.add(Change(event_id=id,actor_id=user.id,request_id=str(body.request_id),data={'route_id':id,'request':request,'before':before,'after':row.data,'at':datetime.now(timezone.utc).isoformat()}))
+    db.commit();return {'deleted':True,'id':id}
+
+from .calendar_files import router as files_router
+router.include_router(files_router)

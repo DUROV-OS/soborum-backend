@@ -27,6 +27,9 @@ from app.users.models import User
 
 def _editable_task(db, task_id, actor):
     task = task_service.get_task_or_404(db, task_id)
+    if (task.link_meta or {}).get('calendar_event_id'):
+        from app.collaboration.calendar_tasks import lock_for_board
+        return lock_for_board(db,task,actor)
     if (task.link_meta or {}).get("crm_task_id") and actor.access_level(Module.CLIENTS) < AccessLevel.EDIT:
         raise HTTPException(403, "Для изменения задачи продаж нужны права редактирования клиентов")
     return task_service.get_task_or_404(db, task_id, for_update=True)
@@ -123,7 +126,10 @@ def workload(db: Session = Depends(get_db), _: User = Depends(require_admin)):
 
 @app.get("/{task_id}", response_model=TaskOut)
 def get_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(require_tasks_view)):
-    return TaskOut.from_model(task_service.get_task_or_404(db, task_id))
+    task=task_service.get_task_or_404(db, task_id)
+    from app.collaboration.calendar_tasks import require_visible
+    require_visible(task,_)
+    return TaskOut.from_model(task)
 
 
 @app.patch("/{task_id}", response_model=TaskOut)
@@ -134,6 +140,8 @@ def update_task(
     actor: User = Depends(require_tasks_edit),
 ):
     task = _editable_task(db, task_id, actor)
+    if (task.link_meta or {}).get('calendar_event_id'):
+        raise HTTPException(409,'Измените название, срок и участников в связанной записи календаря')
     task = task_service.update_task(
         db,
         task,
@@ -242,6 +250,8 @@ def list_report_revisions(
     Только чтение — ревизии не правятся и не удаляются. Права — как на
     просмотр задачи."""
     task = task_service.get_task_or_404(db, task_id)
+    from app.collaboration.calendar_tasks import require_visible
+    require_visible(task,_)
     report = task_service.get_report_or_404(db, task, report_id)
     return [TaskReportRevisionOut.from_model(r) for r in report.revisions]
 
@@ -269,6 +279,7 @@ def delete_task(task_id: int, db: Session = Depends(get_db), _: User = Depends(r
         task.link_type != TaskLinkType.NONE
         or task.block_id is not None
         or (task.link_meta or {}).get("crm_task_id")
+        or (task.link_meta or {}).get("calendar_event_id")
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
