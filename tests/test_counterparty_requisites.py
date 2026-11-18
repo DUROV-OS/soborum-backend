@@ -194,3 +194,16 @@ def test_live_mcp_pagination_bic_mapping_and_partial_failure(monkeypatch):
     monkeypatch.setattr(mcp_remote,'client_for',lambda target:Broken())
     with pytest.raises(HTTPException) as error:sync.fetch_live(sid)
     assert error.value.status_code==503
+
+
+def test_source_general_phone_and_contact_person_do_not_duplicate_legacy_contact():
+    from app.counterparties.sync import mapped,differences,proposed
+    from app.counterparties.schemas import Person
+    person=Person(phone='+79201770069').model_dump(mode='json')
+    current=Card(contacts=[person]).model_dump(mode='json')
+    raw={'id':str(uuid4()),'companyType':'legal','phone':'+7 (920) 177-00-69','accounts':{'rows':[]},'contactpersons':{'rows':[{'id':str(uuid4()),'name':'Завод','phone':'+79201770069'}]}}
+    remote,_=mapped(raw,current);changes=differences(current,remote)
+    merged=proposed(current,changes,{c['key'] for c in changes if c['fill_empty']})
+    assert len(merged['contacts'])==1
+    assert merged['contacts'][0]['id']==person['id'] and merged['contacts'][0]['name']=='Завод'
+    assert merged['contacts'][0]['phone']==person['phone']

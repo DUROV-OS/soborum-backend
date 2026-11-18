@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 import httpx
+import re
 from fastapi import HTTPException
 from app.core.config import settings
 from app.moysklad.models import SourceLink, SourceRecord
@@ -11,6 +12,11 @@ from .schemas import Card, Save
 from . import service as s
 
 MAIN = ('name','inn','legal_type','kpp','ogrn','legal_address','actual_address','director')
+
+
+def contact_key(field,value):
+    value=str(value or '').strip()
+    return re.sub(r'[^0-9]','',value) if field=='phone' else value.casefold()
 
 
 def source_id(db, cp):
@@ -76,11 +82,20 @@ def mapped(raw,current):
         for r in rows:
             rid=str(uuid5(NAMESPACE_URL,'moysklad:'+str(raw.get('id'))+':'+field+':'+str(r.get('id'))))
             values.append({'id':rid,**{k:str(r.get(v) or '') for k,v in fields.items()},'primary':False,'archived':False})
-        if field=='contacts' and (raw.get('phone') or raw.get('email')):
-            values.append({'id':str(uuid5(NAMESPACE_URL,'moysklad:'+str(raw.get('id'))+':general')),'name':'','phone':raw.get('phone') or '','email':raw.get('email') or '','primary':False,'archived':False})
+        if field=='contacts':
+            general={k:raw.get(k) or '' for k in ('phone','email')}
+            for key,value in general.items():
+                if value and any(contact_key(key,r.get(key))==contact_key(key,value) for r in values):general[key]=''
+            if any(general.values()):
+                values.append({'id':str(uuid5(NAMESPACE_URL,'moysklad:'+str(raw.get('id'))+':general')),'name':'',**general,'primary':False,'archived':False})
         for r in values:
-            candidates=[old for old in current[field] if old['id']==r['id'] or (field=='accounts' and r['account_number'] and old['account_number']==r['account_number'] and old['bik']==r['bik'])]
+            candidates=[old for old in current[field] if old['id']==r['id']]
+            if not candidates:
+                candidates=[old for old in current[field] if not old['archived'] and (
+                    (field=='accounts' and r['account_number'] and old['account_number']==r['account_number'] and old['bik']==r['bik']) or
+                    (field=='contacts' and any(contact_key(key,r.get(key)) and contact_key(key,r.get(key))==contact_key(key,old.get(key)) and sum(contact_key(key,v.get(key))==contact_key(key,r.get(key)) for v in values)==1 for key in ('phone','email'))))]
             if len(candidates)==1:r['id']=candidates[0]['id']
+            elif len(candidates)>1:warnings.append('Несколько локальных контактов или счетов совпадают с источником: проверьте строки перед применением.')
         data[field]=values
     contacts=raw.get('contactpersons',{})
     directors=[r.get('name') for r in (contacts.get('rows',[]) if isinstance(contacts,dict) else contacts) if str(r.get('position','')).strip().lower() in ('директор','генеральный директор') and r.get('name')]
