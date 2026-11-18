@@ -12,6 +12,20 @@ from app.users.models import User
 BASE = "https://api.moysklad.ru/api/remap/1.2/entity/"
 
 
+def test_import_never_replaces_linked_identity_or_matches_conflicting_name(db,make_user,snapshot):
+    owner=make_user(admin=True)
+    local=Counterparty(name='Архивный поставщик',inn='7707083893',is_active=True);db.add(local);db.commit()
+    import_export(db,*snapshot,owner.id);db.commit()
+    linked=db.query(SourceLink).filter_by(source_key='counterparty/c',target_type='counterparties').one()
+    assert linked.target_id!=local.id
+    imported=db.get(Counterparty,linked.target_id);imported.inn='7736050003';imported.is_active=True;db.commit()
+    changed=deepcopy(snapshot);changed[0]['counterparty'][0]['inn']='7707083893'
+    changed[3]['completed_at']='2026-11-18T12:00:00+00:00'
+    result=import_export(db,*changed,owner.id);db.commit()
+    assert imported.inn=='7736050003' and imported.is_active
+    assert any('INN conflict' in w for w in result['warnings'])
+
+
 def ref(typ, id):
     return {"meta": {"href": BASE + typ + "/" + id, "type": typ}}
 

@@ -45,3 +45,4 @@ from app.purchasing import control_models as _purchase_control_models
 from app.collaboration import models as _collaboration_models
 from app.collaboration import calendar as _calendar_models
 from app.drive import models as _drive_models
+from app.counterparties import models as _counterparty_models

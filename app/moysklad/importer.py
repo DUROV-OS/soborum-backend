@@ -274,25 +274,32 @@ def import_export(db: Session, data: dict, metadata: dict, reports: dict, manife
         if obj is None:
             obj = unique(
                 [x for x in db.query(Counterparty) if (raw.get("inn") and x.inn == raw["inn"])]
-            ) or existing_by_name(Counterparty, raw["name"])
+            )
+        created = obj is None
         if obj is None:
             obj = Counterparty(name=raw["name"])
             db.add(obj)
             stats["counterparties_created"] += 1
-        obj.inn = raw.get("inn") or obj.inn
-        obj.is_active = not raw.get("archived", False)
+        if not obj.inn:
+            from app.accounting.service import _assert_inn_free
+            _assert_inn_free(db, raw.get("inn"), exclude_id=obj.id)
+            obj.inn = raw.get("inn") or None
+        elif raw.get("inn") and obj.inn != raw["inn"]:
+            warnings.append("Counterparty INN conflict: " + raw["id"])
+        if created:
+            obj.is_active = not raw.get("archived", False)
         if not obj.client_id:
             client = existing_by_name(Client, raw["name"])
             if client:
                 obj.client_id = client.id
                 obj.kind = CounterpartyKind.CLIENT
         if raw["id"] in supplier_ids and not obj.client_id:
-            supplier = lookup(key, Supplier) or existing_by_name(Supplier, raw["name"])
+            supplier = lookup(key, Supplier) or (db.get(Supplier, obj.supplier_id) if obj.supplier_id else None)
             if supplier is None:
                 supplier = Supplier(name=raw["name"], contacts=[], categories=[])
+                supplier.status = SupplierStatus.ARCHIVED if raw.get("archived") else SupplierStatus.ACTIVE
                 db.add(supplier)
                 stats["suppliers_created"] += 1
-            supplier.status = SupplierStatus.ARCHIVED if raw.get("archived") else SupplierStatus.ACTIVE
             # Imported contacts fill an empty card; employee edits remain intact.
             if not supplier.contacts:
                 supplier.contacts = [{"kind": k, "value": raw[k]} for k in ("phone", "email") if raw.get(k)]

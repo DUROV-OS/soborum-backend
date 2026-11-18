@@ -7,6 +7,7 @@ from app.integrity.models import IntegrityEvent
 
 ZERO_HASH = "0" * 64
 EXPECTED_TABLES = frozenset("""
+counterparty_details counterparty_bank_accounts counterparty_contacts counterparty_changes counterparty_sync_previews
 collaboration_projects collaboration_members collaboration_messages collaboration_files collaboration_tasks collaboration_events
 purchase_control_records purchase_control_documents
 warehouse_inventory_counts warehouse_inventory_acts warehouse_control_documents warehouse_control_records
@@ -36,7 +37,7 @@ def protection(db):
         SELECT c.relname, t.tgname, t.tgenabled, t.tgtype, p.proname
         FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
         JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid
-        WHERE n.nspname='public' AND (t.tgname LIKE 'integrity_%' OR t.tgname IN ('collaboration_immutable','costing_version_immutable','payment_evidence_immutable','actual_cost_immutable','journey_events_immutable','warehouse_control_immutable','purchase_control_immutable')) AND NOT t.tgisinternal
+        WHERE n.nspname='public' AND (t.tgname LIKE 'integrity_%' OR t.tgname IN ('counterparty_immutable','collaboration_immutable','costing_version_immutable','payment_evidence_immutable','actual_cost_immutable','journey_events_immutable','warehouse_control_immutable','purchase_control_immutable')) AND NOT t.tgisinternal
     """)).all()
     installed = {(row[0], row[1]): row[2:] for row in rows}
     missing = []
@@ -64,6 +65,10 @@ def protection(db):
         value = installed.get((table, 'collaboration_immutable'))
         if not value or value[0] not in {'O', 'A'} or value[1:] != (27, 'integrity_reject_mutation'):
             missing.append(table + '.collaboration_immutable')
+    for table in ('counterparty_changes', 'counterparty_sync_previews'):
+        value = installed.get((table, 'counterparty_immutable'))
+        if not value or value[0] not in {'O', 'A'} or value[1:] != (27, 'integrity_reject_mutation'):
+            missing.append(table + '.counterparty_immutable')
     return {"state": "active" if not missing else "incomplete", "covered_tables": covered, "missing_controls": missing}
 
 

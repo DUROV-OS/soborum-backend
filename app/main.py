@@ -25,6 +25,7 @@ from app.clients.router import app as clients_app
 from app.partners.router import app as partners_app
 from app.common.files import router as files_router
 from app.drive.router import router as drive_router
+from app.counterparties.router import router as counterparties_router
 from app.core import readiness
 from app.core.config import settings
 from app.cycle.router import app as cycle_app
@@ -158,6 +159,7 @@ def mcp_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
 
 app.include_router(files_router)
 app.include_router(drive_router)
+app.include_router(counterparties_router)
 app.include_router(telephony_router)
 app.include_router(browser_phone_router)
 

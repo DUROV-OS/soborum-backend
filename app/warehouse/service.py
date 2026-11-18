@@ -1150,6 +1150,9 @@ def delete_supplier(db: Session, supplier: Supplier) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Нельзя удалить поставщика — по нему есть заказы в разделе «Бухгалтерия»",
         )
+    from app.accounting.models import Counterparty
+    if db.query(Counterparty.id).filter_by(supplier_id=supplier.id).first():
+        raise HTTPException(409, 'У поставщика есть карточка контрагента. Используйте архив, чтобы сохранить реквизиты и историю.')
     db.delete(supplier)
     db.flush()
 
@@ -1206,6 +1209,9 @@ def create_supplier(db: Session, payload: SupplierCreate) -> Supplier:
     )
     db.add(supplier)
     db.flush()
+    from app.accounting.models import Counterparty, CounterpartyKind
+    db.add(Counterparty(name=supplier.name,kind=CounterpartyKind.SUPPLIER,supplier_id=supplier.id,is_active=supplier.status.value!='archived'))
+    db.flush()
     return supplier
 
 
@@ -1213,10 +1219,17 @@ def update_supplier(db: Session, supplier: Supplier, payload: SupplierUpdate) ->
     data = payload.model_dump(exclude_unset=True)
     if "name" in data:
         supplier.name = _clean_name(data["name"])
+        from app.accounting.models import Counterparty
+        linked = db.query(Counterparty).filter_by(supplier_id=supplier.id).all()
+        for counterparty in linked:
+            counterparty.name = supplier.name
     if "categories" in data:
         supplier.categories = list(data["categories"] or [])
     if "status" in data and data["status"] is not None:
         supplier.status = data["status"]
+        from app.accounting.models import Counterparty
+        for counterparty in db.query(Counterparty).filter_by(supplier_id=supplier.id):
+            counterparty.is_active = supplier.status.value != 'archived'
     if "contacts" in data:
         supplier.contacts = [c.model_dump() for c in (payload.contacts or [])]
     db.flush()
