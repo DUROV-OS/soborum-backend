@@ -54,6 +54,8 @@ def sync_task(db,user,row,data,before):
         # A work block is time reserved for execution, not the meeting task's due date.
         if (task.link_meta or {}).get('meeting_id'):
             deadline=task.deadline
+            # Cancelling a work interval must not hide the actual commitment.
+            meta['calendar_deleted']=False
         # Preserve the report's author; the organizer may replace a reviewer
         # while acceptance is pending (e.g. the previous reviewer left).
         if (task.status.value in ('in_review','done') and assignee!=(before or {}).get('task_assignee_id')) or (task.status.value=='done' and reviewer!=(before or {}).get('task_reviewer_id')):
@@ -68,4 +70,8 @@ def sync_task(db,user,row,data,before):
 def archive_task(db,row):
     if row.data.get('task_id'):
         task=db.query(Task).filter_by(id=row.data['task_id']).populate_existing().with_for_update().one()
-        task.link_meta={**(task.link_meta or {}),'calendar_deleted':True}
+        if (task.link_meta or {}).get('meeting_id'):
+            task.link_meta={**{k:v for k,v in task.link_meta.items() if not k.startswith('calendar_')},
+                            'previous_calendar_event_id':row.id}
+        else:
+            task.link_meta={**(task.link_meta or {}),'calendar_deleted':True}
