@@ -14,6 +14,7 @@ from app.ai import mcp_write
 from app.ai import meeting_ask as ai_meeting_ask
 from app.ai import meeting_notes as ai_meeting_notes
 from app.ai import meetings as ai_meetings
+from app.ai import meeting_plan
 from app.ai import daily_plan as ai_daily_plan
 from app.ai import priorities as ai_priorities
 from app.ai import service as ai_service
@@ -27,6 +28,7 @@ from app.ai.models import (
     McpCredential,
     Meeting,
     MeetingNotes,
+    MeetingProcessing,
     PendingAction,
     PendingActionStatus,
 )
@@ -597,6 +599,7 @@ def get_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Dep
         ],
         notes=_notes_out(db.get(MeetingNotes, meeting.id)),
         ai_enabled=ai_meeting_notes.notes_ai_enabled(),
+        processing=meeting_plan.output(db.get(MeetingProcessing, meeting.id)),
     )
 
 
@@ -644,11 +647,41 @@ def finish_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = 
     finished = ai_meetings.finish_meeting(db, meeting)
     # Финальный пересчёт заметок по всему транскрипту — молча, finish не должен
     # падать из-за ИИ (нет ключа / провайдер недоступен).
-    ai_meeting_notes.refresh_notes_quietly(db, finished)
+    if not finished.audio_file_id:
+        ai_meeting_notes.refresh_notes_quietly(db, finished)
     # Задача 0010: отправить итоговый документ в базу знаний, если канал
     # записи включён — тоже молча, финиш не должен падать из-за этого.
-    ai_meeting_notes.send_to_knowledge_base_quietly(db, finished)
+    if not finished.audio_file_id:
+        ai_meeting_notes.send_to_knowledge_base_quietly(db, finished)
     return _meeting_out(finished)
+
+
+@app.post('/meetings/{meeting_id}/process')
+def process_meeting(meeting_id: int, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return meeting_plan.retry(db, meeting)
+
+
+@app.put('/meetings/{meeting_id}/plan')
+def save_meeting_plan(meeting_id: int, body: meeting_plan.PlanEdit, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return meeting_plan.save(db, meeting, body)
+
+
+@app.post('/meetings/{meeting_id}/plan/slots')
+def meeting_slots(meeting_id: int, body: meeting_plan.Slots, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    return meeting_plan.slots(db, meeting, body)
+
+
+@app.post('/meetings/{meeting_id}/plan/approve')
+def approve_meeting_plan(meeting_id: int, body: meeting_plan.Approval, db: Session = Depends(get_db), user: User = Depends(require_ai_edit)):
+    meeting = ai_meetings.get_own_meeting_or_404(db, user, meeting_id)
+    try:
+        return meeting_plan.approve(db, user, meeting, body)
+    except Exception:
+        db.rollback()
+        raise
 
 
 @app.post("/meetings/{meeting_id}/notes/refresh", response_model=MeetingNotesOut)

@@ -34,6 +34,8 @@ def get_own_meeting_or_404(db: Session, owner: User, meeting_id: int) -> Meeting
 
 
 def attach_audio(db: Session, meeting: Meeting, upload_file: UploadFile, user: User) -> Meeting:
+    if meeting.status == MeetingStatus.FINISHED:
+        raise HTTPException(409, 'Завершённую запись нельзя подменить; создайте новое совещание')
     content_type = (upload_file.content_type or "").lower()
     if not content_type.startswith(_AUDIO_PREFIXES):
         raise HTTPException(
@@ -52,6 +54,9 @@ def finish_meeting(db: Session, meeting: Meeting) -> Meeting:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Совещание уже завершено")
     meeting.status = MeetingStatus.FINISHED
     meeting.finished_at = datetime.now(timezone.utc)
+    if meeting.audio_file_id:
+        from app.ai.meeting_plan import enqueue
+        enqueue(db, meeting)
     db.commit()
     db.refresh(meeting)
     return meeting
@@ -77,6 +82,10 @@ def delete_meeting(db: Session, meeting: Meeting) -> None:
     """Удаляет совещание с транскриптом и заметками (каскад) и его аудио-ассет.
     Файл на диске не трогаем — как и в остальных разделах."""
     asset = db.get(FileAsset, meeting.audio_file_id) if meeting.audio_file_id else None
+    from app.ai.models import MeetingProcessing
+    job = db.get(MeetingProcessing, meeting.id)
+    if job is not None:
+        db.delete(job)
     db.delete(meeting)
     db.flush()
     if asset is not None:
@@ -147,9 +156,14 @@ def set_line_speaker(
 
 
 def transcript_lines(db: Session, meeting: Meeting) -> list[MeetingTranscriptLine]:
+    from app.ai.models import MeetingProcessing
+    job = db.get(MeetingProcessing, meeting.id)
+    canonical = (job.data or {}).get('transcript_line_ids') if job else None
+    query = db.query(MeetingTranscriptLine).filter(MeetingTranscriptLine.meeting_id == meeting.id)
+    if canonical:
+        query = query.filter(MeetingTranscriptLine.id.in_(canonical))
     return (
-        db.query(MeetingTranscriptLine)
-        .filter(MeetingTranscriptLine.meeting_id == meeting.id)
+        query
         .order_by(MeetingTranscriptLine.at_ms, MeetingTranscriptLine.id)
         .all()
     )

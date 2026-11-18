@@ -111,6 +111,11 @@ def expanded_occurrences(data, start, end):
 def occurrences(data, start, end):
     return [(at, finish) for _, at, finish in expanded_occurrences(data, start, end)]
 
+def busy_people(row):
+    """A task block reserves its executor, while organizers can still review it."""
+    if row.data.get('task_assignee_id'): return {row.data['task_assignee_id']}
+    return {row.owner_id, *row.data['participants']}
+
 def visible(row, user): return row.owner_id == user.id or user.id in row.data['participants']
 def can_edit(row,user): return visible(row,user) and (row.owner_id==user.id or user.id in row.data.get('coorganizers',[])+row.data.get('editors',[]))
 def can_delete(row,user): return row.owner_id==user.id or user.id in row.data.get('coorganizers',[])
@@ -159,7 +164,7 @@ def suggestions(body: SlotSearch, db: Session=Depends(get_db), user: User=Depend
     intervals = []
     for row in db.query(Event):
         if row.id == body.exclude_event_id or row.data['availability'] == 'free': continue
-        involved = ({row.owner_id} | set(row.data['participants'])) & ids
+        involved = busy_people(row) & ids
         # The organizer remains busy even if mistakenly included as a declining invitee.
         involved = {p for p in involved if p == row.owner_id or row.data.get('responses', {}).get(str(p)) != 'declined'}
         if involved:
@@ -243,7 +248,7 @@ def busy(start: datetime,end: datetime,person_id: list[int]=Query(),db: Session=
     if len(person_id)>100: raise HTTPException(422,'Не больше 100 участников')
     result=[]
     for row in db.query(Event):
-        involved=set([row.owner_id,*row.data['participants']]) & set(person_id)
+        involved=busy_people(row) & set(person_id)
         if row.data['availability']=='free': continue
         for at,finish in occurrences(row.data,start,end):
             for person in involved:
@@ -252,6 +257,7 @@ def busy(start: datetime,end: datetime,person_id: list[int]=Query(),db: Session=
     return result
 
 def write(db,user,body,id=None):
+    advisory(db,'team-calendar')
     advisory(db,'calendar-request:'+str(body.request_id))
     previous=db.query(Change).filter_by(request_id=str(body.request_id)).first()
     payload=body.model_dump(mode='json')
@@ -320,6 +326,7 @@ class MoveInput(Strict):
 
 @router.patch('/events/{id}/move')
 def move_event(id:int,body:MoveInput,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
+    advisory(db,'team-calendar')
     advisory(db,'calendar-request:'+str(body.request_id))
     request={'action':'move', **body.model_dump(mode='json')}
     previous=db.query(Change).filter_by(request_id=str(body.request_id)).first()
@@ -384,6 +391,7 @@ class DeleteInput(Strict):
 
 @router.delete('/events/{id}')
 def delete_event(id:int,body:DeleteInput,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
+    advisory(db,'team-calendar')
     advisory(db,'calendar-request:'+str(body.request_id))
     request={'action':'delete','version':body.version}
     previous=db.query(Change).filter_by(request_id=str(body.request_id)).first()

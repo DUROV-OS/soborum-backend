@@ -51,6 +51,9 @@ def sync_task(db,user,row,data,before):
     meta={'calendar_event_id':row.id,'calendar_start':data['start'],'calendar_participants':sorted({row.owner_id,*data['participants']}),'calendar_deleted':bool(data['cancelled'])}
     if task_id:
         task=db.query(Task).filter_by(id=task_id).populate_existing().with_for_update().one()
+        # A work block is time reserved for execution, not the meeting task's due date.
+        if (task.link_meta or {}).get('meeting_id'):
+            deadline=task.deadline
         # Preserve the report's author; the organizer may replace a reviewer
         # while acceptance is pending (e.g. the previous reviewer left).
         if (task.status.value in ('in_review','done') and assignee!=(before or {}).get('task_assignee_id')) or (task.status.value=='done' and reviewer!=(before or {}).get('task_reviewer_id')):
