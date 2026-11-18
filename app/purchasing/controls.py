@@ -96,10 +96,11 @@ def intact(db, row, stage):
 
 
 def trust_state(db, row):
+    from app.counterparties.verification import ready_for_supplier
     event = latest(db, 'trust', row.id)
     ready = bool(event and event.content['request']['trusted'] and intact(db, event, 'director')
                  and event.content['supplier_basis'] == supplier_basis(row) and row.status.value == 'active')
-    return event, ready
+    return event, ready and ready_for_supplier(db, row.id)
 
 
 def trust(db, sid, body, user):

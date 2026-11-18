@@ -504,6 +504,8 @@ def _counterparty_links(
 
 
 def _assert_inn_free(db: Session, inn: str | None, *, exclude_id: int | None = None) -> None:
+    from app.counterparties.service import lock
+    lock(db)
     if not inn:
         return
     query = db.query(Counterparty.id).filter(Counterparty.inn == inn)
