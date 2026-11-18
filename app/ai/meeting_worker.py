@@ -13,7 +13,6 @@ from app.db import import_all_models  # noqa: F401
 from app.db.session import SessionLocal
 from app.ai.models import Meeting, MeetingNotes, MeetingProcessing, MeetingTranscriptLine
 from app.ai.meeting_plan import Action
-from app.ai.meeting_notes import meeting_context_line
 from app.common.files import FileAsset
 from app.core.config import settings
 from app.users.models import User
@@ -21,13 +20,20 @@ from app.users.models import User
 log = logging.getLogger(__name__)
 
 
-def claim(db):
+def claim(db, mode='all'):
     now = datetime.now(timezone.utc)
     row = db.query(MeetingProcessing).filter(or_(
         and_(MeetingProcessing.status.in_(['queued', 'error']), MeetingProcessing.attempts < 3,
              or_(MeetingProcessing.lease_until.is_(None), MeetingProcessing.lease_until < now)),
-        and_(MeetingProcessing.status.in_(['transcribing', 'analyzing']), MeetingProcessing.lease_until < now),
-    )).order_by(MeetingProcessing.meeting_id).with_for_update(skip_locked=True).first()
+        and_(MeetingProcessing.status.in_(['transcribing', 'analyzing']),
+             or_(MeetingProcessing.lease_until.is_(None), MeetingProcessing.lease_until < now)),
+    ))
+    if mode == 'speech':
+        row = row.filter(or_(MeetingProcessing.data['transcript_ready'].as_boolean().is_(None),
+                             MeetingProcessing.data['transcript_ready'].as_boolean().is_(False)))
+    elif mode == 'analysis':
+        row = row.filter(MeetingProcessing.data['transcript_ready'].as_boolean().is_(True))
+    row = row.order_by(MeetingProcessing.meeting_id).with_for_update(skip_locked=True).first()
     if not row: return None
     token = str(uuid4())
     row.status = 'analyzing' if row.data.get('transcript_ready') else 'transcribing'
@@ -46,6 +52,7 @@ def current(db, id, token):
 
 def generate(meeting, lines, people):
     from app.core.llm import llm_client
+    from app.ai.meeting_notes import meeting_context_line
     string_list = {'type': 'array', 'items': {'type': 'string'}}
     schema = {'name': 'submit_meeting_plan', 'description': 'Протокол и черновик поручений для проверки руководителем.', 'input_schema': {
         'type': 'object', 'properties': {
@@ -129,7 +136,7 @@ def generate(meeting, lines, people):
     return result
 
 
-def process(id, token, transcriber, session=SessionLocal, analyzer=generate):
+def process(id, token, transcriber, session=SessionLocal, analyzer=generate, speech_only=False):
     stage = 'transcribing'
     try:
         with session() as db:
@@ -155,7 +162,10 @@ def process(id, token, transcriber, session=SessionLocal, analyzer=generate):
                 job.data = {**job.data, 'transcript_ready': True, 'transcript_line_ids': ids,
                             'speech_model': settings.call_whisper_model}
                 job.status = 'analyzing'; job.version += 1
+                if speech_only:
+                    job.lease_token, job.lease_until = None, None
                 db.commit()
+        if speech_only: return
         stage = 'analyzing'
         with session() as db:
             job = current(db, id, token)
@@ -192,6 +202,8 @@ def process(id, token, transcriber, session=SessionLocal, analyzer=generate):
 
 
 def main():
+    import sys
+    mode = 'speech' if '--speech-only' in sys.argv else 'analysis' if '--analysis-only' in sys.argv else 'all'
     logging.basicConfig(level=logging.INFO)
     model = None
     def transcriber(path):
@@ -202,8 +214,8 @@ def main():
         from app.telephony.worker import transcribe
         return transcribe(path, model)[1]
     while True:
-        with SessionLocal() as db: job = claim(db)
-        if job: process(*job, transcriber)
+        with SessionLocal() as db: job = claim(db, mode)
+        if job: process(*job, transcriber, speech_only=(mode == 'speech'))
         else: time.sleep(10)
 
 

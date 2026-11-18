@@ -2,7 +2,7 @@ services:
   meeting-worker:
     image: ${MEETING_WORKER_IMAGE:?Use the verified local speech worker image}
     restart: unless-stopped
-    entrypoint: ["python", "-m", "app.ai.meeting_worker"]
+    entrypoint: ["python", "-m", "app.ai.meeting_worker", "--speech-only"]
     working_dir: /app
     env_file:
       - .env
@@ -15,6 +15,24 @@ services:
       - meeting_speech_models:/models:ro
     cpus: 1
     mem_limit: 1600m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  meeting-planner:
+    image: ${MEETING_PLANNER_IMAGE:?Use the verified application image with the Marina SDK}
+    restart: unless-stopped
+    entrypoint: ["python", "-m", "app.ai.meeting_worker", "--analysis-only"]
+    working_dir: /app
+    env_file:
+      - .env
+      - .env.mcp
+    volumes:
+      - ${MEETING_SOURCE:?Use the reviewed application release}/app:/app/app:ro
+    cpus: 0.5
+    mem_limit: 512m
     logging:
       driver: json-file
       options:

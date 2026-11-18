@@ -145,6 +145,26 @@ def test_silence_is_error_and_no_invented_transcript(db, api, make_user):
     assert detail['transcript'] == [] and detail['notes'] is None
 
 
+def test_speech_to_planner_handoff_is_durable(db, api, make_user):
+    c = api(make_user(admin=True))
+    mid = c.post('/api/ai/meetings', json={}).json()['id']
+    c.post(f'/api/ai/meetings/{mid}/audio', files={'file': ('rec.webm', b'fake', 'audio/webm')})
+    c.post(f'/api/ai/meetings/{mid}/finish')
+    factory = sessionmaker(db.get_bind(), expire_on_commit=False)
+    with factory() as s:
+        assert meeting_worker.claim(s, 'analysis') is None
+        id, token = meeting_worker.claim(s, 'speech')
+    meeting_worker.process(id, token, lambda _: [{'text': 'Поручение', 'start': 1}], session=factory, speech_only=True)
+    with factory() as s:
+        assert meeting_worker.claim(s, 'speech') is None
+        id, token = meeting_worker.claim(s, 'analysis')
+    def must_not_transcribe(_): raise AssertionError('Audio must not be transcribed twice')
+    meeting_worker.process(id, token, must_not_transcribe, session=factory,
+        analyzer=lambda *args: dict(summary='Итог', decisions=[], questions=[], recommendations=[], actions=[]))
+    db.expire_all()
+    assert c.get(f'/api/ai/meetings/{mid}').json()['processing']['status'] == 'ready'
+
+
 def test_model_requires_real_source_quotes(db, make_user, monkeypatch):
     from app.core import llm
     from app.core.config import settings
