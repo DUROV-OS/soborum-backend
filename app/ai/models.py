@@ -257,3 +257,18 @@ class MeetingNotes(Base):
     )
 
     meeting: Mapped["Meeting"] = relationship()
+
+
+class MeetingProcessing(Base):
+    """Durable audio job and reviewed plan. Lease tokens fence stale workers."""
+
+    __tablename__ = "ai_meeting_processing"
+    meeting_id: Mapped[int] = mapped_column(ForeignKey("ai_meetings.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

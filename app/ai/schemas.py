@@ -268,6 +268,7 @@ class MeetingDetailOut(MeetingOut):
     transcript: list[TranscriptLineOut] = Field(default_factory=list)
     notes: MeetingNotesOut | None = None
     ai_enabled: bool = False
+    processing: dict | None = None
 
 
 class TaskPrioritiesOut(TaskSelectionEvidence):
