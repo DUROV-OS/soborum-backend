@@ -2,7 +2,7 @@ services:
   meeting-worker:
     image: ${MEETING_WORKER_IMAGE:?Use the verified local speech worker image}
     restart: unless-stopped
-    entrypoint: ["python", "-m", "app.ai.meeting_worker", "--speech-only"]
+    entrypoint: ["python", "-m", "app.ai.meeting_speech_worker"]
     working_dir: /app
     env_file:
       - .env
