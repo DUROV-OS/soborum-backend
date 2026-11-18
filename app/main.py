@@ -55,9 +55,11 @@ from app.telephony.router import router as telephony_router
 from app.integrity.router import app as integrity_app
 from app.telephony.browser_router import router as browser_phone_router
 from app.collaboration.router import app as collaboration_app
+from app.mail.router import app as mail_app
 
 app = FastAPI(title="Soborbum")
 app.mount('/api/projects', collaboration_app)
+app.mount('/api/mail', mail_app)
 
 # Applied at the root app, so it also covers requests routed into the mounted
 # per-section sub-apps below (CORSMiddleware wraps the whole ASGI stack,

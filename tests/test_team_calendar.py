@@ -59,7 +59,7 @@ def test_suggestions_timezone_workday_and_validation(api,make_user):
     user=make_user();c=api(user)
     body=dict(start='2026-11-16T00:00:00Z',end='2026-11-17T00:00:00Z',timezone='Asia/Yekaterinburg',duration_minutes=60)
     r=c.post(P+'/suggestions',json=body);assert r.status_code==200,r.text
-    assert r.json()['slots'][0]['start']=='2026-11-16T09:00:00+05:00'
+    assert r.json()['slots'][0]['start']=='2026-11-16T08:00:00+05:00'
     for extra in ({'work_start':1000,'work_end':900},{'duration_minutes':0},{'timezone':'Unknown/Zone'}, {'weekdays':[7]}, {'participants':[999999]}, {'end':'2027-01-01T00:00:00Z'}):
         assert c.post(P+'/suggestions',json={**body,**extra}).status_code==422
     weekend={**body,'start':'2026-11-21T00:00:00Z','end':'2026-11-22T00:00:00Z'}

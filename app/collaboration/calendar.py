@@ -83,7 +83,7 @@ class Input(Strict):
         object.__setattr__(self,'tags',list(dict.fromkeys(t.strip() for t in self.tags)))
         return self
 
-def occurrences(data, start, end):
+def expanded_occurrences(data, start, end):
     if data['cancelled'] or data.get('deleted'): return []
     zone = ZoneInfo(data['timezone'])
     first = datetime.fromisoformat(data['start']).astimezone(zone)
@@ -101,8 +101,15 @@ def occurrences(data, start, end):
             finish = (at+timedelta(days=days)).astimezone(timezone.utc)
         else:
             finish = at.astimezone(timezone.utc)+duration
-        if at < end and finish > start: result.append((at,finish))
+        exception = data.get('exceptions', {}).get(str(i))
+        if exception:
+            at = datetime.fromisoformat(exception['start'])
+            finish = datetime.fromisoformat(exception['end'])
+        if at < end and finish > start: result.append((str(i),at,finish))
     return result
+
+def occurrences(data, start, end):
+    return [(at, finish) for _, at, finish in expanded_occurrences(data, start, end)]
 
 def visible(row, user): return row.owner_id == user.id or user.id in row.data['participants']
 def can_edit(row,user): return visible(row,user) and (row.owner_id==user.id or user.id in row.data.get('coorganizers',[])+row.data.get('editors',[]))
@@ -121,8 +128,8 @@ class SlotSearch(Strict):
     participants: list[int] = Field(default_factory=list, max_length=100)
     duration_minutes: int = Field(default=60, ge=5, le=480)
     timezone: str = 'Europe/Moscow'
-    work_start: int = Field(default=540, ge=0, lt=1440)
-    work_end: int = Field(default=1080, gt=0, le=1440)
+    work_start: int = Field(default=480, ge=0, lt=1440)
+    work_end: int = Field(default=1140, gt=0, le=1440)
     weekdays: list[int] = Field(default_factory=lambda: [0,1,2,3,4], min_length=1, max_length=7)
     exclude_event_id: int | None = Field(default=None, gt=0)
 
@@ -192,8 +199,8 @@ def events(start: datetime,end: datetime,query: str=Query('',max_length=200),db:
     period(start,end);result=[]
     for row in db.query(Event):
         if not visible(row,user) or query.casefold() not in (' '.join([row.data['title'],row.data['description'],row.data.get('location',''),*row.data.get('tags',[])])).casefold(): continue
-        for at,finish in occurrences(row.data,start,end):
-            result.append(dict(out(row,user),occurrence_start=at.isoformat(),occurrence_end=finish.isoformat()))
+        for occurrence_id,at,finish in expanded_occurrences(row.data,start,end):
+            result.append(dict(out(row,user),occurrence_id=occurrence_id,occurrence_start=at.isoformat(),occurrence_end=finish.isoformat()))
     return sorted(result,key=lambda r:r['occurrence_start'])
 
 
@@ -275,6 +282,11 @@ def write(db,user,body,id=None):
         if body.cancelled != row.data['cancelled'] and not can_delete(row,user): raise HTTPException(403,'Редактор не может удалять запись')
     before=row.data if row else None
     data=body.model_dump(mode='json',exclude={'request_id','version'})
+    if before and before.get('exceptions'):
+        if any(data[k] != before[k] for k in ('recurrence', 'count', 'timezone', 'all_day')):
+            raise HTTPException(409, 'В серии есть перенесённые встречи. Изменяйте их отдельно; для другого правила повторения создайте новую серию.')
+        delta = body.start - datetime.fromisoformat(before['start'])
+        data['exceptions'] = {key: {field: (datetime.fromisoformat(value[field]) + delta).isoformat() for field in ('start','end')} for key, value in before['exceptions'].items()}
     scheduling=('title','start','end','timezone','location','recurrence','count','all_day')
     changed=before is None or any(before.get(k)!=data.get(k) for k in scheduling)
     data['responses']={str(p):'pending' if changed else before.get('responses',{}).get(str(p),'pending') for p in body.participants}
@@ -293,6 +305,62 @@ def write(db,user,body,id=None):
 def create(body:Input,db:Session=Depends(get_db),user:User=Depends(get_current_user)): return write(db,user,body)
 @router.patch('/events/{id}')
 def update(id:int,body:Input,db:Session=Depends(get_db),user:User=Depends(get_current_user)): return write(db,user,body,id)
+
+class MoveInput(Strict):
+    request_id: UUID
+    version: int = Field(ge=1)
+    occurrence_id: str = Field(pattern=r'^\d{1,3}$')
+    start: datetime
+    scope: Literal['occurrence', 'series'] = 'occurrence'
+
+    @model_validator(mode='after')
+    def valid(self):
+        if self.start.tzinfo is None: raise ValueError('Укажите время с часовым поясом')
+        return self
+
+@router.patch('/events/{id}/move')
+def move_event(id:int,body:MoveInput,db:Session=Depends(get_db),user:User=Depends(get_current_user)):
+    advisory(db,'calendar-request:'+str(body.request_id))
+    request={'action':'move', **body.model_dump(mode='json')}
+    previous=db.query(Change).filter_by(request_id=str(body.request_id)).first()
+    if previous:
+        if previous.actor_id!=user.id or previous.event_id!=id or previous.data['request']!=request: raise HTTPException(409,'Запрос уже использован')
+        row=db.get(Event,id)
+        if not row or not visible(row,user) or row.data.get('deleted'): raise HTTPException(404,'Запись недоступна')
+        return out(row,user)
+    row=db.query(Event).filter_by(id=id).populate_existing().with_for_update().first()
+    if not row or not can_edit(row,user): raise HTTPException(403,'Нет права редактировать запись')
+    if row.version!=body.version or row.data.get('deleted') or row.data['cancelled']: raise HTTPException(409,'Событие изменено. Обновите календарь.')
+    before=row.data
+    occurrence=next(((a,b) for key,a,b in expanded_occurrences(before,datetime.min.replace(tzinfo=timezone.utc),datetime.max.replace(tzinfo=timezone.utc)) if key==body.occurrence_id),None)
+    if not occurrence: raise HTTPException(404,'Повторение не найдено')
+    at,finish=occurrence
+    end=body.start+(finish.astimezone(timezone.utc)-at.astimezone(timezone.utc))
+    fields={k:v for k,v in before.items() if k in Input.model_fields}
+    if before.get('all_day'):
+        zone=ZoneInfo(before['timezone'])
+        local_start=body.start.astimezone(zone)
+        if local_start.time().isoformat()!='00:00:00': raise HTTPException(422,'Событие на весь день переносится на полночь')
+        end=local_start+timedelta(days=(finish.astimezone(zone).date()-at.astimezone(zone).date()).days)
+    data={**before}
+    if body.scope=='series' or before['recurrence']=='none':
+        delta=body.start-at
+        fields.update(start=(datetime.fromisoformat(before['start'])+delta).isoformat(),end=(datetime.fromisoformat(before['end'])+delta).isoformat())
+        if before['recurrence']=='none': fields.update(start=body.start.isoformat(),end=end.isoformat())
+        try: validated=Input.model_validate({**fields,'version':body.version,'request_id':body.request_id})
+        except ValidationError as exc: raise HTTPException(422,'Проверьте время переноса') from exc
+        data.update(validated.model_dump(mode='json',exclude={'request_id','version'}))
+        if before.get('exceptions'):
+            data['exceptions']={key:{field:(datetime.fromisoformat(value[field])+delta).isoformat() for field in ('start','end')} for key,value in before['exceptions'].items()}
+    else:
+        data['exceptions']={**before.get('exceptions',{}),body.occurrence_id:{'start':body.start.isoformat(),'end':end.isoformat()}}
+    data['responses']={str(p):'pending' for p in data['participants']}
+    from .calendar_tasks import sync_task
+    data=sync_task(db,user,row,data,before)
+    row.data=data;row.version+=1
+    db.add(Change(event_id=id,actor_id=user.id,request_id=str(body.request_id),data={'route_id':id,'request':request,'before':before,'after':data,'at':datetime.now(timezone.utc).isoformat()}))
+    db.commit()
+    return out(row,user)
 
 class Reply(Strict):
     response: Literal['accepted','tentative','declined']

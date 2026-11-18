@@ -31,8 +31,8 @@ class Preferences(Strict):
     version: int = Field(default=0, ge=0)
     templates: list[Template] = Field(default_factory=list,max_length=20)
     timezone: str = 'Europe/Moscow'
-    work_start: int = Field(default=540, ge=0, lt=1440)
-    work_end: int = Field(default=1080, gt=0, lt=1440)
+    work_start: int = Field(default=480, ge=0, lt=1440)
+    work_end: int = Field(default=1140, gt=0, lt=1440)
     weekdays: list[int] = Field(default_factory=lambda: [0,1,2,3,4], min_length=1, max_length=7)
     categories: dict[str, Category] = Field(default_factory=lambda: {
         'meeting': Category(label='Встречи', color='#4776d0'),

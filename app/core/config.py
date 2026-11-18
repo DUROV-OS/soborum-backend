@@ -1,7 +1,7 @@
 import logging
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger("app.core.config")
@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 12
 
     storage_dir: str = "/tmp/soborum-storage"
+
+    shared_mail_enabled: bool = False
+    shared_mail_address: str = 'sales@durov.house'
+    shared_mail_password: SecretStr = SecretStr('')
+    shared_mail_host: str = 'mail.nic.ru'
+    shared_mail_port: int = 993
+    # Explicit shared-mail readers, in addition to administrators.
+    shared_mail_allowed_user_ids: list[int] = []
 
     # Provider credentials remain server-side; routing is enabled separately.
     megafon_crm_token: str = ""

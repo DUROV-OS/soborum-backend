@@ -31,6 +31,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://soborbum:${POSTGRES_PASSWORD:-soborbum}@db:5432/soborbum
       STORAGE_DIR: /app/storage
+      SHARED_MAIL_ENABLED: ${SHARED_MAIL_ENABLED:-false}
+      SHARED_MAIL_ADDRESS: ${SHARED_MAIL_ADDRESS:-sales@durov.house}
+      SHARED_MAIL_HOST: ${SHARED_MAIL_HOST:-mail.nic.ru}
+      SHARED_MAIL_PORT: ${SHARED_MAIL_PORT:-993}
+      SHARED_MAIL_PASSWORD: ${SHARED_MAIL_PASSWORD:-}
+      SHARED_MAIL_ALLOWED_USER_IDS: ${SHARED_MAIL_ALLOWED_USER_IDS:-[]}
       # Required. Set these in .env — no insecure defaults, prod boot fails without them.
       APP_ENV: ${APP_ENV:-prod}
       # Demo/mock data now needs this EXPLICIT opt-in on top of a non-prod
