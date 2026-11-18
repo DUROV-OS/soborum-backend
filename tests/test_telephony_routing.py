@@ -167,7 +167,8 @@ def test_unmapped_imported_owner_falls_back_without_invalid_user_fk(db, pool):
     assert db.query(PhoneRoutingMemory).count() == 0
 
 
-def test_config_permissions_version_and_draft_does_not_activate(db, pool, api, make_user, monkeypatch):
+@pytest.mark.parametrize('wait_seconds', [3, 20])
+def test_config_permissions_version_and_draft_does_not_activate(db, pool, api, make_user, monkeypatch, wait_seconds):
     first, second, actor = pool
     for user in (first, make_user(Module.CLIENTS, level=AccessLevel.VIEW)):
         assert api(user).get('/api/crm/telephony/routing').status_code == 403
@@ -175,12 +176,31 @@ def test_config_permissions_version_and_draft_does_not_activate(db, pool, api, m
     value = client.get('/api/crm/telephony/routing').json()
     value.pop('fallback')
     value['enabled'] = False
-    assert client.put('/api/crm/telephony/routing', json=value).status_code == 200
+    value['wait_seconds'] = wait_seconds
+    saved = client.put('/api/crm/telephony/routing', json=value)
+    assert saved.status_code == 200
+    assert saved.json()['wait_seconds'] == wait_seconds
     assert client.put('/api/crm/telephony/routing', json=value).status_code == 409
     value['version'] += 1; value['enabled'] = True
     monkeypatch.setattr(settings, 'megafon_crm_token', '')
     assert client.put('/api/crm/telephony/routing', json=value).status_code == 422
     assert not db.get(PhoneRoutingConfig, 1).enabled
+
+
+def test_incoming_routing_can_be_saved_without_outbound_call_credentials(db, pool, api, monkeypatch):
+    monkeypatch.setattr(settings, 'megafon_crm_token', 'c' * 32)
+    monkeypatch.setattr(settings, 'megafon_pbx_token', '')
+    assert not provider.configured()
+    assert incoming(db, '79001112233')['responsible'] == '101'
+    client = api(pool[2])
+    value = client.get('/api/crm/telephony/routing').json()
+    value.pop('fallback')
+    value['wait_seconds'] = 3
+    response = client.put('/api/crm/telephony/routing', json=value)
+    assert response.status_code == 200, response.text
+    assert response.json()['enabled'] and response.json()['wait_seconds'] == 3
+    assert incoming(db, '79001112233')['responsible'] == '101'
+    assert db.query(PhoneRoutingMemory).count() == 1
 
 
 def test_webhook_contact_has_no_call_id_and_rejects_bad_secret_or_duplicates(db, pool, api, monkeypatch):

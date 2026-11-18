@@ -185,10 +185,61 @@ def test_unrelated_company_and_contact_with_same_phone_still_need_manual_binding
     assert db.query(CRMEntity).filter_by(kind='deal').count() == 1
 
 
-@pytest.mark.parametrize('fields', [dict(diversion='79001114455'), dict(diversion=''), dict(type='OUTGOING'), dict(direction='out'), dict(cmd='contact')])
+@pytest.mark.parametrize('fields', [dict(diversion='79001114455'), dict(diversion=''), dict(type='OUTGOING'), dict(direction='out'), dict(cmd='contact', callid='')])
 def test_only_identified_main_line_incoming_creates_a_lead(db, intake, fields):
     call(db, **fields)
     assert db.query(CRMEntity).filter_by(kind='deal').count() == 0
+
+
+def test_live_contact_callback_creates_intake_before_any_manager_event(db, intake):
+    first, _, stage = intake
+    config = db.get(PhoneRoutingConfig, 1)
+    config.enabled = config.pbx_setup_confirmed = True
+    db.commit()
+    body = {'cmd': 'contact', 'phone': '79001112233', 'diversion': '79066773555', 'callid': 'pbx-arrival'}
+    response = service.ingest(db, body)
+    assert response['responsible'] == '101'
+    row = db.query(PhoneCall).one()
+    deal = db.query(CRMEntity).filter_by(kind='deal').one()
+    assert row.external_id == 'pbx-arrival' and row.direction == 'in'
+    assert row.deal_id == deal.id and row.status == 'INCOMING'
+    assert deal.payload['stage_id'] == stage.id and deal.payload['responsible_user_id'] == first.id
+    assert not deal.payload['is_unsorted']
+    assert db.query(CRMEvent).filter_by(action='phone_call', entity_id=deal.id).count() == 1
+    assert db.query(CRMEntity).filter_by(kind='task').count() == 1
+    assert config.cursor == 1
+
+
+def test_live_contact_retry_and_later_missed_history_enrich_one_card(db, intake):
+    body = {'cmd': 'contact', 'phone': '79001112233', 'diversion': '79066773555', 'callid': 'pbx-arrival'}
+    for _ in range(2):
+        service.ingest(db, body)
+    call(db, callid='pbx-arrival')
+    service.ingest(db, {**body, 'cmd': 'history', 'type': 'in', 'status': 'missed',
+                       'start': '20261118T071946Z', 'duration': 0})
+    row = db.query(PhoneCall).one()
+    event = db.query(CRMEvent).filter_by(action='phone_call').one()
+    assert row.status == 'missed' and row.processing == 'no_recording'
+    assert event.details['status'] == 'missed' and event.entity_id == row.deal_id
+    assert db.query(CRMEntity).filter_by(kind='deal').count() == 1
+    assert db.query(CRMEntity).filter_by(kind='contact').count() == 1
+    assert db.get(PhoneRoutingConfig, 1).cursor == 1
+
+
+@pytest.mark.parametrize('fields', [dict(callid=''), dict(diversion=''), dict(diversion='79066778555'),
+                                     dict(direction='out'), dict(type='OUTGOING')])
+def test_contact_name_lookups_and_other_lines_never_create_intake(db, intake, fields):
+    service.ingest(db, {'cmd': 'contact', 'phone': '79001112233', 'diversion': '79066773555',
+                        'callid': 'pbx-arrival', **fields})
+    assert db.query(PhoneCall).count() == 0
+    assert db.query(CRMEntity).filter_by(kind='deal').count() == 0
+
+
+def test_live_contact_callback_respects_disabled_automatic_leads(db, intake):
+    db.get(PhoneRoutingConfig, 1).auto_create_leads = False
+    db.commit()
+    service.ingest(db, {'cmd': 'contact', 'phone': '79001112233', 'diversion': '79066773555', 'callid': 'pbx-arrival'})
+    assert db.query(PhoneCall).count() == db.query(CRMEntity).filter_by(kind='deal').count() == 0
 
 
 def test_phone_then_max_share_the_same_card_owner_and_history(db, intake):

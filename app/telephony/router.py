@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 import hmac
+import hashlib
+import logging
+import time
 from urllib.parse import parse_qsl
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -18,6 +21,7 @@ from app.telephony import routing, provider, connections
 from uuid import UUID
 
 router = APIRouter()
+callback_log = logging.getLogger('uvicorn.error')
 view = require_view(Module.CLIENTS)
 edit = require_edit(Module.CLIENTS)
 
@@ -41,8 +45,8 @@ def routing_config(db: Session = Depends(get_db), user: User = Depends(require_a
 def save_routing(body: routing.Configuration, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     if body.auto_create_leads and len(settings.megafon_crm_token) < 32:
         raise HTTPException(422, 'Сначала настройте серверный ключ для событий ВАТС')
-    if body.enabled and (len(settings.megafon_crm_token) < 32 or not provider.configured()):
-        raise HTTPException(422, 'Сначала настройте серверные ключи и адрес ВАТС')
+    if body.enabled and len(settings.megafon_crm_token) < 32:
+        raise HTTPException(422, 'Сначала настройте серверный ключ для событий ВАТС')
     return routing.save_config(db, body, user)
 
 
@@ -79,7 +83,23 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     supplied = body.pop('crm_token', '')
     if not hmac.compare_digest(supplied.encode(), secret.encode()):
         raise HTTPException(401, 'Неверный ключ телефонии')
-    return await run_in_threadpool(service.ingest, db, body)
+    # Log delivery shape, never credentials, numbers, names or recording URLs.
+    command = body.get('cmd') if body.get('cmd') in ('contact', 'event', 'history', 'rating') else 'unknown'
+    call_ref = hashlib.sha256(body.get('callid', '').encode()).hexdigest()[:12] if body.get('callid') else '-'
+    started = time.monotonic()
+    callback_log.info('megafon_callback received cmd=%s call_ref=%s has_callid=%s has_diversion=%s',
+                      command, call_ref, bool(body.get('callid')), bool(body.get('diversion')))
+    status = 500
+    try:
+        result = await run_in_threadpool(service.ingest, db, body)
+        status = 200
+        return result
+    except HTTPException as error:
+        status = error.status_code
+        raise
+    finally:
+        callback_log.info('megafon_callback completed cmd=%s call_ref=%s status=%s elapsed_ms=%s',
+                          command, call_ref, status, round((time.monotonic() - started) * 1000))
 
 
 @router.get('/api/crm/calls')
