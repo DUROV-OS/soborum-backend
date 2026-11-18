@@ -178,3 +178,25 @@ def test_model_requires_real_source_quotes(db, make_user, monkeypatch):
     r = meeting_worker.generate(meeting, lines, [])
     assert len(r['actions']) == 1 and r['actions'][0]['deadline'] is None
     assert r['actions'][0]['source_line_ids'] == [17] and r['questions']
+
+
+def test_speech_image_core_queue_handoff_and_stale_worker(db, api, make_user):
+    from app.ai.meeting_speech_worker import SpeechQueue
+    c = api(make_user(admin=True))
+    mid = c.post('/api/ai/meetings', json={}).json()['id']
+    c.post(f'/api/ai/meetings/{mid}/audio', files={'file': ('rec.webm', b'fake', 'audio/webm')})
+    c.post(f'/api/ai/meetings/{mid}/finish')
+    queue = SpeechQueue(db.get_bind())
+    id, token = queue.claim()
+    queue.process(id, 'old-token', lambda _: [{'start': 1, 'text': 'Не сохранять'}])
+    queue.process(id, token, lambda _: [{'start': 1.2, 'text': 'Поручение'}])
+    db.expire_all()
+    detail = c.get(f'/api/ai/meetings/{mid}').json()
+    assert detail['processing']['status'] == 'analyzing' and detail['transcript'][0]['text'] == 'Поручение'
+    assert detail['transcript'][0]['at_ms'] == 1200 and queue.claim() is None
+    factory = sessionmaker(db.get_bind(), expire_on_commit=False)
+    with factory() as s: id, token = meeting_worker.claim(s, 'analysis')
+    meeting_worker.process(id, token, lambda _: [], session=factory,
+        analyzer=lambda *args: dict(summary='Готово', decisions=[], questions=[], recommendations=[], actions=[]))
+    db.expire_all()
+    assert c.get(f'/api/ai/meetings/{mid}').json()['processing']['status'] == 'ready'
