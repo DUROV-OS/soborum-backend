@@ -59,6 +59,10 @@ def test_approval_native_tasks_calendar_idempotent_and_independent_deadline(db, 
     rr = c.patch(f'/api/projects/calendar/events/{event.id}', json=update)
     assert rr.status_code == 200, rr.text
     assert task.deadline.replace(tzinfo=None) == datetime.fromisoformat(action['deadline']).replace(tzinfo=None)
+    # Removing the reserved work interval does not remove the employee's task.
+    deleted = c.request('DELETE', f'/api/projects/calendar/events/{event.id}', json={'version': rr.json()['version'], 'request_id': str(uuid4())})
+    assert deleted.status_code == 200, deleted.text
+    assert not task.link_meta.get('calendar_event_id') and task.link_meta['meeting_id'] == meeting.id
     # The assigned task is available in the employee's existing task board.
     r = api(assignee).get('/api/tasks?scope=mine')
     assert r.status_code == 200 and any(t['id'] == task.id for t in r.json())
