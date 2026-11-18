@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.accounting.models import (
     CounterpartyKind,
@@ -304,6 +304,9 @@ class SupplierOrderCreate(BaseModel):
 
 
 class SupplierOrderUpdate(BaseModel):
+    number: str | None = Field(default=None, min_length=1, max_length=255)
+    supplier_id: int | None = Field(default=None, gt=0)
+    reason: str = Field(default='', max_length=1000)
     items: list[SupplierOrderItem] | None = None
     expected_at: date | None = None
     comment: str | None = None

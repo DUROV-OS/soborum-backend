@@ -1,3 +1,4 @@
+from tests.warehouse_control_helpers import inventory_act
 from decimal import Decimal
 from uuid import uuid4
 from app.warehouse.models import (
@@ -59,7 +60,7 @@ def create(client, a, kind="transfer", quantity="3", **kw):
 def post(client, doc, **kw):
     return client.post(
         f"/api/warehouse/documents/{doc['id']}/post",
-        json={"version": doc["version"], "request_id": str(uuid4()), **kw},
+        json={"version": doc["version"], "request_id": str(uuid4()), **inventory_act(client, doc), **kw},
     )
 
 

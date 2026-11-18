@@ -8,7 +8,7 @@
   no_supplies       №6   нет поставок на склад N дней
   client_completed  №13  клиент дошёл до «Завершён»
   idle_wide_access  №18  неактивный сотрудник с широким доступом
-  max_digest        —    сводка для Арсения Щекина в MAX (только предложение, отправка после согласования)
+  max_digest        —    сводка настроенному получателю в MAX (только предложение, отправка после согласования)
   cycle_stuck       №9*  цикл клиента завис 14+ дней (упрощённо, без привязки к цели совета)
 """
 
@@ -94,6 +94,9 @@ def task_stalled(db: Session) -> list[Finding]:
     admins = _admin_ids(db)
     out: list[Finding] = []
     for task in tasks:
+        # Calendar tasks are private to their participants; the global agent's
+        # escalation recipients are not necessarily members of the event.
+        if (task.link_meta or {}).get('calendar_event_id'): continue
         if not task.assignees:
             continue
         # Не работаем с карточками самого агента.
@@ -229,7 +232,7 @@ def cycle_stuck(db: Session) -> list[Finding]:
 def max_digest(db: Session) -> list[Finding]:
     """Раз в сутки предлагает короткую сводку для получателя в MAX. Не отправляет:
     это карточка «на согласование», уйдёт только после решения администратора."""
-    if not settings.agent_max_chat_id:
+    if not settings.agent_max_chat_id or not settings.agent_max_recipient.strip():
         return []
     now = utcnow()
     stalled = db.query(Task).filter(

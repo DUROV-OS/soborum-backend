@@ -50,8 +50,16 @@ from app.moysklad.router import app as moysklad_app
 from app.crm.router import app as crm_app
 from app.purchasing.router import app as purchasing_app
 from app.sales.router import app as sales_app
+from app.costing.router import app as costing_app
+from app.telephony.router import router as telephony_router
+from app.integrity.router import app as integrity_app
+from app.telephony.browser_router import router as browser_phone_router
+from app.collaboration.router import app as collaboration_app
+from app.mail.router import app as mail_app
 
 app = FastAPI(title="Soborbum")
+app.mount('/api/projects', collaboration_app)
+app.mount('/api/mail', mail_app)
 
 # Applied at the root app, so it also covers requests routed into the mounted
 # per-section sub-apps below (CORSMiddleware wraps the whole ASGI stack,
@@ -148,6 +156,8 @@ def mcp_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
 
 
 app.include_router(files_router)
+app.include_router(telephony_router)
+app.include_router(browser_phone_router)
 
 app.mount("/api/auth", auth_app)
 app.mount("/api/clients", clients_app)
@@ -160,6 +170,8 @@ app.mount("/api/moysklad", moysklad_app)
 app.mount("/api/crm", crm_app)
 app.mount("/api/purchasing", purchasing_app)
 app.mount("/api/sales", sales_app)
+app.mount("/api/costing", costing_app)
+app.mount("/api/integrity", integrity_app)
 app.mount("/api/marketing", marketing_app)
 app.mount("/api/house-models", house_models_app)
 app.mount("/api/max", max_app)

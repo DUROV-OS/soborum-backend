@@ -85,6 +85,7 @@ def check_task_deadlines(db: Session, *, now: datetime | None = None) -> dict:
     overdue = 0
     tasks = db.query(Task).filter(Task.deadline.isnot(None), Task.status != TaskStatus.DONE).all()
     for task in tasks:
+        if (task.link_meta or {}).get('calendar_deleted'): continue
         deadline = task.deadline
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=timezone.utc)

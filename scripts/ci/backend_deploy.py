@@ -205,17 +205,19 @@ def ensure_release(sha, files):
 
 
 def compose(source, *args, image=None, quiet=False):
-    override = STATE / 'compose-ci.json'
+    overrides = [STATE / 'compose-ci.json']
     if image:
         override = STATE / 'compose-rollback.json'
-        override.write_text(json.dumps({'services': {'backend': {
-            'image': image, 'env_file': [{'path': str(STATE / 'config' / p), 'required': True}
-                                        for p in ('.env', '.env.mcp')]}}}))
+        # Pin only the application image; configured integrations stay in compose-ci.
+        override.write_text(json.dumps({'services': {'backend': {'image': image}}}))
+        overrides.append(override)
     cmd = ['/usr/bin/docker', 'compose', '-p', PROJECT, '--project-directory', str(source)]
-    for name in ('.env', '.env.mcp'):
-        cmd += ['--env-file', str(STATE / 'config' / name)]
+    for name in ('.env', '.env.mcp', 'openai.env'):
+        path = STATE / 'config' / name
+        if name != 'openai.env' or path.is_file():
+            cmd += ['--env-file', str(path)]
     cmd += ['-f', str(source / 'docker-compose.yml'), '-f', str(STATE / 'config' / 'docker-compose.override.yml'),
-            '-f', str(override), *args]
+            *[part for override in overrides for part in ('-f', str(override))], *args]
     return run(cmd, stdout=subprocess.DEVNULL if quiet else subprocess.PIPE, timeout=900)
 
 

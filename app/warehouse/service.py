@@ -122,22 +122,52 @@ def create_material(db: Session, payload: WarehouseMaterialCreate) -> WarehouseM
     return material
 
 
+def material_edit_token(material):
+    import hashlib, json
+    from decimal import Decimal
+    keys = ('id','title','code','category','unit','is_fractional','purchase_price','threshold','quantity_in_stock','kind','size','diameter','serial_number','pack_quantity','supplier_id')
+    numeric = {'purchase_price','threshold','quantity_in_stock','pack_quantity'}
+    values = {k: (format(Decimal(str(getattr(material,k))).normalize(), 'f') if k in numeric and getattr(material,k) is not None else str(getattr(material,k))) for k in keys}
+    return hashlib.sha256(json.dumps(values,sort_keys=True).encode()).hexdigest()
+
+
 def update_material(
     db: Session, material: WarehouseMaterial, payload: WarehouseMaterialUpdate
 ) -> WarehouseMaterial:
     material = _lock_materials(db, [material.id])[material.id]
     fields = payload.model_dump(exclude_unset=True)
+    expected = fields.pop('edit_token', None)
+    if expected and expected != material_edit_token(material):
+        raise HTTPException(409, 'Карточка или остаток изменились. Закройте карточку, обновите список и повторите правку.')
+    if any(key in fields and fields[key] is None for key in ('category', 'is_fractional')):
+        raise HTTPException(422, 'Категория и тип количества не могут быть пустыми.')
+    import math
+    for key in ('purchase_price', 'threshold'):
+        if key in fields and (fields[key] is None or not math.isfinite(fields[key]) or fields[key] < 0 or fields[key] >= 1e12):
+            raise HTTPException(422, 'Цена и порог должны быть неотрицательными числами меньше 1 трлн.')
+    for key, limit in [('title',255),('code',64),('unit',32)]:
+        if key in fields:
+            if not fields[key] or not fields[key].strip() or len(fields[key].strip()) > limit:
+                raise HTTPException(422, 'Заполните название, код и единицу допустимой длины.')
+            fields[key] = fields[key].strip()
+    if 'code' in fields and db.query(WarehouseMaterial.id).filter(WarehouseMaterial.id != material.id, WarehouseMaterial.warehouse == material.warehouse, WarehouseMaterial.code == fields['code']).first():
+        raise HTTPException(409, 'На этом складе уже есть товар с таким кодом.')
     from app.warehouse.reservation_models import StockReservation
     from app.sales.models import SalesOrder, SalesShipment
+    from app.accounting.models import SupplierOrder
 
     if (
         any(k in fields and fields[k] != getattr(material, k) for k in ("unit", "is_fractional"))
-        and (db.query(StockReservation.id).filter_by(material_id=material.id).first()
+        and (material.quantity_in_stock != 0
+            or db.query(BlockMaterial.id).filter_by(warehouse_material_id=material.id).first()
+            or any(i.get('warehouse_material_id') == material.id for (items,) in db.query(SupplierOrder.items) for i in items)
+            or db.query(StockMovement.id).filter_by(warehouse_material_id=material.id).first()
+            or db.query(StockReservation.id).filter_by(material_id=material.id).first()
             or any(l.get("material_id") == material.id for cls in (SalesOrder, SalesShipment)
                 for (entries,) in db.query(cls.lines) for l in entries))
     ):
         raise HTTPException(
-            409, "У карточки есть история резервов или продаж. Для другой единицы учёта создайте новую позицию."
+            409, "У карточки есть остаток, техкарты, закупки, движения, резервы или продажи. Для другой единицы учёта создайте новую позицию."
         )
     if "supplier_id" in fields:
         ensure_supplier_exists(db, fields["supplier_id"])
@@ -197,6 +227,7 @@ def to_out(db: Session, material: WarehouseMaterial, breakdown=None, holds=None)
     held = sum(groups.values(), Decimal(0))
     free = Decimal(str(material.quantity_in_stock)) - held
     return WarehouseMaterialOut(
+        edit_token=material_edit_token(material),
         id=material.id,
         is_archived=material.is_archived,
         catalog_path=material.catalog_path,
@@ -950,6 +981,7 @@ def approve_request(
         if task:
             task_service.force_close(db, task)
     sync_shortage_task(db, warehouse_material)
+    request._issued_movement_id = movement.id
     return request
 
 

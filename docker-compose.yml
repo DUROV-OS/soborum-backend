@@ -31,6 +31,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://soborbum:${POSTGRES_PASSWORD:-soborbum}@db:5432/soborbum
       STORAGE_DIR: /app/storage
+      SHARED_MAIL_ENABLED: ${SHARED_MAIL_ENABLED:-false}
+      SHARED_MAIL_ADDRESS: ${SHARED_MAIL_ADDRESS:-sales@durov.house}
+      SHARED_MAIL_HOST: ${SHARED_MAIL_HOST:-mail.nic.ru}
+      SHARED_MAIL_PORT: ${SHARED_MAIL_PORT:-993}
+      SHARED_MAIL_PASSWORD: ${SHARED_MAIL_PASSWORD:-}
+      SHARED_MAIL_ALLOWED_USER_IDS: ${SHARED_MAIL_ALLOWED_USER_IDS:-[]}
       # Required. Set these in .env — no insecure defaults, prod boot fails without them.
       APP_ENV: ${APP_ENV:-prod}
       # Demo/mock data now needs this EXPLICIT opt-in on top of a non-prod
@@ -62,6 +68,8 @@ services:
       MOYSKLAD_MCP_CLIENT_SECRET: ${MOYSKLAD_MCP_CLIENT_SECRET:-}
       MOYSKLAD_TOKEN: ${MOYSKLAD_TOKEN:-}
       MAX_TOKEN: ${MAX_TOKEN:-}
+      MAX_SESSION_FILE: /var/lib/durov-max/private/session.sqlite3
+      MAX_APP_VERSION: ${MAX_APP_VERSION:-26.8.4}
       FEEDBACK_EXPORT_TOKEN: ${FEEDBACK_EXPORT_TOKEN:-}
       LEAD_INTAKE_TOKEN: ${LEAD_INTAKE_TOKEN:-}
       MAX_LIVE_UPDATES: ${MAX_LIVE_UPDATES:-true}
@@ -70,6 +78,7 @@ services:
       - ./app:/app/app
       - ./alembic:/app/alembic
       - storage_data:/app/storage
+      - max_sessions:/var/lib/durov-max
     # Готовность, а не просто «процесс жив»: БД отвечает и ревизия alembic
     # совпадает с кодом (/ready, 0084-a). curl в slim-образе нет — берём python.
     healthcheck:
@@ -86,3 +95,4 @@ services:
 volumes:
   db_data:
   storage_data:
+  max_sessions:

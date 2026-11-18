@@ -163,6 +163,9 @@ def create_shift(db: Session, user: User | None = None) -> ShiftOut:
                     "escalate": review.escalate,
                     "kind": review.kind,
                     "status": review.status,
+                    "method": review.method, "input_hash": review.input_hash,
+                    "input_text": review.input_text, "rules_version": review.rules_version,
+                    "matched_rules": review.matched_rules,
                 }
                 for review in item.reviews
             ],
@@ -281,6 +284,9 @@ def _store_run(
 
 
 def _shift_out(row: AgentShift, db: Session) -> ShiftOut:
+    from app.ai.provenance import fingerprint
+    charts = live_charts(db, wait=False)
+    charts_as_of = datetime.now(timezone.utc)
     when = row.created_at
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
@@ -292,7 +298,8 @@ def _shift_out(row: AgentShift, db: Session) -> ShiftOut:
         created_at=row.created_at,
         items=[_item_out(item) for item in row.items],
         approvals=[_approval_out(approval) for approval in row.approvals],
-        charts=[ShiftChartOut.model_validate(chart) for chart in live_charts(db, wait=False)],
+        charts=[ShiftChartOut.model_validate(chart) for chart in charts],
+        charts_as_of=charts_as_of, charts_source_hash=fingerprint(charts),
         autorun=settings.agent_shift_autorun,
         interval_seconds=settings.agent_shift_interval_seconds,
         next_tick_at=when + timedelta(seconds=settings.agent_shift_interval_seconds),
@@ -300,9 +307,13 @@ def _shift_out(row: AgentShift, db: Session) -> ShiftOut:
 
 
 def _item_out(row: AgentShiftItem) -> ShiftItemOut:
+    from app.ai.provenance import fingerprint
     reviews = []
     for review in row.reviews or []:
         reviewer = str(review.get("reviewer", ""))
+        method = review.get('method') if review.get('method') in ('rules','unavailable') else 'legacy'
+        if method == 'rules' and (not isinstance(review.get('input_text'),str) or not review.get('rules_version') or fingerprint(review['input_text'])!=review.get('input_hash')):
+            method = 'legacy'
         reviews.append(
             ShiftReviewOut(
                 reviewer=reviewer,
@@ -311,6 +322,9 @@ def _item_out(row: AgentShiftItem) -> ShiftItemOut:
                 escalate=bool(review.get("escalate")),
                 kind=str(review.get("kind", "ops")),
                 status=_review_status(review.get("status")),
+                method=method,
+                input_hash=review.get('input_hash'), input_text=review.get('input_text'),
+                rules_version=review.get('rules_version'), matched_rules=review.get('matched_rules') or [],
             )
         )
     return ShiftItemOut(

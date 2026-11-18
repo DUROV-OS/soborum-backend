@@ -1,7 +1,7 @@
 import logging
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger("app.core.config")
@@ -19,10 +19,35 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://soborbum:soborbum@db:5432/soborbum"
 
     jwt_secret: str = ""
-    jwt_algorithm: str = "HS256"
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
     jwt_expire_minutes: int = 60 * 12
 
     storage_dir: str = "/tmp/soborum-storage"
+
+    shared_mail_enabled: bool = False
+    shared_mail_address: str = 'sales@durov.house'
+    shared_mail_password: SecretStr = SecretStr('')
+    shared_mail_host: str = 'mail.nic.ru'
+    shared_mail_port: int = 993
+    # Explicit shared-mail readers, in addition to administrators.
+    shared_mail_allowed_user_ids: list[int] = []
+
+    # Provider credentials remain server-side; routing is enabled separately.
+    megafon_crm_token: str = ""
+    megafon_api_token: str = ""
+    megafon_pbx_token: str = ""
+    megafon_domain: str = ""
+    megafon_recording_hosts: str = ""
+    call_whisper_model: str = "small"
+    call_analysis_url: str = "http://127.0.0.1:11434"
+    call_analysis_model: str = "qwen3:1.7b"
+    browser_phone_gateway: str = ""
+    browser_phone_gateway_secret: str = ""
+    browser_phone_encryption_key: str = ""
+    browser_phone_domain: str = "vats801755.megapbx.ru"
+    browser_phone_origin: str = ""
+    browser_phone_turn_secret: str = ""
+    browser_phone_turn_host: str = ""
 
     admin_email: str = "admin@soborbum.local"
     # No default. Empty or a well-known value => bootstrap_admin refuses to create an admin.
@@ -195,12 +220,13 @@ class Settings(BaseSettings):
         return bool(self.moysklad_mcp_url and self.moysklad_mcp_client_id and self.moysklad_mcp_client_secret)
 
     # --- Мессенджер MAX (app/max) ---
-    # Токен веб-сессии MAX: JSON.parse(localStorage.__oneme_auth).token на
-    # web.max.ru. Без него раздел /api/max отдаёт 503.
+    # Legacy token is imported once into private persistent storage.
     max_token: str = ""
+    max_session_file: str = ""
+    max_app_version: str = "26.8.4"
     # Кому агент предлагает сообщения в MAX (0112). 0 — сценарий выключен.
-    agent_max_chat_id: int = 27580426
-    agent_max_recipient: str = "Арсений Щекин"
+    agent_max_chat_id: int = 0
+    agent_max_recipient: str = ""
     # Сервисный токен read-only экспорта заявок «Пожелания» для агента (0109).
     # Пуст — экспорт выключен, маршруты /api/feedback/export/* отвечают 404.
     feedback_export_token: str = ""

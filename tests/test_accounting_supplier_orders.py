@@ -52,7 +52,7 @@ def test_create_supplier_order_computes_total_cost_and_supplier_balance(db, api,
     assert supplier_data["balance"] == 50000
 
 
-def test_status_machine_no_skipping_and_received_is_frozen(db, api, acc_user, make_user):
+def test_status_machine_preserved_but_received_order_metadata_is_editable(db, api, acc_user, make_user):
     supplier = _supplier(db)
     api_client = api(acc_user)
     order_id = api_client.post(
@@ -78,10 +78,22 @@ def test_status_machine_no_skipping_and_received_is_frozen(db, api, acc_user, ma
         f"/api/accounting/supplier-orders/{order_id}/status", json={"to": "in_transit"}
     ).status_code == 409
 
-    # правка/удаление принятого заказа
-    assert api_client.patch(
-        f"/api/accounting/supplier-orders/{order_id}", json={"comment": "поздно"}
-    ).status_code == 409
+    # Реквизиты можно уточнить, не отменяя получение и не перепроводя оплату.
+    original = resp.json()
+    edited = api_client.patch(
+        f"/api/accounting/supplier-orders/{order_id}",
+        json={"comment": "Уточнение накладной", "reason": "Получен оригинал документа"},
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()['comment'] == 'Уточнение накладной'
+    assert edited.json()['status'] == 'received'
+    assert edited.json()['received_at'] == original['received_at']
+    assert edited.json()['total_cost'] == original['total_cost']
+    from app.purchasing.control_models import PurchaseControlRecord
+    event = db.query(PurchaseControlRecord).filter_by(kind='order_edit', order_id=order_id).one()
+    assert event.actor_id == acc_user.id
+    assert event.content['before']['comment'] != event.content['after']['comment']
+    # Удаление проведённого заказа по-прежнему запрещено.
     admin_client = api(make_user(admin=True))
     assert admin_client.delete(f"/api/accounting/supplier-orders/{order_id}").status_code == 409
 

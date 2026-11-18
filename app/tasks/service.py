@@ -49,13 +49,16 @@ def task_section(task: Task) -> Module | None:
 def is_claimable_for(task: Task, user: User) -> bool:
     """A "свободная задача": ready, no assignees yet, and either unbound or in
     a section this user has access to."""
-    if task.status != TaskStatus.READY or task.assignees:
+    from app.collaboration.calendar_tasks import visible_task
+    if not visible_task(task,user) or task.status != TaskStatus.READY or task.assignees:
         return False
     section = task_section(task)
     return section is None or user.has_access(section)
 
 
 def is_mine_or_claimable(task: Task, user: User) -> bool:
+    from app.collaboration.calendar_tasks import visible_task
+    if not visible_task(task,user): return False
     if user in task.assignees or user in task.reviewers or task.responsible_id == user.id:
         return True
     return is_claimable_for(task, user)
@@ -70,6 +73,8 @@ def default_board_scope(user: User) -> TaskScope:
 def apply_scope(tasks: list[Task], user: User, scope: TaskScope) -> list[Task]:
     """Фильтр `scope` доски (0021): ALL — без фильтра, MINE — исполнитель, проверяющий, ответственный и свободные,
     CLAIMABLE — только свободные. Права на ALL проверяет вызывающий."""
+    from app.collaboration.calendar_tasks import visible_task
+    tasks=[t for t in tasks if visible_task(t,user)]
     if scope == TaskScope.MINE:
         return [t for t in tasks if is_mine_or_claimable(t, user)]
     if scope == TaskScope.CLAIMABLE:
@@ -330,6 +335,9 @@ def _finalize_status(
 
 
 def set_status(db: Session, task: Task, new_status: TaskStatus, actor: User) -> Task:
+    if (task.link_meta or {}).get('calendar_event_id'):
+        from app.collaboration.calendar_tasks import lock_for_board
+        task=lock_for_board(db,task,actor)
     if task.status == new_status:
         return task
 

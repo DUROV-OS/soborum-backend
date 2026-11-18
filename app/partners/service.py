@@ -46,6 +46,8 @@ def create_chat_link(db: Session, partner: Partner, payload: PartnerChatLinkCrea
     """Привязать чат MAX к партнёру (0105) — по образцу
     `client_service.create_chat_link`. Чат не может быть привязан и к
     партнёру, и к клиенту одновременно, поэтому проверяем обе таблицы."""
+    from app.max.chat_link_guard import guard_legacy_link
+    guard_legacy_link(db, payload.max_chat_id)
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Название привязки обязательно")

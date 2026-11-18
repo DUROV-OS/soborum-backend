@@ -24,6 +24,8 @@ def get_current_user(token: str | None = Depends(oauth2_scheme), db: Session = D
     user = db.get(User, int(subject))
     if user is None or not user.is_active:
         raise credentials_error
+    from app.integrity.context import bind_actor
+    bind_actor(db, user)
     return user
 
 

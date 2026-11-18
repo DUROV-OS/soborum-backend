@@ -109,6 +109,12 @@ def attention(db, *, now=None, offset=0, limit=50, reason=None):
     now = aware(now or datetime.now(timezone.utc))
     rules = settings(db)
     rows = db.query(CRMEntity).filter(CRMEntity.archived.is_(False)).all()
+    pending = [row for row in rows if row.kind == "inquiry" and not row.payload.get("accepted_deal_id")]
+    spam_ids = {row.id for row in pending if row.payload.get("is_spam")}
+    flagged_links = {row.payload.get("deal_id") for row in pending if row.id in spam_ids}
+    normal_links = {row.payload.get("deal_id") for row in pending if row.id not in spam_ids}
+    hidden_ids = {row.id for row in rows if row.kind == "deal" and row.payload.get("is_unsorted")}
+    spam_targets = spam_ids | ((flagged_links - normal_links) & hidden_ids)
     stages = {r.id: r for r in rows if r.kind == "stage"}
     tasks = [r for r in rows if r.kind == "task" and not r.payload.get("completed")]
     by_entity = {}
@@ -147,6 +153,10 @@ def attention(db, *, now=None, offset=0, limit=50, reason=None):
         )
 
     for row in rows:
+        # Suppress attention signals only. Shared tasks and their workflow state
+        # remain intact, and undo immediately restores the same signals.
+        if row.id in spam_ids or (row.kind == "task" and row.payload.get("entity_id") in spam_targets):
+            continue
         if row.kind == "inquiry":
             add(row, "inquiry", "Обработать входящее обращение")
             linked = by_entity.get(row.id, [])

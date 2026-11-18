@@ -37,3 +37,9 @@ def test_provider_value_is_normalized(raw, expected):
 def test_unknown_provider_fails_loudly():
     with pytest.raises(ValidationError):
         _settings(ai_provider="chatgpt")
+
+
+def test_external_digest_has_no_default_person_or_chat():
+    s = _settings()
+    assert s.agent_max_chat_id == 0
+    assert s.agent_max_recipient == ""

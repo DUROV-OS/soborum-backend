@@ -43,6 +43,7 @@ def open_points_by_user(db: Session) -> dict[int, int]:
     tasks = db.query(Task).filter(Task.status != TaskStatus.DONE).all()
     result: dict[int, int] = {}
     for task in tasks:
+        if (task.link_meta or {}).get('calendar_deleted'): continue
         points = task.story_points or 0
         for user in task.assignees:
             result[user.id] = result.get(user.id, 0) + points
@@ -73,6 +74,7 @@ def workload_by_user(db: Session, *, now: datetime | None = None) -> list[Worklo
     open_tasks_count: dict[int, int] = {}
     overdue_count: dict[int, int] = {}
     for task in db.query(Task).filter(Task.status != TaskStatus.DONE).all():
+        if (task.link_meta or {}).get('calendar_deleted'): continue
         for user in task.assignees:
             open_tasks_count[user.id] = open_tasks_count.get(user.id, 0) + 1
             if task.deadline and task.deadline < now:

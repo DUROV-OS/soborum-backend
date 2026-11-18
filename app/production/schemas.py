@@ -202,7 +202,7 @@ class ProductionAttentionOut(BaseModel):
 
 class ProductionAktualnoeOut(BaseModel):
     stage: str
-    percent: int = Field(ge=0, le=100)
+    percent: None = None
     phrase: str = ""
 
 
@@ -223,6 +223,15 @@ class DeadlineInsightOut(BaseModel):
     # Когда посчитан ответ: у закешированного ИИ-ответа — время генерации.
     # None — запись кэша, сохранённая до 0084-c.
     generated_at: datetime | None = None
+    data_as_of: datetime | None = None
+    source_hash: str | None = None
+    input_snapshot: dict = Field(default_factory=dict)
+    analysis_version: str | None = None
+    cached: bool = False
+    human_approved: Literal[False] = False
+    signal_index: int | None = None
+    checked_at: datetime | None = None
+    input_changed: bool = False
 
 
 class ProductionHomeOut(BaseModel):

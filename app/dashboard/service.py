@@ -155,6 +155,7 @@ def _snapshot_installation(db: Session) -> dict:
 
 
 def _snapshot_marketing(db: Session) -> dict:
+    from app.marketing.conversions import acquisition_summary
     today = date.today()
     week_ahead = today + timedelta(days=7)
     not_released = [ContentStage.IDEA, ContentStage.GATHERING, ContentStage.EDITING]
@@ -164,6 +165,7 @@ def _snapshot_marketing(db: Session) -> dict:
         stage_counts[stage.value] = count
 
     return {
+        "acquisition": acquisition_summary(db),
         "total_content_items": sum(stage_counts.values()),
         "stage_counts": stage_counts,
         "release_due_next_7_days": db.query(ContentItem)
@@ -292,9 +294,10 @@ def _snapshot_tasks(db: Session, user: User | None = None) -> dict:
     status_counts = dict.fromkeys([s.value for s in TaskStatus], 0)
     if user is None:
         scope = None
-        for task_status, count in db.query(Task.status, func.count(Task.id)).group_by(Task.status).all():
-            status_counts[task_status.value] = count
-        open_tasks = db.query(Task).filter(Task.status != TaskStatus.DONE).all()
+        tasks=[t for t in db.query(Task).all() if not (t.link_meta or {}).get('calendar_deleted')]
+        for task in tasks:
+            status_counts[task.status.value] += 1
+        open_tasks = [t for t in tasks if t.status != TaskStatus.DONE]
     else:
         scope = task_service.default_board_scope(user)
         for task in task_service.apply_scope(db.query(Task).all(), user, scope):
@@ -322,8 +325,9 @@ def _snapshot_users(db: Session) -> dict:
         open_count = (
             db.query(Task)
             .filter(Task.assignees.any(User.id == u.id), Task.status != TaskStatus.DONE)
-            .count()
+            .all()
         )
+        open_count=sum(1 for task in open_count if not (task.link_meta or {}).get('calendar_deleted'))
         # Нагрузка — только задачи, где сотрудник исполнитель: «задач на
         # исполнении», не то же, что «Открытых задач» Пульса (0084-h).
         workload.append({"full_name": u.full_name, "tasks_in_work_as_assignee": open_count})

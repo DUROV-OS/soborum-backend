@@ -181,6 +181,16 @@ def _read_attached_file(db: Session, user: User, file_id: int) -> dict:
     asset = db.get(FileAsset, file_id)
     if asset is None:
         return {"error": "Файл не найден"}
+    from app.crm.import_access import shared_imported_attachment, extract_reviewed_text
+    imported = shared_imported_attachment(db, user, asset)
+    if imported is not None:
+        from app.common.files import PURPOSE_MODULE
+        required = PURPOSE_MODULE.get(asset.purpose)
+        if required and not user.has_access(required):
+            raise HTTPException(403, 'Нет доступа к этому файлу')
+        _, item, content = imported
+        if content is not None:
+            return extract_reviewed_text(asset.id, item, content)
     return extract_asset_text(asset)
 
 
@@ -788,7 +798,10 @@ def _serialize_task(t: Task) -> dict:
     required_module=Module.TASKS, read_only=True, domains=[ChatDomain.TASKS, ChatDomain.PRODUCTION],
 )
 def _get_task(db: Session, user: User, task_id: int) -> dict:
-    return _serialize_task(task_service.get_task_or_404(db, task_id))
+    task=task_service.get_task_or_404(db, task_id)
+    from app.collaboration.calendar_tasks import require_visible
+    require_visible(task,user)
+    return _serialize_task(task)
 
 
 @register(
@@ -809,7 +822,8 @@ def _list_tasks(db: Session, user: User, assignee_id: int | None = None, status:
     if block_id is not None:
         query = query.filter(Task.block_id == block_id)
     tasks = query.order_by(Task.id.desc()).limit(50).all()
-    return {"tasks": [_serialize_task(t) for t in tasks]}
+    from app.collaboration.calendar_tasks import visible_task
+    return {"tasks": [_serialize_task(t) for t in tasks if visible_task(t,user)]}
 
 
 @register(
@@ -829,8 +843,9 @@ def _get_user_workload(db: Session, user: User, module: str | None = None) -> di
         open_count = (
             db.query(Task)
             .filter(Task.assignees.any(User.id == u.id), Task.status != TaskStatus.DONE)
-            .count()
+            .all()
         )
+        open_count=sum(1 for task in open_count if not (task.link_meta or {}).get('calendar_deleted'))
         result.append({"id": u.id, "full_name": u.full_name, "open_tasks": open_count})
     return {"workload": sorted(result, key=lambda r: r["open_tasks"])}
 

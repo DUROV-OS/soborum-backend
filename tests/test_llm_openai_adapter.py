@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import pytest
 from anthropic.types import Message
 from openai.types.responses import Response, ResponseFunctionToolCall, ResponseOutputMessage
 
@@ -99,6 +100,29 @@ def test_reasoning_model_gets_effort_and_token_headroom():
     assert reasoning_call["max_output_tokens"] > 1024
     assert "reasoning" not in plain_call
     assert plain_call["max_output_tokens"] == 1024
+
+
+@pytest.mark.parametrize("effort", [None, "medium"])
+def test_astra_preserves_reasoning_budget_for_short_tool_responses(effort):
+    client, fake = _adapter(_response([_call_item("submit", '{"items": [1]}')]))
+    kwargs = {"output_config": {"effort": effort}} if effort else {}
+
+    message = client.messages.create(
+        model="gpt-6-astra", max_tokens=1024,
+        messages=[{"role": "user", "content": "Extract the result"}],
+        tools=[{"name": "submit", "input_schema": {"type": "object"}}],
+        tool_choice={"type": "tool", "name": "submit"},
+        **kwargs,
+    )
+
+    sent = fake.calls[0]
+    assert sent["model"] == "gpt-6-astra"
+    assert sent["reasoning"] == {"effort": effort or "low"}
+    assert sent["max_output_tokens"] > 1024
+    assert sent["tool_choice"] == {"type": "function", "name": "submit"}
+    assert sent["store"] is False
+    assert message.stop_reason == "tool_use"
+    assert message.content[0].input == {"items": [1]}
 
 
 def test_history_with_tools_and_attachments_is_translated_in_order():

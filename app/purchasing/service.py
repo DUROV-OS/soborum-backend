@@ -51,7 +51,9 @@ def balance(db, order):
 
 
 def out(db, order):
+    from app.purchasing.editing import has_receipts
     return {
+        "has_receipts": has_receipts(db, order),
         **SupplierOrderOut.from_order(order).model_dump(mode="json"),
         "version": order.version,
         "archived": order.archived,
@@ -74,7 +76,10 @@ def get_order(db, id, *, lock=False):
 
 
 def receipt_out(row):
+    from app.purchasing.receipt_editing import token
     return {
+        'edit_token': token(row),
+        **{
         k: getattr(row, k)
         for k in [
             "id",
@@ -89,7 +94,7 @@ def receipt_out(row):
             "lines",
             "note",
             "actor_id",
-        ]
+        ]}
     }
 
 

@@ -317,6 +317,15 @@ class Client(Base):
     def lead_message(self) -> str | None:
         """Текст последнего обращения с сайта (0111-b) — для плашки в карточке."""
         return self.lead_requests[-1].message if self.lead_requests else None
+
+    @property
+    def lead_acquisition(self) -> dict | None:
+        if not self.lead_requests:
+            return None
+        from app.marketing.acquisition import acquisition
+        request = self.lead_requests[-1]
+        return acquisition(request.utm, request.tracking, request.source)
+
     # Задачи менеджера по клиенту (0079-d) — обычные задачи системы, связанные
     # с клиентом через link_type/link_id, поэтому связь только на чтение и без
     # внешнего ключа: задачами владеет раздел «Задачи», здесь их только видно.
@@ -412,6 +421,7 @@ class ClientLeadRequest(Base):
     (`is_repeat`). Автора-сотрудника нет, поэтому это не `ClientNote`."""
 
     __tablename__ = "client_lead_requests"
+    __table_args__ = (UniqueConstraint('external_event_id', name='uq_lead_external_event'),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(
@@ -420,6 +430,8 @@ class ClientLeadRequest(Base):
     source: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     utm: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    external_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tracking: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_repeat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
