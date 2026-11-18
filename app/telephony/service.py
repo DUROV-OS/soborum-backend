@@ -109,6 +109,17 @@ def ingest(db, body, *, remember=True):
     if cmd not in ('history', 'event', 'contact', 'rating'):
         raise HTTPException(422, 'Неизвестная команда телефонии')
     if cmd == 'contact':
+        # The PBX makes this request when the call arrives, before a manager
+        # rings. A missed call may never produce a later event/history. Only a
+        # real provider call ID and an explicit company line qualify as intake;
+        # ordinary name lookups must remain free of lead/call side effects.
+        config = db.get(PhoneRoutingConfig, 1)
+        external_id = body.get('callid') or ''
+        if (remember and config and config.auto_create_leads
+                and isinstance(external_id, str) and 0 < len(external_id) <= 255
+                and phone(body.get('diversion')) == config.main_phone
+                and body.get('direction') != 'out' and body.get('type') not in ('OUTGOING', 'out')):
+            ingest(db, {**body, 'cmd': 'event', 'type': 'INCOMING', 'direction': 'in'})
         return routing.contact(db, body)
     external_id = body.get('callid', '')
     number = phone(body.get('phone'))

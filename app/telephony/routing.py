@@ -46,7 +46,7 @@ class Configuration(BaseModel):
     version: int = Field(ge=1)
     enabled: bool = False
     main_phone: str = '79066773555'
-    wait_seconds: int = Field(20, ge=10, le=120)
+    wait_seconds: int = Field(20, ge=3, le=120)
     pbx_setup_confirmed: bool = False
     auto_create_leads: bool = False
     max_incoming_enabled: bool = False

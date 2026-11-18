@@ -31,6 +31,21 @@ def test_webhook_auth_disabled_token_and_repeated_history(db, api, make_user, mo
     assert client.post('/api/telephony/megafon', data={**payload(phone='79001112234'),'crm_token':'x'*40}).status_code==409
 
 
+def test_callback_delivery_logs_keep_payload_and_credentials_private(db, api, make_user, monkeypatch, caplog):
+    import logging
+    client = api(make_user(admin=True))
+    token = 'private-callback-token-' + 'x' * 40
+    monkeypatch.setattr(settings, 'megafon_crm_token', token)
+    with caplog.at_level(logging.INFO, logger='uvicorn.error'):
+        assert client.post('/api/telephony/megafon', data={**payload(), 'crm_token': token}).status_code == 200
+        assert client.post('/api/telephony/megafon', data={**payload(cmd='invalid'), 'crm_token': token}).status_code == 422
+    logs = '\n'.join(r.getMessage() for r in caplog.records if 'megafon_callback' in r.getMessage())
+    assert 'received cmd=history' in logs and 'completed cmd=history' in logs
+    assert 'status=200' in logs and 'status=422' in logs
+    assert token not in logs and payload()['phone'] not in logs and payload()['link'] not in logs
+    assert 'call-1' not in logs
+
+
 def test_exact_phone_match_ambiguous_and_manual_link_survives_retry(db, make_user, api):
     owner=make_user(admin=True)
     first=CRMEntity(kind='contact',name='Первый',payload={'phone':'+7 900 111 22 33'},archived=False)
