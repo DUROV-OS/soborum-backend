@@ -1,7 +1,7 @@
 """Lossless read replica of the owner's MoySklad export. Never creates logins."""
 
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -27,6 +27,25 @@ class SourceLink(Base):
     source_key: Mapped[str] = mapped_column(String(500))
     target_type: Mapped[str] = mapped_column(String(100))
     target_id: Mapped[int] = mapped_column()
+
+
+class SupplierInvoiceStatus(Base):
+    __tablename__ = 'supplier_invoice_statuses'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str | None] = mapped_column(String(16), unique=True)
+    label: Mapped[str] = mapped_column(String(64))
+    label_key: Mapped[str] = mapped_column(String(128), unique=True)
+    version: Mapped[int] = mapped_column(default=1, server_default='1')
+
+
+class SupplierInvoiceStatusChoice(Base):
+    __tablename__ = 'supplier_invoice_status_choices'
+
+    invoice_id: Mapped[int] = mapped_column(ForeignKey('moysklad_records.id'), primary_key=True)
+    status_id: Mapped[int | None] = mapped_column(ForeignKey('supplier_invoice_statuses.id'))
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey('users.id'))
+    version: Mapped[int] = mapped_column(default=1, server_default='1')
 
 
 class ImportRun(Base):

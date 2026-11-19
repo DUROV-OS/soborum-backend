@@ -177,6 +177,11 @@ def search(db, user, query="", entity_type=None, archive="active", limit=50, off
         'newest': moment.desc().nulls_last(),
     }
     items = stmt.order_by(ordering[sort], SourceRecord.id).offset(offset).limit(limit).all()
+    if entity_type == 'invoicein':
+        from app.moysklad.supplier_invoices import invoice_columns
+        columns, statuses, can_edit = invoice_columns(db, user, items)
+        return {'total': count, 'items': [{**brief(row), 'invoice': columns[row.id]} for row in items],
+                'invoice_statuses': statuses, 'can_edit_invoice_statuses': can_edit}
     return {"total": count, "items": [brief(r) for r in items]}
 
 

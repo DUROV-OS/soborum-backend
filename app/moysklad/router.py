@@ -10,8 +10,10 @@ from app.moysklad import service
 
 app = FastAPI(title="МойСклад — перенесённые данные")
 from app.moysklad.recipes import router as recipes_router
+from app.moysklad.supplier_invoices import router as supplier_invoices_router
 
 app.include_router(recipes_router)
+app.include_router(supplier_invoices_router)
 
 
 @app.get("/catalog")
