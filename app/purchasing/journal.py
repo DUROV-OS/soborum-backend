@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import HTTPException
 from sqlalchemy import String, case, cast, func, or_, select
 from sqlalchemy.orm import Session
-from app.accounting.models import SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
+from app.accounting.models import Counterparty, SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
 from app.purchasing.models import PurchaseReceipt, PurchaseReturn
 from app.warehouse.models import Supplier
 
@@ -102,7 +102,12 @@ def orders(db: Session, *, query='', archive='active', supplier_id=None, payment
     ).offset(offset).limit(limit).all()
     invoices = invoices_by_order(db, page)
     received = defaultdict(Decimal)
+    counterparties = defaultdict(list)
     if page:
+        for supplier_id, counterparty_id in db.query(Counterparty.supplier_id, Counterparty.id).filter(
+            Counterparty.supplier_id.in_({row.supplier_id for row in page}),
+        ):
+            counterparties[supplier_id].append(counterparty_id)
         receipts = db.query(PurchaseReceipt.order_id, PurchaseReceipt.lines).filter(
             PurchaseReceipt.order_id.in_([row.id for row in page]),
             PurchaseReceipt.status == 'posted',
@@ -118,6 +123,7 @@ def orders(db: Session, *, query='', archive='active', supplier_id=None, payment
         'summary': summary,
         'items': [
             {**out(db, row), 'received_amount': f'{received[row.id]:.2f}',
+             'counterparty_id': counterparties[row.supplier_id][0] if len(counterparties[row.supplier_id]) == 1 else None,
              'invoice_totals': invoice_totals(invoices.get(row.id, [])),
              'invoice_missing_currency': any(not invoice['currency'] for invoice in invoices.get(row.id, []))}
             for row in page
