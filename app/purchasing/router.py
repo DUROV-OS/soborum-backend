@@ -1,6 +1,6 @@
 from datetime import date
 from typing import Literal
-from app.purchasing import journal
+from app.purchasing import journal, receipt_register
 from fastapi import FastAPI, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from app.core.deps import require_view, require_edit, require_full
@@ -216,14 +216,10 @@ def receipts(
         'oldest': PurchaseReceipt.occurred_at.asc(),
         'number': PurchaseReceipt.number.asc(),
     }
+    page = stmt.order_by(ordering[sort], PurchaseReceipt.id.desc()).offset(offset).limit(limit).all()
     return {
         "total": stmt.count(),
-        "items": [
-            service.receipt_out(row)
-            for row in stmt.order_by(ordering[sort], PurchaseReceipt.id.desc())
-            .offset(offset)
-            .limit(limit)
-        ],
+        "items": receipt_register.register_items(db, page),
     }
 
 
