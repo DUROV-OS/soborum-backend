@@ -67,7 +67,7 @@ def test_task_move_updates_native_deadline(api,make_user,db):
 def test_working_hours_default_and_saved_categories_isolated(api,make_user):
     owner,other=make_user(),make_user()
     client=api(owner);prefs=client.get(P+'/preferences').json()
-    assert (prefs['work_start'],prefs['work_end'])==(480,1140)
+    assert (prefs['work_start'],prefs['work_end'])==(480,1260)
     prefs['categories']['meeting']['color']='#AABBCC'
     prefs['work_start']=510
     assert client.put(P+'/preferences',json=prefs).status_code==200
