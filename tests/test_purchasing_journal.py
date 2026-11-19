@@ -1,5 +1,5 @@
 from datetime import datetime, timezone, timedelta
-from app.accounting.models import Organization, SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
+from app.accounting.models import Counterparty, CounterpartyKind, Organization, SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
 from app.purchasing.models import PurchaseReceipt, PurchaseReturn
 from app.moysklad.models import SourceRecord
 from test_purchasing_workflows import setup, receipt
@@ -129,11 +129,14 @@ def test_journal_filters_totals_and_pagination(db, api, make_user):
     base = db.get(SupplierOrder, order['id'])
     base.number = 'A'; base.comment = 'Нужен 100% сухой брус'; base.opening_paid = 50
     base.expected_at = datetime.now(timezone.utc).date() - timedelta(days=2)
+    counterparty = Counterparty(name=supplier.name, kind=CounterpartyKind.SUPPLIER, supplier_id=supplier.id)
+    db.add(counterparty)
     db.add(SupplierOrder(supplier_id=supplier.id, number='B', items=[], total_cost=80, opening_paid=80, status=SupplierOrderStatus.RECEIVED))
     db.add(SupplierOrder(supplier_id=supplier.id, number='C', items=[], total_cost=10, opening_paid=15, archived=True))
     db.commit()
     result = client.get('/api/purchasing/orders?limit=1').json()
     assert result['total'] == 2 and len(result['items']) == 1
+    assert result['items'][0]['counterparty_id'] == counterparty.id
     assert result['summary'][0] == dict(currency='RUB', total=280, paid=130, pending=0, net=280, unpaid=150, overpaid=0)
     for query in ('payment=partial', 'delivery=overdue', 'query=100%25', 'query=Брус', f'supplier_id={supplier.id}&sort=oldest&limit=1'):
         r = client.get('/api/purchasing/orders?' + query)
