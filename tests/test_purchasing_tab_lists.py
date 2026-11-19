@@ -1,10 +1,56 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from app.accounting.models import Counterparty
 from app.common.module_access import Module
-from app.moysklad.models import SourceRecord
+from app.moysklad.models import SourceLink, SourceRecord
 from app.purchasing.models import PurchaseReceipt, PurchaseReturn
 from test_purchasing_workflows import setup, receipt
+
+
+def test_receipt_register_uses_linked_documents_and_keeps_unknown_payment_empty(db, api, make_user):
+    client, _, supplier, material, order = setup(db, api, make_user)
+    response = client.post('/api/purchasing/receipts', json=receipt(order, material))
+    assert response.status_code == 201, response.text
+    current = db.get(PurchaseReceipt, response.json()['id'])
+    counterparty = Counterparty(name='Карточка поставщика', supplier_id=current.supplier_id)
+    db.add(counterparty)
+    db.flush()
+
+    fields = {column.name: getattr(current, column.name)
+              for column in PurchaseReceipt.__table__.columns if column.name != 'id'}
+    fields.update(number='П-история', source_id='receipt-doc', request_id=None, order_id=None)
+    imported = PurchaseReceipt(**fields)
+    db.add(imported)
+    for kind, identity, title, payload in [
+        ('store', 'store-doc', 'Склад в приёмке', {}),
+        ('organization', 'company-doc', 'Организация в приёмке', {}),
+        ('currency', 'currency-doc', 'Рубль', {'isoCode': 'RUB'}),
+        ('supply', 'receipt-doc', 'П-история', {
+            'store': {'id': 'store-doc'}, 'organization': {'id': 'company-doc'},
+            'agent': {'id': 'agent-doc'}, 'rate': {'currency': {'id': 'currency-doc'}},
+            'sum': 12475, 'payedSum': 7505, 'incomingNumber': 'И-007', 'incomingDate': '2026-11-18 10:00:00',
+        }),
+    ]:
+        db.add(SourceRecord(entity_type=kind, source_id=identity, title=title, search_text=title,
+                            payload=payload, state='Сверена' if kind == 'supply' else None))
+    db.add(SourceLink(source_key='counterparty/agent-doc', target_type='counterparties', target_id=counterparty.id))
+    db.commit()
+
+    response = client.get('/api/purchasing/receipts')
+    assert response.status_code == 200, response.text
+    items = {row['id']: row for row in response.json()['items']}
+    assert items[current.id]['counterparty_id'] == counterparty.id
+    assert items[current.id]['warehouse'] == material.warehouse.value
+    assert items[current.id]['paid'] is None
+    source = items[imported.id]
+    assert source['counterparty_id'] == counterparty.id
+    assert source['warehouse'] == 'Склад в приёмке'
+    assert source['organization_name'] == 'Организация в приёмке'
+    assert (source['amount'], source['paid'], source['currency']) == ('124.75', '75.05', 'RUB')
+    assert (source['incoming_number'], source['incoming_date'], source['status_label']) == (
+        'И-007', '2026-11-18', 'Сверена',
+    )
 
 
 def test_receipt_and_return_sort_applies_before_pagination(db, api, make_user):
