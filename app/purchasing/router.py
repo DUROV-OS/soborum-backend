@@ -38,6 +38,11 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
     from app.accounting.models import BankAccount
 
     return {
+        "organizations": [
+            {"id": org.id, "name": org.short_name}
+            for org in sorted(accounting.supplier_order_organizations(db).all(),
+                              key=lambda item: accounting.SUPPLIER_ORDER_ORGANIZATIONS.index(item.short_name))
+        ],
         "suppliers": [
             {"id": s.id, "name": s.name, "archived": s.status.value == "archived"}
             for s in db.query(Supplier).order_by(Supplier.name)
@@ -93,16 +98,21 @@ def order(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
 @app.get("/orders/{id}/documents")
 def order_documents(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
     from app.purchasing.invoices import invoices_by_order
+    from app.purchasing.receipt_links import invoice_receipts
     from app.purchasing.models import PurchaseReturn
     from sqlalchemy import or_
     row = service.get_order(db, id)
-    receipts = db.query(PurchaseReceipt).filter_by(order_id=id).order_by(PurchaseReceipt.occurred_at, PurchaseReceipt.id).all()
+    receipts = db.query(PurchaseReceipt).filter_by(order_id=id).all()
+    inferred = invoice_receipts(db, [row]).get(id, [])
+    docs = [service.receipt_out(receipt) for receipt in receipts]
+    docs.extend({**service.receipt_out(receipt), 'via_supplier_invoice': True} for receipt in inferred)
+    docs.sort(key=lambda receipt: (receipt['occurred_at'], receipt['id']))
     returns = db.query(PurchaseReturn).filter_by(order_id=id).order_by(PurchaseReturn.occurred_at, PurchaseReturn.id).all()
     return_ids = [r.id for r in returns]
     movements = db.query(MoneyMovement).filter(or_(MoneyMovement.supply_id == id, MoneyMovement.purchase_return_id.in_(return_ids))).order_by(MoneyMovement.created_at, MoneyMovement.id).all()
     return {
         'invoices': invoices_by_order(db, [row]).get(id, []),
-        'receipts': [service.receipt_out(r) for r in receipts],
+        'receipts': docs,
         'returns': [{'id': r.id, 'number': r.number, 'receipt_id': r.receipt_id, 'occurred_at': r.occurred_at, 'amount': r.amount, 'currency': r.currency, 'cancelled': r.cancelled} for r in returns],
         'payments': [{'id': m.id, 'number': m.external_number, 'created_at': m.created_at, 'amount': m.amount, 'currency': m.currency, 'status': m.status.value, 'refund': m.purchase_return_id is not None} for m in movements],
         'opening_paid': row.opening_paid,

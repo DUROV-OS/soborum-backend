@@ -1,8 +1,88 @@
 from datetime import datetime, timezone, timedelta
-from app.accounting.models import SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
-from app.purchasing.models import PurchaseReturn
+from app.accounting.models import Organization, SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
+from app.purchasing.models import PurchaseReceipt, PurchaseReturn
 from app.moysklad.models import SourceRecord
 from test_purchasing_workflows import setup, receipt
+
+
+def test_order_journal_totals_posted_receipts_at_actual_prices(db, api, make_user):
+    client, owner, supplier, material, order = setup(db, api, make_user)
+    path = '/api/purchasing/orders'
+    assert client.get(path).json()['items'][0]['received_amount'] == '0.00'
+    for quantity, price in [('2.5', '23.40'), ('1', '17.65')]:
+        current = client.get(f'{path}/{order["id"]}').json()
+        body = receipt(current, material, quantity=quantity)
+        body['lines'][0]['unit_price'] = price
+        response = client.post('/api/purchasing/receipts', json=body)
+        assert response.status_code == 201, response.text
+    for status, order_id in [('draft', order['id']), ('posted', None)]:
+        db.add(PurchaseReceipt(
+            actor_id=owner.id, supplier_id=supplier.id, order_id=order_id, status=status,
+            occurred_at=datetime.now(timezone.utc), lines=[{'quantity': 5, 'unit_price': 100}],
+        ))
+    db.commit()
+    row = client.get(path).json()['items'][0]
+    assert row['received_amount'] == '76.15'
+    assert row['total_cost'] == 200
+
+
+def test_posted_receipts_linked_via_supplier_invoices_are_counted_once(db, api, make_user):
+    client, owner, supplier, _, order = setup(db, api, make_user)
+    db.get(SupplierOrder, order['id']).source_id = 'source-order'
+    second = SupplierOrder(supplier_id=supplier.id, source_id='other-order', items=[], total_cost=100)
+    db.add(second)
+    for source_id, order_id in [('via-invoice', None), ('overlap', order['id']), ('conflict', None)]:
+        db.add(PurchaseReceipt(
+            actor_id=owner.id, supplier_id=supplier.id, order_id=order_id, status='posted',
+            occurred_at=datetime.now(timezone.utc), source_id=source_id,
+            lines=[{'quantity': 2, 'unit_price': 11}],
+        ))
+    for number, order_source, supply_refs in [
+        ('I1', 'source-order', ['via-invoice', 'overlap', 'conflict']),
+        ('I2', 'source-order', ['via-invoice']),
+        ('I3', 'other-order', ['conflict']),
+    ]:
+        db.add(SourceRecord(entity_type='invoicein', source_id=number, title=number, search_text='',
+            payload={'purchaseOrder': {'id': order_source}, 'supplies': [{'id': ref} for ref in supply_refs],
+                     'sum': 2200, 'applicable': True}))
+    db.commit()
+    path = '/api/purchasing/orders'
+    totals = {row['id']: row['received_amount'] for row in client.get(path).json()['items']}
+    assert totals == {order['id']: '44.00', second.id: '0.00'}
+    docs = client.get(f'{path}/{order["id"]}/documents').json()['receipts']
+    assert {d['source_id'] for d in docs} == {'via-invoice', 'overlap'}
+    assert [d['source_id'] for d in docs if d.get('via_supplier_invoice')] == ['via-invoice']
+
+
+def test_purchase_order_organization_is_selected_from_company_directory(db, api, make_user):
+    client, _, supplier, material, order = setup(db, api, make_user)
+    tech = db.query(Organization).filter_by(short_name='Технология').one()
+    group = db.query(Organization).filter_by(short_name='ИД Групп').one()
+    other = Organization(name='Другая компания', short_name='Другая компания')
+    db.add(other)
+    db.commit()
+    catalog = client.get('/api/purchasing/catalog').json()
+    assert catalog['organizations'] == [{'id': tech.id, 'name': 'Технология'}, {'id': group.id, 'name': 'ИД Групп'}]
+    body = {'supplier_id': supplier.id, 'items': order['items']}
+    path = '/api/purchasing/orders'
+    assert client.post(path, json={**body, 'organization_id': other.id}).status_code == 422
+    response = client.post(path, json={**body, 'organization_id': group.id})
+    assert response.status_code == 201, response.text
+    row = response.json()
+    assert row['organization_name'] == 'ИД Групп'
+    order_path = f'{path}/{row["id"]}'
+    response = client.patch(f'{order_path}?version={row["version"]}',
+                            json={'organization_id': tech.id, 'reason': 'Выбран покупатель по заказу'})
+    assert response.status_code == 200, response.text
+    row = response.json()
+    assert row['organization_id'] == tech.id
+    assert client.post('/api/purchasing/receipts', json=receipt(row, material)).status_code == 201
+    saved = client.get(order_path).json()
+    assert client.patch(f'{order_path}?version={saved["version"]}',
+                        json={'organization_id': group.id, 'reason': 'Проверка запрета'}).status_code == 409
+    listing = {item['id']: item for item in client.get(path).json()['items']}
+    assert listing[row['id']]['organization_name'] == 'Технология'
+    assert listing[order['id']]['organization_id'] is None
 
 
 def test_journal_invoices_total_only_issued_documents_linked_to_each_order(db, api, make_user):

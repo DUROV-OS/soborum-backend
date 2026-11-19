@@ -1643,6 +1643,20 @@ def list_supplier_orders(
     return list(db.execute(stmt).scalars().all())
 
 
+SUPPLIER_ORDER_ORGANIZATIONS = ("Технология", "ИД Групп")
+
+
+def supplier_order_organizations(db: Session):
+    return db.query(Organization).filter(
+        Organization.is_active.is_(True), Organization.short_name.in_(SUPPLIER_ORDER_ORGANIZATIONS),
+    )
+
+
+def require_supplier_order_organization(db: Session, organization_id: int) -> None:
+    if not supplier_order_organizations(db).filter(Organization.id == organization_id).first():
+        raise HTTPException(422, "Выберите действующую организацию: Технология или ИД Групп.")
+
+
 def create_supplier_order(db: Session, data: SupplierOrderCreate) -> SupplierOrder:
     supplier = db.query(Supplier).filter_by(id=data.supplier_id).populate_existing().with_for_update().first()
     if supplier is None:
@@ -1652,9 +1666,12 @@ def create_supplier_order(db: Session, data: SupplierOrderCreate) -> SupplierOrd
     _validate_order_items(data.items)
     if any(item.received_quantity for item in data.items):
         raise _bad_request("Количество полученного заполняется приёмками")
+    if data.organization_id is not None:
+        require_supplier_order_organization(db, data.organization_id)
 
     order = SupplierOrder(
         supplier_id=data.supplier_id,
+        organization_id=data.organization_id,
         items=[item.model_dump() for item in data.items],
         total_cost=_compute_order_total(data.items),
         expected_at=data.expected_at,

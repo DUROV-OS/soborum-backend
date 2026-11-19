@@ -14,7 +14,7 @@ def fail(message, code=409):
 
 
 def order_snapshot(row):
-    return {'number': row.number, 'supplier_id': row.supplier_id, 'items': deepcopy(row.items),
+    return {'number': row.number, 'supplier_id': row.supplier_id, 'organization_id': row.organization_id, 'items': deepcopy(row.items),
             'total_cost': str(row.total_cost), 'expected_at': str(row.expected_at) if row.expected_at else None,
             'comment': row.comment, 'status': row.status.value, 'version': row.version}
 
@@ -42,11 +42,17 @@ def received_by_line(db, order):
 
 
 def apply_order(db, row, body):
-    from app.accounting.service import _validate_order_items, _compute_order_total
+    from app.accounting.service import _validate_order_items, _compute_order_total, require_supplier_order_organization
     from app.purchasing.service import balance
     from app.warehouse.models import Supplier, SupplierStatus
     payload = body.model_dump(exclude_unset=True)
     has_history = has_receipts(db, row)
+    if body.organization_id is not None and body.organization_id != row.organization_id:
+        if row.source_id or has_history or row.opening_paid or db.query(MoneyMovement.id).filter_by(supply_id=row.id).first():
+            fail('Заказ связан с документами. Изменение организации требует их сверки.')
+        require_supplier_order_organization(db, body.organization_id)
+        row.organization_id = body.organization_id
+        db.expire(row, ['organization'])
     if body.supplier_id is not None and body.supplier_id != row.supplier_id:
         if has_history or row.opening_paid or db.query(MoneyMovement.id).filter_by(supply_id=row.id).first():
             fail('У заказа есть приёмки или платежи. Для другого поставщика создайте отдельный заказ.')

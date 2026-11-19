@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 from typing import Any
 
@@ -22,6 +23,22 @@ def _sid(v: Any) -> str | None:
     return None if v is None else str(v)
 
 
+def _preview_source(value):
+    if not isinstance(value, bytes):
+        return value
+    if value.startswith(b"RIFF") and value[8:12] == b"WEBP":
+        mime = "image/webp"
+    elif value.startswith(b"\xff\xd8\xff"):
+        mime = "image/jpeg"
+    elif value.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    elif value.startswith((b"GIF87a", b"GIF89a")):
+        mime = "image/gif"
+    else:
+        return None
+    return f"data:{mime};base64," + base64.b64encode(value).decode("ascii")
+
+
 def _fmt_attach(a: dict) -> dict:
     d = {
         "type": a.get("_type"),
@@ -37,9 +54,9 @@ def _fmt_attach(a: dict) -> dict:
         # VIDEO: длительность (мс), кадр-постер (data:image/webp) и его URL;
         # AUDIO (голосовое): длительность и картинка-волна (data:image/webp).
         "duration": a.get("duration"),
-        "previewData": a.get("previewData"),
-        "thumbnail": a.get("thumbnail"),
-        "wave": a.get("wave"),
+        "previewData": _preview_source(a.get("previewData")),
+        "thumbnail": _preview_source(a.get("thumbnail")),
+        "wave": _preview_source(a.get("wave")),
     }
     return {k: v for k, v in d.items() if v is not None}
 

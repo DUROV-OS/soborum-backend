@@ -1,8 +1,12 @@
-import json
 from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from app.max import client
+from app.max.wire import decode_frame, encode_frame
+
+@pytest.fixture(autouse=True)
+def offline_transport(monkeypatch):
+    monkeypatch.setattr(client, "_service_socket", lambda: None)
 
 class Socket:
     def __init__(self, reply):
@@ -10,8 +14,8 @@ class Socket:
         self.closed = False
     def settimeout(self, value): pass
     def connect(self, *args, **kwargs): pass
-    def send(self, value): pass
-    def recv(self): return json.dumps(self.frames.pop(0))
+    def send_binary(self, value): pass
+    def recv(self): return encode_frame(self.frames.pop(0))
     def close(self): self.closed = True
 
 @pytest.mark.parametrize('reply', [
@@ -43,7 +47,7 @@ def test_rejected_hello_never_attempts_auth(monkeypatch):
     socket = Socket({})
     socket.frames[0] = {'opcode':6,'seq':1,'cmd':3,'payload':{'error':'DO_NOT_LOG_TOKEN'}}
     sent = []
-    socket.send = lambda value: sent.append(json.loads(value)['opcode'])
+    socket.send_binary = lambda value: sent.append(decode_frame(value)['opcode'])
     monkeypatch.setattr(client, 'websocket', SimpleNamespace(WebSocket=lambda:socket))
     with pytest.raises(HTTPException) as error: client.MaxSession('DO_NOT_LOG_TOKEN').open()
     assert error.value.status_code == 502 and 'DO_NOT_LOG_TOKEN' not in error.value.detail

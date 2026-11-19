@@ -146,6 +146,7 @@ class SupplierOrder(Base):
     version: Mapped[int] = mapped_column(default=1, server_default="1")
     opening_paid: Mapped[float] = mapped_column(Numeric(18, 2, asdecimal=False), default=0, server_default="0")
     supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False)
+    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
     # позиции заказа: [{"material", "category", "quantity", "unit_price"}] —
     # цена на момент заказа, а не диапазон, как в SupplierPriceItem
     items: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
@@ -167,6 +168,7 @@ class SupplierOrder(Base):
     )
 
     supplier: Mapped["Supplier"] = relationship()  # noqa: F821
+    organization: Mapped["Organization | None"] = relationship()
 
 
 class Organization(Base):

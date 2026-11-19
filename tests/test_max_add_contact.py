@@ -5,13 +5,13 @@
 """
 
 import contextlib
-import json
 
 import pytest
 
 from app.common.module_access import Module
 from app.max import service
 from app.max.client import ContactError, MaxSession
+from app.max.wire import decode_frame, encode_frame
 
 VIEWER = "47422938"
 KNOWN = {"id": 96795400, "names": [{"name": "Виктория из контактов"}]}
@@ -140,12 +140,12 @@ class _FakeWs:
     def __init__(self, reply_payload, cmd):
         self.reply_payload, self.cmd, self.sent = reply_payload, cmd, []
 
-    def send(self, raw):
-        self.sent.append(json.loads(raw))
+    def send_binary(self, raw):
+        self.sent.append(decode_frame(raw))
 
     def recv(self):
         last = self.sent[-1]
-        return json.dumps({"opcode": last["opcode"], "seq": last["seq"], "cmd": self.cmd, "payload": self.reply_payload})
+        return encode_frame({"opcode": last["opcode"], "seq": last["seq"], "cmd": self.cmd, "payload": self.reply_payload})
 
 
 def _session_with(reply_payload, cmd=1):

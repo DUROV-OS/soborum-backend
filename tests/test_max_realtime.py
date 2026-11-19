@@ -202,12 +202,8 @@ def test_run_reconnects_and_resyncs_after_failures(monkeypatch, published):
     ])
     sent = []
 
-    class FakeWs:
-        def send(self, raw):
-            sent.append(raw)
-
     class FakeSession:
-        ws = FakeWs()
+        send_frame = staticmethod(sent.append)
         closed = False
 
         def _recv(self):
@@ -268,7 +264,8 @@ def test_listen_pings_and_gives_up_on_silence(monkeypatch, published):
     pings = []
 
     class FakeSession:
-        ws = None
+        def send_frame(self, frame):
+            pytest.fail("Unexpected server request")
 
         def _send(self, opcode, payload):
             pings.append((clock[0], opcode, payload))

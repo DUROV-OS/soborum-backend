@@ -2,11 +2,31 @@
 content-type и без обращения к настоящему MAX (get_attachment_url подменена).
 """
 
+import base64
+
 import httpx
 import pytest
+from fastapi.encoders import jsonable_encoder
 
 from app.common.module_access import Module
 from app.max import service as max_service
+
+
+def test_binary_poster_is_json_safe_in_chat_list_and_history():
+    poster = b"RIFF\xf8\x00\x00\x00WEBPVP8 "
+    thumbnail = "https://example.test/preview"
+    message = {"id": 12, "attaches": [{"_type": "VIDEO", "previewData": poster, "thumbnail": thumbnail}]}
+    chat = max_service._fmt_chat({"id": 10, "lastMessage": message}, {}, {})
+    preview = "data:image/webp;base64," + base64.b64encode(poster).decode("ascii")
+    for item in (chat["lastMessage"], max_service._fmt_msg(message)):
+        attach = jsonable_encoder(item)["attaches"][0]
+        assert attach["previewData"] == preview and attach["thumbnail"] == thumbnail
+
+
+def test_unreadable_binary_preview_keeps_attachment_and_fallback():
+    attach = max_service._fmt_attach({"_type": "VIDEO", "videoId": 14, "previewData": b"\xff\xfe",
+                                     "thumbnail": "https://example.test/poster"})
+    assert attach == {"type": "VIDEO", "videoId": "14", "thumbnail": "https://example.test/poster"}
 
 
 class _FakeStreamResponse:

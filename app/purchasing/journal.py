@@ -1,5 +1,7 @@
 """Server-side procurement journal; filters and totals cover all matching rows."""
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 from typing import Literal
 
@@ -7,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import String, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 from app.accounting.models import SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
-from app.purchasing.models import PurchaseReturn
+from app.purchasing.models import PurchaseReceipt, PurchaseReturn
 from app.warehouse.models import Supplier
 
 PaymentFilter = Literal['all', 'unpaid', 'partial', 'paid', 'overpaid', 'pending']
@@ -61,8 +63,9 @@ def balances():
 
 
 def orders(db: Session, *, query='', archive='active', supplier_id=None, payment='all', delivery='all', date_from=None, date_to=None, sort='newest', offset=0, limit=50):
-    from app.purchasing.service import out
+    from app.purchasing.service import dec, out
     from app.purchasing.invoices import invoices_by_order, totals as invoice_totals
+    from app.purchasing.receipt_links import invoice_receipts
     paid, pending, net, unpaid = balances()
     stmt = db.query(SupplierOrder).join(Supplier)
     if archive != 'all':
@@ -98,11 +101,24 @@ def orders(db: Session, *, query='', archive='active', supplier_id=None, payment
         ordering, SupplierOrder.id.asc() if sort == 'oldest' else SupplierOrder.id.desc(),
     ).offset(offset).limit(limit).all()
     invoices = invoices_by_order(db, page)
+    received = defaultdict(Decimal)
+    if page:
+        receipts = db.query(PurchaseReceipt.order_id, PurchaseReceipt.lines).filter(
+            PurchaseReceipt.order_id.in_([row.id for row in page]),
+            PurchaseReceipt.status == 'posted',
+        )
+        receipt_lines = list(receipts)
+        for order_id, linked in invoice_receipts(db, page).items():
+            receipt_lines.extend((order_id, receipt.lines) for receipt in linked)
+        for order_id, lines in receipt_lines:
+            amount = sum((dec(line['quantity']) * dec(line['unit_price']) for line in lines), Decimal(0))
+            received[order_id] += amount.quantize(Decimal('0.01'))
     return {
         'total': stmt.count(),
         'summary': summary,
         'items': [
-            {**out(db, row), 'invoice_totals': invoice_totals(invoices.get(row.id, [])),
+            {**out(db, row), 'received_amount': f'{received[row.id]:.2f}',
+             'invoice_totals': invoice_totals(invoices.get(row.id, [])),
              'invoice_missing_currency': any(not invoice['currency'] for invoice in invoices.get(row.id, []))}
             for row in page
         ],
