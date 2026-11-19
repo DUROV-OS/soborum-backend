@@ -3,6 +3,7 @@
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -274,6 +275,7 @@ def receipt_detail(id: int, db: Session = Depends(get_db), user: User = Depends(
 def listing(
     archive: str = Query("active", pattern="^(active|archived|all)$"),
     receipt_id: int | None = None,
+    sort: Literal["newest", "oldest", "number"] = "newest",
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -284,12 +286,17 @@ def listing(
         query = query.filter_by(archived=archive == "archived")
     if receipt_id is not None:
         query = query.filter_by(receipt_id=receipt_id)
+    ordering = {
+        'newest': PurchaseReturn.occurred_at.desc(),
+        'oldest': PurchaseReturn.occurred_at.asc(),
+        'number': PurchaseReturn.number.asc(),
+    }
     return {
         "total": query.count(),
         "items": [
             out(db, r)
             for r in query.order_by(
-                PurchaseReturn.occurred_at.desc(), PurchaseReturn.id.desc()
+                ordering[sort], PurchaseReturn.id.desc()
             )
             .offset(offset)
             .limit(limit)

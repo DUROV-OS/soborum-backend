@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import Depends, FastAPI, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -22,12 +24,13 @@ def records(
     query: str = Query("", max_length=300),
     entity_type: str | None = None,
     archive: str = Query("active", pattern="^(active|archived|all)$"),
+    sort: Literal["name", "newest", "oldest"] = "name",
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    return service.search(db, user, query, entity_type, archive, limit, offset)
+    return service.search(db, user, query, entity_type, archive, limit, offset, sort)
 
 
 @app.get("/records/{record_id}")

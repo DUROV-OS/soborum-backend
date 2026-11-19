@@ -1,4 +1,5 @@
 from datetime import date
+from typing import Literal
 from app.purchasing import journal
 from fastapi import FastAPI, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
@@ -172,6 +173,7 @@ def receipts(
     supplier_id: int | None = Query(None, gt=0),
     date_from: date | None = None,
     date_to: date | None = None,
+    sort: Literal["newest", "oldest", "number"] = "newest",
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -189,11 +191,16 @@ def receipts(
         stmt = stmt.outerjoin(Supplier).filter(or_(*[col.ilike(term, escape="\\") for col in
             (PurchaseReceipt.number, PurchaseReceipt.note, Supplier.name)], journal.item_search(db, PurchaseReceipt.lines, 'title', term)))
     stmt = journal.period(stmt, PurchaseReceipt.occurred_at, date_from, date_to)
+    ordering = {
+        'newest': PurchaseReceipt.occurred_at.desc(),
+        'oldest': PurchaseReceipt.occurred_at.asc(),
+        'number': PurchaseReceipt.number.asc(),
+    }
     return {
         "total": stmt.count(),
         "items": [
             service.receipt_out(row)
-            for row in stmt.order_by(PurchaseReceipt.occurred_at.desc(), PurchaseReceipt.id.desc())
+            for row in stmt.order_by(ordering[sort], PurchaseReceipt.id.desc())
             .offset(offset)
             .limit(limit)
         ],
