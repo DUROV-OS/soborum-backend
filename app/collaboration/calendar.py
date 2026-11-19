@@ -47,7 +47,7 @@ class Input(Strict):
     timezone: str = 'Europe/Moscow'
     description: str = Field(default='', max_length=10000)
     location: str = Field(default='', max_length=1000)
-    category: Literal['meeting','work','personal','anniversary'] = 'meeting'
+    category: Literal['meeting','briefing','work','personal','anniversary'] = 'meeting'
     availability: Literal['busy','free','away'] = 'busy'
     recurrence: Literal['none','daily','weekly','monthly'] = 'none'
     count: int = Field(default=1, ge=1, le=366)

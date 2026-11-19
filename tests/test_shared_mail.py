@@ -128,7 +128,7 @@ def test_explicit_shared_mail_access_and_denial(api,make_user,imap,monkeypatch):
 def test_folder_counts_search_scope_and_flags(api,make_user,imap):
     client=api(make_user(admin=True))
     rows=client.get('/api/mail/folders').json()
-    assert [f['name'] for f in rows]==['Входящие','Sent']
+    assert [f['name'] for f in rows]==['Входящие','Отправленные']
     assert rows[0]['unread']==42 and rows[0]['total']==300
     folder=rows[1]['id']
     result=client.get('/api/mail/messages',params={'folder_id':folder,'q':'дом "А"'})
@@ -220,3 +220,13 @@ def test_unknown_encoding_and_binary_mail():
     assert service.message_text(message) == 'Hello'
     binary = BytesParser(policy=policy.default).parsebytes(b'Content-Type: application/octet-stream\r\n\r\nx')
     assert service.message_text(binary) == ''
+
+
+def test_russian_system_folders_preserve_transport_names():
+    for name,label in [('Sent','Отправленные'),('Drafts','Черновики'),('Trash','Корзина'),('Junk','Спам'),('Archive','Архив'),('Outbox','Исходящие')]:
+        assert service.folder_label(name)==label
+        assert service.folder_name(service.folder_id(name))==name
+    assert service.folder_label('INBOX.Sent',delimiter='.')=='Отправленные'
+    assert service.folder_label('INBOX/Archive/2026',delimiter='/')=='Архив / 2026'
+    assert service.folder_label('provider-folder',flags=['\\Trash'])=='Корзина'
+    assert service.folder_label('Договоры')=='Договоры'

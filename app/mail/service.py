@@ -199,13 +199,24 @@ def folder_name(id: str | None):
     except (ValueError,UnicodeError): raise HTTPException(422,'Некорректная папка') from None
 
 
-def folder_label(name: str):
+def folder_label(name: str, flags=(), delimiter=None):
     def decode(match):
         if not match[1]: return '&'
         raw=match[1].replace(',','/')
         try: return base64.b64decode(raw+'='*(-len(raw)%4)).decode('utf-16-be')
         except (ValueError,UnicodeError): return match[0]
-    return re.sub(r'&([^-]*)-',decode,name)
+    decoded=re.sub(r'&([^-]*)-',decode,name)
+    special={'\\sent':'Отправленные','\\drafts':'Черновики','\\trash':'Корзина','\\junk':'Спам','\\archive':'Архив','\\all':'Вся почта','\\flagged':'Отмеченные'}
+    for flag in flags:
+        label=special.get(flag.lower())
+        if label:return label
+    names={'inbox':'Входящие','sent':'Отправленные','sent items':'Отправленные','sent messages':'Отправленные',
+           'draft':'Черновики','drafts':'Черновики','trash':'Корзина','deleted':'Корзина','deleted items':'Корзина','deleted messages':'Корзина',
+           'spam':'Спам','junk':'Спам','junk e-mail':'Спам','junk email':'Спам','archive':'Архив','archives':'Архив',
+           'outbox':'Исходящие','all mail':'Вся почта','all messages':'Вся почта','starred':'Отмеченные','flagged':'Отмеченные','important':'Важные'}
+    parts=decoded.split(delimiter) if delimiter else [decoded]
+    if len(parts)>1 and parts[0].upper()=='INBOX':parts=parts[1:]
+    return ' / '.join(names.get(part.casefold(),part) for part in parts)
 
 
 def list_folders():
@@ -215,16 +226,16 @@ def list_folders():
         for row in rows:
             if not row: continue
             raw,literal=row if isinstance(row,tuple) else (row,None)
-            match=re.match(rb'\(([^)]*)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(.+)$',raw)
+            match=re.match(rb'\(([^)]*)\)\s+("(?:[^"\\]|\\.)*"|NIL)\s+(.+)$',raw)
             if not match or b'\\noselect' in match[1].lower().split(): continue
-            name=(literal if literal is not None else match[2]).decode('ascii')
+            name=(literal if literal is not None else match[3]).decode('ascii')
             if literal is None and name.startswith('"') and name.endswith('"'):
                 name=re.sub(r'\\(.)',r'\1',name[1:-1])
             stats=checked(connection.status(quote_folder(name),'(MESSAGES UNSEEN)'))
             raw_stats=b' '.join(x for x in stats if isinstance(x,bytes))
             total=re.search(rb'\bMESSAGES (\d+)',raw_stats)
             unread=re.search(rb'\bUNSEEN (\d+)',raw_stats)
-            result.append({'id':folder_id(name),'name':'Входящие' if name.upper()=='INBOX' else folder_label(name),'inbox':name.upper()=='INBOX',
+            result.append({'id':folder_id(name),'name':'Входящие' if name.upper()=='INBOX' else folder_label(name,match[1].decode('ascii').split(),match[2][1:-1].decode('ascii') if match[2]!=b'NIL' else None),'inbox':name.upper()=='INBOX',
                            'total':int(total[1]) if total else None,'unread':int(unread[1]) if unread else None})
         return sorted(result,key=lambda x:(not x['inbox'],x['name'].casefold()))
 
