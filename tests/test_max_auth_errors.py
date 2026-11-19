@@ -4,6 +4,10 @@ from fastapi import HTTPException
 from app.max import client
 from app.max.wire import decode_frame, encode_frame
 
+@pytest.fixture(autouse=True)
+def offline_transport(monkeypatch):
+    monkeypatch.setattr(client, "_service_socket", lambda: None)
+
 class Socket:
     def __init__(self, reply):
         self.frames = [{'opcode':6,'seq':1,'cmd':1,'payload':{}}, {'opcode':19,'seq':2, **reply}]

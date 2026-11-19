@@ -15,8 +15,11 @@ read-only, БД не трогаем — кроме upload_file (0015), кото�
 from __future__ import annotations
 
 import contextlib
+import socket
+import ssl
 import time
 import urllib.parse
+import urllib.request
 import uuid
 
 import httpx
@@ -77,6 +80,17 @@ class AuthRejected(HTTPException):
         super().__init__(502, "Рабочий аккаунт MAX требует повторного входа владельцем")
 
 
+def _service_socket():
+    # Keep configured proxies on the library's existing connection path.
+    if {"http", "https", "all", "ws", "wss"}.intersection(urllib.request.getproxies()):
+        return None
+    endpoint = urllib.parse.urlsplit(WS_URL)
+    # create_connection tries the remaining DNS addresses even after a TCP timeout.
+    with socket.create_connection((endpoint.hostname, endpoint.port or 443), timeout=3) as tcp:
+        tcp.settimeout(15)
+        return ssl.create_default_context().wrap_socket(tcp, server_hostname=endpoint.hostname)
+
+
 class MaxSession:
     """Одно websocket-соединение; HELLO + AUTH выполняются в open()."""
 
@@ -131,7 +145,7 @@ class MaxSession:
     def open_transport(self) -> "MaxSession":
         self.ws = websocket.WebSocket()
         self.ws.settimeout(15)
-        self.ws.connect(WS_URL, origin=ORIGIN, header=[f"User-Agent: {UA}"])
+        self.ws.connect(WS_URL, origin=ORIGIN, header=[f"User-Agent: {UA}"], socket=_service_socket())
 
         s = self._send(6, {
             "userAgent": {

@@ -1,10 +1,12 @@
 import struct
+import socket
+from types import SimpleNamespace
 
 import lz4.block
 import msgpack
 import pytest
 
-from app.max import wire
+from app.max import client, wire
 from app.max.client import MaxSession
 from app.max.listener import FrameHandler
 
@@ -48,3 +50,37 @@ def test_sequence_wrap_and_keepalive_reply():
     handler.handle({"ver": 10, "cmd": 0, "seq": 65535, "opcode": 1, "payload": None})
     handler.handle({"ver": 10, "cmd": 0, "seq": 0, "opcode": 1, "payload": None})
     assert [f["seq"] for f in frames] == [0, 65535, 0]
+
+
+def test_connection_tries_second_dns_address_and_verifies_original_host(monkeypatch):
+    attempts = []
+    dns_ips = ["192.0.2.1", "192.0.2.2"]
+
+    class Socket:
+        def __init__(self, *args): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): self.close()
+        def close(self): pass
+        def settimeout(self, seconds): pass
+        def connect(self, address):
+            attempts.append(address)
+            if address[0] == dns_ips[0]:
+                raise TimeoutError
+
+    hosts = []
+    def wrap(tcp, *, server_hostname):
+        hosts.append(server_hostname)
+        return "verified TLS socket"
+
+    addresses = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, 443)) for ip in dns_ips]
+    monkeypatch.setattr(client.urllib.request, "getproxies", lambda: {})
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: addresses)
+    monkeypatch.setattr(socket, "socket", Socket)
+    monkeypatch.setattr(client.ssl, "create_default_context", lambda: SimpleNamespace(wrap_socket=wrap))
+    assert client._service_socket() == "verified TLS socket"
+    assert attempts == [(ip, 443) for ip in dns_ips] and hosts == ["api.oneme.ru"]
+
+
+def test_configured_proxy_stays_in_use(monkeypatch):
+    monkeypatch.setattr(client.urllib.request, "getproxies", lambda: {"https": "http://proxy.test"})
+    assert client._service_socket() is None
