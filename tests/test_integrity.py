@@ -28,10 +28,11 @@ def test_integrity_migration_follows_the_current_private_schema():
     from app.core.readiness import expected_heads
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    assert expected_heads() == frozenset({"poorg19112601"})
+    assert expected_heads() == frozenset({"ivsts19112601"})
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
     assert scripts.get_revision("cparty18112601").down_revision == "drive18112601"
     assert scripts.get_revision("poorg19112601").down_revision == "cparty18112601"
+    assert scripts.get_revision("ivsts19112601").down_revision == "poorg19112601"
     assert scripts.get_revision("cal1711202601").down_revision == "cal1611202601"
     assert scripts.get_revision("cal1611202601").down_revision == "cp1411202601"
 
