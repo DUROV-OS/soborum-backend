@@ -38,6 +38,11 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
     from app.accounting.models import BankAccount
 
     return {
+        "organizations": [
+            {"id": org.id, "name": org.short_name}
+            for org in sorted(accounting.supplier_order_organizations(db).all(),
+                              key=lambda item: accounting.SUPPLIER_ORDER_ORGANIZATIONS.index(item.short_name))
+        ],
         "suppliers": [
             {"id": s.id, "name": s.name, "archived": s.status.value == "archived"}
             for s in db.query(Supplier).order_by(Supplier.name)

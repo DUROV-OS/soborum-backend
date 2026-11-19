@@ -5,7 +5,7 @@ by the main migration, so importing them must never post stock a second time.
 """
 
 from decimal import Decimal
-from app.accounting.models import SupplierOrder, SupplierOrderStatus
+from app.accounting.models import Organization, SupplierOrder, SupplierOrderStatus
 from app.moysklad.models import SourceRecord, SourceLink
 from app.moysklad.importer import ref, rows, rub, moment
 from app.purchasing.models import PurchaseReceipt
@@ -23,6 +23,7 @@ def import_native(db, owner_id):
     }
     counterparties = {r.source_id: r for r in source["counterparty"]}
     links = {(r.source_key, r.target_type): r.target_id for r in db.query(SourceLink)}
+    organization_ids = {id for (id,) in db.query(Organization.id)}
     material_units = {m.id: m.unit for m in db.query(WarehouseMaterial)}
     suppliers = {}
     created = {"orders": 0, "receipts": 0, "suppliers": 0}
@@ -75,12 +76,14 @@ def import_native(db, owner_id):
         items = [line(p, ref(raw.get("store")), raw) for p in rows(raw.get("positions"))]
         complete = bool(items) and all(p["received_quantity"] >= p["quantity"] for p in items)
         partial = any(p["received_quantity"] for p in items)
+        organization_id = links.get(("organization/" + ref(raw.get("organization")), "organizations"))
         row = SupplierOrder(
             source_id=source_row.source_id,
             number=source_row.title[:255],
             source_state=source_row.state,
             archived=source_row.archived,
             supplier_id=supplier(raw),
+            organization_id=organization_id if organization_id in organization_ids else None,
             items=items,
             total_cost=rub(raw.get("sum")),
             opening_paid=rub(raw.get("payedSum")),

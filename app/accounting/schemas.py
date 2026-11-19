@@ -298,6 +298,7 @@ class SupplierOrderItem(BaseModel):
 
 class SupplierOrderCreate(BaseModel):
     supplier_id: int
+    organization_id: int | None = Field(default=None, gt=0)
     items: list[SupplierOrderItem]
     expected_at: date | None = None
     comment: str | None = None
@@ -306,6 +307,7 @@ class SupplierOrderCreate(BaseModel):
 class SupplierOrderUpdate(BaseModel):
     number: str | None = Field(default=None, min_length=1, max_length=255)
     supplier_id: int | None = Field(default=None, gt=0)
+    organization_id: int | None = Field(default=None, gt=0)
     reason: str = Field(default='', max_length=1000)
     items: list[SupplierOrderItem] | None = None
     expected_at: date | None = None
@@ -322,6 +324,8 @@ class SupplierOrderOut(BaseModel):
     id: int
     supplier_id: int
     supplier_name: str | None = None
+    organization_id: int | None = None
+    organization_name: str | None = None
     items: list[SupplierOrderItem]
     total_cost: float
     currency: str
@@ -336,6 +340,7 @@ class SupplierOrderOut(BaseModel):
     def from_order(cls, order) -> "SupplierOrderOut":
         out = cls.model_validate(order)
         out.supplier_name = order.supplier.name if order.supplier else None
+        out.organization_name = order.organization.short_name if order.organization else None
         return out
 
 
