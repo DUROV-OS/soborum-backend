@@ -1,7 +1,47 @@
 from datetime import datetime, timezone, timedelta
 from app.accounting.models import SupplierOrder, SupplierOrderStatus, MoneyMovement, MoneyMovementStatus
 from app.purchasing.models import PurchaseReturn
+from app.moysklad.models import SourceRecord
 from test_purchasing_workflows import setup, receipt
+
+
+def test_journal_invoices_total_only_issued_documents_linked_to_each_order(db, api, make_user):
+    client, _, supplier, _, order = setup(db, api, make_user)
+    db.get(SupplierOrder, order['id']).source_id = 'source-order'
+    empty_order = SupplierOrder(
+        supplier_id=supplier.id, number='Без счёта', source_id='other-order', items=[], total_cost=80,
+    )
+    db.add(empty_order)
+    db.add(SourceRecord(entity_type='currency', source_id='usd', title='USD', search_text='', payload={'isoCode': 'USD'}))
+
+    def invoice(number, amount, *, linked='source-order', applicable=True, archived=False, kind='invoicein', currency=None):
+        payload = {'sum': amount, 'applicable': applicable, 'incomingNumber': number}
+        if linked:
+            payload['purchaseOrder'] = {'meta': {'type': 'purchaseorder', 'href': f'https://example.invalid/entity/purchaseorder/{linked}'}}
+        if currency:
+            payload['rate'] = {'currency': {'id': currency}}
+        db.add(SourceRecord(entity_type=kind, source_id=number, title=number, search_text='', payload=payload, archived=archived))
+
+    invoice('A', 12345)
+    invoice('B', 10055.0)
+    invoice('C', 4000, currency='usd')
+    invoice('draft', 8000, applicable=False)
+    invoice('archived', 8000, archived=True)
+    invoice('unlinked', 8000, linked=None)
+    invoice('separate', 8000, linked='third-order')
+    invoice('facture', 8000, kind='facturein')
+    db.commit()
+
+    response = client.get('/api/purchasing/orders')
+    assert response.status_code == 200, response.text
+    rows = {row['id']: row for row in response.json()['items']}
+    assert rows[order['id']]['invoice_totals'] == [
+        {'currency': 'RUB', 'amount': '224.00'}, {'currency': 'USD', 'amount': '40.00'},
+    ]
+    assert rows[order['id']]['unpaid'] == 200
+    assert rows[empty_order.id]['invoice_totals'] == []
+    documents = client.get(f'/api/purchasing/orders/{order["id"]}/documents').json()
+    assert [invoice['number'] for invoice in documents['invoices']] == ['A', 'B', 'C']
 
 
 def test_journal_filters_totals_and_pagination(db, api, make_user):

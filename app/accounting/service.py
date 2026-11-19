@@ -1644,9 +1644,10 @@ def list_supplier_orders(
 
 
 def create_supplier_order(db: Session, data: SupplierOrderCreate) -> SupplierOrder:
-    if db.get(Supplier, data.supplier_id) is None:
+    supplier = db.query(Supplier).filter_by(id=data.supplier_id).populate_existing().with_for_update().first()
+    if supplier is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Поставщик не найден")
-    if db.get(Supplier, data.supplier_id).status.value == "archived":
+    if supplier.status.value == "archived":
         raise _bad_request("Поставщик находится в архиве")
     _validate_order_items(data.items)
     if any(item.received_quantity for item in data.items):

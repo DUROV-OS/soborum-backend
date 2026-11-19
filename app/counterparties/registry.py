@@ -6,12 +6,12 @@ from pydantic import Field, model_validator
 from sqlalchemy import select
 
 from app.accounting.evidence_schemas import Citation, Strict
-from app.accounting.models import Counterparty, CounterpartyKind
+from app.accounting.models import Counterparty, CounterpartyKind, SupplierOrder, SupplierOrderStatus
 from app.clients.models import Client, ContractSource
 from app.common.files import FileAsset, FilePurpose, file_integrity
 from app.common.module_access import AccessLevel, Module
 from app.purchasing import controls
-from app.warehouse.models import Supplier
+from app.warehouse.models import Supplier, SupplierStatus
 from . import service
 from .models import Change, Contact, Details
 
@@ -64,8 +64,10 @@ def digits(value):
     return ''.join(char for char in value if char in '0123456789')
 
 
-def list_rows(db, user, *, q, name, inn, kpp, phone, statuses, comment, sort, direction, offset, limit):
+def list_rows(db, user, *, q, name, inn, kpp, phone, statuses, comment, sort, direction, archive, offset, limit):
     visible = visible_rows(db, user)
+    if archive != 'all':
+        visible = visible.filter(Counterparty.is_active.is_(archive == 'active'))
     rows = visible.add_entity(Details).add_columns(Supplier.contacts).outerjoin(
         Details, Details.counterparty_id == Counterparty.id
     ).outerjoin(Supplier, Supplier.id == Counterparty.supplier_id).all()
@@ -217,6 +219,57 @@ def edit(db, user, id, body):
         request_hash=service.digest(request),
         data={'kind': 'registry_edit', 'before': before, 'after': after,
               'source': {'kind': 'document', 'proof': proof} if proof else {'kind': 'manual'}},
+    ))
+    db.commit()
+    return after
+
+
+class ArchiveCounterparty(Strict):
+    request_id: UUID
+    etag: str = Field(min_length=64, max_length=64)
+    archived: bool
+
+
+def archive_counterparty(db, user, id, body):
+    service.lock(db)
+    request = {'id': id, 'archive': body.model_dump(mode='json')}
+    repeated = service.replay(db, user, body.request_id, request)
+    if repeated:
+        return repeated
+    cp = service.get(db, id, user, edit=True)
+    before = service.out(db, cp, user)
+    if body.etag != before['etag']:
+        raise HTTPException(409, 'Карточку изменил другой сотрудник. Обновите список.')
+    if cp.is_active == (not body.archived):
+        return before
+
+    if cp.supplier_id:
+        supplier = db.query(Supplier).filter_by(id=cp.supplier_id).populate_existing().with_for_update().first()
+        if supplier is None or db.query(Counterparty.id).filter(
+            Counterparty.supplier_id == cp.supplier_id, Counterparty.id != cp.id,
+        ).first():
+            raise HTTPException(409, 'Сначала проверьте связь карточки с поставщиком.')
+        if body.archived and db.query(SupplierOrder.id).filter(
+            SupplierOrder.supplier_id == supplier.id,
+            SupplierOrder.archived.is_(False),
+            SupplierOrder.status != SupplierOrderStatus.RECEIVED,
+        ).first():
+            raise HTTPException(409, 'У поставщика есть незавершённые заказы. Завершите их перед удалением.')
+        supplier.status = SupplierStatus.ARCHIVED if body.archived else SupplierStatus.ACTIVE
+
+    cp.is_active = not body.archived
+    profile = db.get(Details, id)
+    if profile is None:
+        profile = Details(counterparty_id=id, version=0, data={})
+        db.add(profile)
+    profile.version += 1
+    db.flush()
+    after = service.out(db, cp, user)
+    db.add(Change(
+        counterparty_id=id, actor_id=user.id, request_id=str(body.request_id),
+        request_hash=service.digest(request),
+        data={'kind': 'archive' if body.archived else 'restore', 'before': before,
+              'after': after, 'source': {'kind': 'manual'}},
     ))
     db.commit()
     return after

@@ -92,6 +92,7 @@ def order(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
 
 @app.get("/orders/{id}/documents")
 def order_documents(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    from app.purchasing.invoices import invoices_by_order
     from app.purchasing.models import PurchaseReturn
     from sqlalchemy import or_
     row = service.get_order(db, id)
@@ -100,6 +101,7 @@ def order_documents(id: int, db: Session = Depends(get_db), user: User = Depends
     return_ids = [r.id for r in returns]
     movements = db.query(MoneyMovement).filter(or_(MoneyMovement.supply_id == id, MoneyMovement.purchase_return_id.in_(return_ids))).order_by(MoneyMovement.created_at, MoneyMovement.id).all()
     return {
+        'invoices': invoices_by_order(db, [row]).get(id, []),
         'receipts': [service.receipt_out(r) for r in receipts],
         'returns': [{'id': r.id, 'number': r.number, 'receipt_id': r.receipt_id, 'occurred_at': r.occurred_at, 'amount': r.amount, 'currency': r.currency, 'cancelled': r.cancelled} for r in returns],
         'payments': [{'id': m.id, 'number': m.external_number, 'created_at': m.created_at, 'amount': m.amount, 'currency': m.currency, 'status': m.status.value, 'refund': m.purchase_return_id is not None} for m in movements],
