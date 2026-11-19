@@ -10,6 +10,9 @@ _INSECURE_JWT_SECRETS = {"", "change-me-in-production", "changeme", "secret"}
 
 
 class Settings(BaseSettings):
+    # Explicit owner -> full meeting delegates; no implicit administrator sharing.
+    meeting_delegations: dict[int, list[int]] = {}
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # "prod" (default) hard-fails on insecure secrets; "dev" downgrades to a warning
