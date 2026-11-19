@@ -24,6 +24,8 @@ app = FastAPI(title="Закупки и приёмки")
 app.include_router(returns_router)
 from app.purchasing.control_router import router as control_router
 app.include_router(control_router)
+from app.purchasing.order_files import router as order_files_router
+app.include_router(order_files_router)
 from app.purchasing.receipt_editing import router as receipt_edit_router
 app.include_router(receipt_edit_router)
 from app.purchasing.reconciliation import router as reconciliation_router
@@ -93,6 +95,12 @@ def orders(
 @app.get("/orders/{id}")
 def order(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
     return service.out(db, service.get_order(db, id))
+
+
+@app.get("/orders/{id}/positions")
+def order_positions(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    from app.purchasing.order_positions import positions
+    return positions(db, service.get_order(db, id))
 
 
 @app.get("/orders/{id}/documents")

@@ -13,6 +13,13 @@ from app.warehouse.models import Supplier, SupplierStatus, WarehouseMaterial
 from app.users.models import User, UserRole
 
 
+def imported_unit_price(position, document):
+    price = rub(position.get('price')) * (1 - Decimal(str(position.get('discount', 0))) / 100)
+    if document.get('vatEnabled') and not document.get('vatIncluded'):
+        price *= 1 + Decimal(str(position.get('vat') or 0)) / 100
+    return price
+
+
 def import_native(db, owner_id):
     owner = db.get(User, owner_id)
     if not owner or not owner.is_active or owner.role != UserRole.ADMIN:
@@ -54,9 +61,7 @@ def import_native(db, owner_id):
     def line(raw, store, document):
         a = raw.get("assortment") or {}
         mid = links.get(("stock/" + ref(a) + "/" + store, "warehouse_materials"))
-        price = rub(raw.get("price")) * (1 - Decimal(str(raw.get("discount", 0))) / 100)
-        if document.get("vatEnabled") and not document.get("vatIncluded"):
-            price *= 1 + Decimal(str(raw.get("vat") or 0)) / 100
+        price = imported_unit_price(raw, document)
         return {
             "material": str(a.get("name") or ref(a)),
             "category": None,

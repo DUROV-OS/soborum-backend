@@ -1714,9 +1714,15 @@ def update_supplier_order(db: Session, order: SupplierOrder, data: SupplierOrder
 
 def delete_supplier_order(db: Session, order: SupplierOrder) -> None:
     from app.purchasing.models import PurchaseReceipt
+    from app.purchasing.control_models import PurchaseControlRecord
+    from app.purchasing.order_files import KIND
+    from app.purchasing.service import get_order
 
+    order = get_order(db, order.id, lock=True)
     if order.source_id or db.query(PurchaseReceipt.id).filter_by(order_id=order.id).first():
         raise _conflict("Заказ с историей сохраняется в архиве")
+    if db.query(PurchaseControlRecord.id).filter_by(order_id=order.id, kind=KIND).first():
+        raise _conflict("Заказ с файлами сохраняется в архиве")
     if order.status is not SupplierOrderStatus.ORDERED:
         raise _conflict("Удалить можно только заказ в статусе «заказана»")
     supplier_id = order.supplier_id
