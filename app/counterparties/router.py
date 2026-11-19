@@ -59,6 +59,7 @@ def registry(
     comment: str = Query('', max_length=255),
     sort: listing.Sort = 'name',
     direction: Literal['asc', 'desc'] = 'asc',
+    archive: Literal['active', 'archived', 'all'] = 'all',
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -66,7 +67,7 @@ def registry(
 ):
     return listing.list_rows(
         db, user, q=q, name=name, inn=inn, kpp=kpp, phone=phone, statuses=set(status),
-        comment=comment, sort=sort, direction=direction, offset=offset, limit=limit,
+        comment=comment, sort=sort, direction=direction, archive=archive, offset=offset, limit=limit,
     )
 
 
@@ -78,6 +79,11 @@ def registry_profiles(role: listing.Role, q: str = Query('', max_length=255), db
 @router.patch('/{id}/registry')
 def edit_registry(id: int, body: listing.RegistryEdit, db: Session = Depends(get_db), user=Depends(get_current_user)):
     return listing.edit(db, user, id, body)
+
+
+@router.post('/{id}/archive')
+def archive(id: int, body: listing.ArchiveCounterparty, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    return listing.archive_counterparty(db, user, id, body)
 
 
 @router.get('/{id}/history/{change_id}/document')

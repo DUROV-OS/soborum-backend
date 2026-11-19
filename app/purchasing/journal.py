@@ -62,6 +62,7 @@ def balances():
 
 def orders(db: Session, *, query='', archive='active', supplier_id=None, payment='all', delivery='all', date_from=None, date_to=None, sort='newest', offset=0, limit=50):
     from app.purchasing.service import out
+    from app.purchasing.invoices import invoices_by_order, totals as invoice_totals
     paid, pending, net, unpaid = balances()
     stmt = db.query(SupplierOrder).join(Supplier)
     if archive != 'all':
@@ -93,5 +94,16 @@ def orders(db: Session, *, query='', archive='active', supplier_id=None, payment
         'number': SupplierOrder.number.asc(), 'supplier': Supplier.name.asc(),
         'amount_desc': SupplierOrder.total_cost.desc(), 'expected': SupplierOrder.expected_at.asc().nullslast(),
     }[sort]
-    return {'total': stmt.count(), 'summary': summary,
-            'items': [out(db, row) for row in stmt.order_by(ordering, SupplierOrder.id.asc() if sort == 'oldest' else SupplierOrder.id.desc()).offset(offset).limit(limit)]}
+    page = stmt.order_by(
+        ordering, SupplierOrder.id.asc() if sort == 'oldest' else SupplierOrder.id.desc(),
+    ).offset(offset).limit(limit).all()
+    invoices = invoices_by_order(db, page)
+    return {
+        'total': stmt.count(),
+        'summary': summary,
+        'items': [
+            {**out(db, row), 'invoice_totals': invoice_totals(invoices.get(row.id, [])),
+             'invoice_missing_currency': any(not invoice['currency'] for invoice in invoices.get(row.id, []))}
+            for row in page
+        ],
+    }
