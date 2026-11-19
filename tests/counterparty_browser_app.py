@@ -3,6 +3,7 @@ import os
 assert os.environ.get('COUNTERPARTY_BROWSER_TEST')=='1'
 import tests.conftest  # sets isolated settings before application imports
 from uuid import uuid4
+from tempfile import TemporaryDirectory
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -10,21 +11,32 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.main import app
+from app.common.files import FilePurpose, save_bytes_file, settings
+from app.purchasing.control_models import PurchaseControlDocument
 from app.users.models import User, UserRole
 from app.accounting.models import Counterparty, CounterpartyKind
+from app.counterparties.models import Details
 from app.warehouse.models import Supplier
 from app.moysklad.models import SourceLink, SourceRecord
 from app.accounting.seed import ensure_organizations_seed
 
+storage = TemporaryDirectory(prefix='counterparty-browser-')
+settings.storage_dir = storage.name
 engine=create_engine('sqlite://',connect_args={'check_same_thread':False},poolclass=StaticPool)
 Base.metadata.create_all(engine)
 with Session(engine) as db:
     ensure_organizations_seed(db)
     user=User(full_name='Тестовый бухгалтер',email='counterparty@example.invalid',hashed_password='not-a-password',is_active=True,role=UserRole.ADMIN)
-    supplier=Supplier(name='Архивный поставщик',categories=[],contacts=[])
+    supplier=Supplier(name='Архивный поставщик', categories=[], contacts=[{'kind': 'phone', 'value': '+7 (900) 101-00-11'}])
     db.add_all([user,supplier]);db.flush()
     cp=Counterparty(name=supplier.name,kind=CounterpartyKind.SUPPLIER,supplier_id=supplier.id)
     db.add(cp);db.flush();cp_id=cp.id;user_id=user.id
+    document = save_bytes_file(db, 'Договор проверки.pdf', 'application/pdf', b'synthetic contract', FilePurpose.COSTING_EVIDENCE, user)
+    db.add(PurchaseControlDocument(supplier_id=supplier.id, file_id=document.id, actor_id=user.id))
+    sample = Counterparty(name='Янтарь', inn='7704020330', comment='Вторая строка')
+    db.add(sample)
+    db.flush()
+    db.add(Details(counterparty_id=sample.id, data={'kpp': '773601001', 'legal_type': 'legal_entity'}))
     sid=str(uuid4());db.add(SourceLink(source_key='counterparty/'+sid,target_type='counterparties',target_id=cp.id))
     db.add(SourceRecord(entity_type='counterparty',source_id=sid,title='Источник',search_text='',payload={'id':sid,'name':'Не заменять название','companyType':'legal','inn':'7736050003','legalAddress':'Москва, адрес из источника','accounts':{'rows':[]},'contactpersons':{'rows':[]}}))
     db.add(SourceRecord(entity_type='facturein',source_id=str(uuid4()),title='СФ-42',search_text='',payload={'agent':{'id':sid},'moment':'2026-11-18 11:00:00','name':'СФ-42','sum':150000,'applicable':True}))
@@ -35,7 +47,7 @@ def session():
 
 def actor():
     with Session(engine) as db:
-        user=db.get(User,user_id);db.expunge(user);return user
+        user=db.get(User,user_id);list(user.module_access);db.expunge(user);return user
 
 for subapp in [app]+[r.app for r in app.routes if hasattr(r,'app') and hasattr(r.app,'dependency_overrides')]:
     subapp.dependency_overrides[get_db]=session

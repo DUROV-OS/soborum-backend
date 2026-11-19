@@ -141,6 +141,11 @@ def preview(db,user,id):
     raw,origin=source(db,cp)
     if raw.get('inn') and cp.inn and str(raw['inn']).strip()!=cp.inn:raise HTTPException(409,'ИНН в источнике отличается. Проверьте связь контрагента до обновления.')
     remote,warnings=mapped(raw,before['card']);changes=differences(before['card'],remote)
+    comment = str(raw.get('description') or '').strip()
+    if len(comment) > 4000:
+        warnings.append('Описание из МойСклада превышает 4000 знаков. Перенесите нужный фрагмент вручную.')
+    elif comment and comment != before['comment']:
+        changes.append({'key': 'comment', 'old': before['comment'], 'value': comment, 'fill_empty': not before['comment']})
     if raw.get('archived'):warnings.append('В МойСклад карточка архивная. Локальный статус не изменяется.')
     data={'etag':before['etag'],'source':{**origin,'sha256':s.digest(raw)},'changes':changes,'warnings':warnings}
     row=Preview(id=str(uuid4()),counterparty_id=cp.id,actor_id=user.id,data={**data,'source_payload':raw});db.add(row);db.commit()
@@ -163,6 +168,9 @@ def apply(db,user,id,body):
     if s.digest(raw)!=row.data['source']['sha256']:raise HTTPException(409,'Источник изменился после сравнения')
     keys={c['key'] for c in row.data['changes']}
     if not set(body.fields)<=keys:raise HTTPException(422,'В сравнении нет выбранных полей')
-    data=proposed(before['card'],row.data['changes'],set(body.fields))
+    changes = [change for change in row.data['changes'] if change['key'] != 'comment']
+    comment = next((change['value'] for change in row.data['changes']
+                    if change['key'] == 'comment' and 'comment' in body.fields), None)
+    data=proposed(before['card'],changes,set(body.fields))
     return s.save(db,user,Save(request_id=body.request_id,etag=before['etag'],card=Card(**data)),id,
-                  provenance={**row.data['source'],'preview_id':row.id,'fields':body.fields},request=request)
+                  provenance={**row.data['source'],'preview_id':row.id,'fields':body.fields},request=request,comment=comment)
