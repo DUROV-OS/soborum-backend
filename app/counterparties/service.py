@@ -3,12 +3,51 @@ import hashlib
 import json
 from uuid import uuid5, NAMESPACE_URL
 from fastapi import HTTPException
-from sqlalchemy import or_, text
+from sqlalchemy import text
 from app.accounting.models import Counterparty, CounterpartyKind, MoneyMovement, MoneyMovementStatus
 from app.warehouse.models import Supplier
 from app.common.module_access import AccessLevel, Module
 from .models import Details, Account, Contact, Change
 from .schemas import Card, validate
+
+
+def base_role(cp):
+    return 'supplier' if cp.supplier_id else 'client' if cp.client_id else None
+
+
+def deal_confirmation(cp, profile):
+    deal = profile.data.get('deal_confirmation') if profile else None
+    if deal and deal.get('role') == base_role(cp) and deal.get('profile_id') == (cp.supplier_id or cp.client_id):
+        return deal
+    return None
+
+
+def registry_status(cp, profile):
+    return 'deal_closed' if deal_confirmation(cp, profile) else base_role(cp)
+
+
+def primary_phone(contacts):
+    available = [row for row in contacts if not row.get('archived') and (row.get('phone') or '').strip()]
+    primary = next((row for row in available if row.get('primary')), None)
+    if primary:
+        return primary['phone'].strip()
+    return available[0]['phone'].strip() if available else ''
+
+
+def uses_legacy_contacts(profile):
+    return profile is None or 'legal_type' not in profile.data
+
+
+def legacy_contacts(cp, supplier_contacts):
+    return [
+        {'id': str(uuid5(NAMESPACE_URL, f'legacy-supplier:{cp.supplier_id}:contact:{index}')),
+         'name': contact.get('person') or '',
+         'phone': contact.get('value', '') if contact['kind'] == 'phone' else '',
+         'email': contact.get('value', '') if contact['kind'] == 'email' else '',
+         'primary': False, 'archived': False}
+        for index, contact in enumerate(supplier_contacts or [])
+        if contact.get('kind') in ('phone', 'email')
+    ]
 
 
 def digest(value):
@@ -36,17 +75,13 @@ def get(db, id, user, edit=False):
 
 def card(db, cp):
     profile = db.get(Details, cp.id)
-    data = {**Card().model_dump(mode='json'), **(profile.data if profile else {}), 'name':cp.name, 'inn':cp.inn or ''}
+    saved = {key: value for key, value in profile.data.items() if key in Card.model_fields} if profile else {}
+    data = {**Card().model_dump(mode='json'), **saved, 'name':cp.name, 'inn':cp.inn or ''}
     for name, model in [('accounts', Account), ('contacts', Contact)]:
         data[name] = [{'id':r.id, **r.data} for r in db.query(model).filter_by(counterparty_id=cp.id).order_by(model.id)]
-    if profile is None and cp.supplier_id and not data['contacts']:
+    if cp.supplier_id and not data['contacts'] and uses_legacy_contacts(profile):
         supplier = db.get(Supplier, cp.supplier_id)
-        for index, contact in enumerate((supplier.contacts if supplier else None) or []):
-            kind = contact.get('kind')
-            if kind not in ('phone', 'email'): continue
-            data['contacts'].append({'id':str(uuid5(NAMESPACE_URL,f'legacy-supplier:{cp.supplier_id}:contact:{index}')),
-                'name':contact.get('person') or '', 'phone':contact.get('value','') if kind=='phone' else '',
-                'email':contact.get('value','') if kind=='email' else '', 'primary':False,'archived':False})
+        data['contacts'] = legacy_contacts(cp, supplier.contacts if supplier else None)
     return data
 
 
@@ -54,9 +89,16 @@ def out(db, cp, user):
     from .verification import state
     data = card(db, cp)
     profile = db.get(Details, cp.id)
+    phone = primary_phone(data['contacts'])
+    if not phone and cp.client_id and user.access_level(Module.CLIENTS) >= AccessLevel.VIEW:
+        from app.clients.models import Client
+        client = db.get(Client, cp.client_id)
+        phone = client.phone if client else ''
     return {'id':cp.id, 'supplier_id':cp.supplier_id, 'client_id':cp.client_id, 'kind':cp.kind.value,
             'active':cp.is_active, 'version':profile.version if profile else 0, 'card':data,
-            'etag':digest({'data':data, 'active':cp.is_active, 'supplier_id':cp.supplier_id, 'client_id':cp.client_id}),
+            'phone':phone, 'status':registry_status(cp, profile), 'comment':cp.comment or '',
+            'etag':digest({'data':data, 'active':cp.is_active, 'supplier_id':cp.supplier_id, 'client_id':cp.client_id,
+                           'version':profile.version if profile else 0, 'comment':cp.comment, 'deal':deal_confirmation(cp, profile)}),
             'complete':bool(data['inn'] and data['legal_type']), 'can_edit':allowed(user, cp, True), 'bank_verification':state(db,cp,user)}
 
 
@@ -82,7 +124,7 @@ def persist(db, cp, data):
     profile = db.get(Details, cp.id)
     if profile is None:
         profile = Details(counterparty_id=cp.id, version=0, data={}); db.add(profile)
-    profile.data = {k:v for k,v in data.items() if k not in ('name','inn','accounts','contacts')}
+    profile.data = {**profile.data, **{k:v for k,v in data.items() if k not in ('name','inn','accounts','contacts')}}
     profile.version += 1
     for field, model in [('accounts',Account),('contacts',Contact)]:
         existing = {r.id:r for r in db.query(model).filter_by(counterparty_id=cp.id)}
@@ -99,7 +141,7 @@ def persist(db, cp, data):
     db.flush()
 
 
-def save(db, user, body, id=None, provenance=None, request=None):
+def save(db, user, body, id=None, provenance=None, request=None, comment=None):
     lock(db)
     request = request or {'id':id, **body.model_dump(mode='json')}
     old = replay(db,user,body.request_id,request)
@@ -120,6 +162,8 @@ def save(db, user, body, id=None, provenance=None, request=None):
         cp=Counterparty(name=data['name'],inn=data['inn'] or None,kind=CounterpartyKind.SUPPLIER if supplier else CounterpartyKind.OTHER,supplier_id=supplier.id if supplier else None)
         db.add(cp);db.flush()
     persist(db,cp,data)
+    if comment is not None:
+        cp.comment = comment or None
     # Keep the legacy supplier title in sync without touching prices, MAX or contacts.
     if cp.supplier_id:
         supplier=db.get(Supplier,cp.supplier_id)
@@ -129,14 +173,3 @@ def save(db, user, body, id=None, provenance=None, request=None):
                   data={'before':before,'after':after,'source':provenance or {'kind':'manual'}}))
     db.commit()
     return after
-
-
-def registry(db,user,q='',offset=0,limit=50):
-    if not allowed(user): raise HTTPException(403,'Нет доступа к справочнику контрагентов')
-    query=db.query(Counterparty)
-    if user.access_level(Module.ACCOUNTING)<AccessLevel.VIEW: query=query.filter(Counterparty.supplier_id.is_not(None))
-    if q.strip():
-        term='%'+q.strip().replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
-        query=query.filter(or_(Counterparty.name.ilike(term,escape='\\'),Counterparty.inn.ilike(term,escape='\\')))
-    return {'items':[out(db,r,user) for r in query.order_by(Counterparty.name,Counterparty.id).offset(offset).limit(limit)],
-            'total':query.count(),'can_create':allowed(user,edit=True)}

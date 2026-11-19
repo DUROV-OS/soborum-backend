@@ -8,7 +8,8 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.accounting.evidence_schemas import Strict, Citation
 from app.accounting.models import Counterparty
-from . import service as s, sync
+from . import registry as listing, service as s, sync
+from app.common.files import verified_file_response
 from .models import Change, Preview
 from .schemas import Save, Apply
 from .documents import documents, export
@@ -48,8 +49,41 @@ def verify_bank(id:int,body:Verify,db:Session=Depends(get_db),user=Depends(get_c
 
 
 @router.get('')
-def registry(q:str=Query('',max_length=255),offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),db:Session=Depends(get_db),user=Depends(get_current_user)):
-    return s.registry(db,user,q,offset,limit)
+def registry(
+    q: str = Query('', max_length=255),
+    name: str = Query('', max_length=255),
+    inn: str = Query('', max_length=32),
+    kpp: str = Query('', max_length=9),
+    phone: str = Query('', max_length=100),
+    status: list[listing.RegistryStatus] = Query(default=[]),
+    comment: str = Query('', max_length=255),
+    sort: listing.Sort = 'name',
+    direction: Literal['asc', 'desc'] = 'asc',
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    return listing.list_rows(
+        db, user, q=q, name=name, inn=inn, kpp=kpp, phone=phone, statuses=set(status),
+        comment=comment, sort=sort, direction=direction, offset=offset, limit=limit,
+    )
+
+
+@router.get('/registry/profiles')
+def registry_profiles(role: listing.Role, q: str = Query('', max_length=255), db: Session = Depends(get_db), user=Depends(get_current_user)):
+    return listing.available_profiles(db, user, role, q)
+
+
+@router.patch('/{id}/registry')
+def edit_registry(id: int, body: listing.RegistryEdit, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    return listing.edit(db, user, id, body)
+
+
+@router.get('/{id}/history/{change_id}/document')
+def history_document(id: int, change_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    asset = listing.history_asset(db, user, s.get(db, id, user), change_id)
+    return verified_file_response(asset)
 
 
 @router.post('',status_code=201)
@@ -114,7 +148,7 @@ def save(id:int,body:Save,db:Session=Depends(get_db),user=Depends(get_current_us
 def history(id:int,offset:int=Query(0,ge=0),db:Session=Depends(get_db),user=Depends(get_current_user)):
     s.get(db,id,user)
     rows=db.query(Change).filter_by(counterparty_id=id).order_by(Change.id.desc()).offset(offset).limit(50)
-    return [{'id':r.id,'actor_id':r.actor_id,'created_at':r.created_at,**r.data} for r in rows]
+    return [{'id':r.id,'actor_id':r.actor_id,'created_at':r.created_at,**listing.visible_change(user, r.data)} for r in rows]
 
 
 @router.post('/{id}/moysklad/preview')
