@@ -27,7 +27,6 @@ push-кадры сервера:
 
 from __future__ import annotations
 
-import json
 import logging
 import random
 import threading
@@ -130,18 +129,18 @@ class FrameHandler:
             return  # ответы на наши запросы (cmd 1) и ошибки (cmd 3) слушателю не нужны
         seq = frame.get("seq")
         if isinstance(seq, int):
-            if self.last_seq is not None and seq <= self.last_seq:
+            if self.last_seq is not None and not 0 < (seq - self.last_seq) % 65536 < 32768:
                 return
             self.last_seq = seq
         opcode = frame.get("opcode")
         payload = frame.get("payload") or {}
         if opcode == OP_PING:
-            self.reply({"ver": 11, "cmd": 1, "seq": seq, "opcode": OP_PING, "payload": None})
+            self.reply({"ver": frame["ver"], "cmd": 1, "seq": seq, "opcode": OP_PING, "payload": None})
         elif opcode == OP_NOTIF_MESSAGE:
             chat_id = payload.get("chatId")
             message_id = (payload.get("message") or {}).get("id")
             self.reply({
-                "ver": 11, "cmd": 1, "seq": seq, "opcode": OP_NOTIF_MESSAGE,
+                "ver": frame["ver"], "cmd": 1, "seq": seq, "opcode": OP_NOTIF_MESSAGE,
                 "payload": {"chatId": chat_id, "messageId": message_id},
             })
             _notify_chat(chat_id, opcode)
@@ -188,7 +187,7 @@ def _open_session() -> max_client.MaxSession:
 
 
 def _listen(session: max_client.MaxSession) -> None:
-    handler = FrameHandler(lambda frame: session.ws.send(json.dumps(frame)), session=session)
+    handler = FrameHandler(session.send_frame, session=session)
     # Reconcile recent incoming messages after reconnect. Intake's persisted
     # enable time and provider message IDs prevent importing the old inbox.
     for chat_id, messages in getattr(session, 'last_messages', lambda: {})().items():

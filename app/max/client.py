@@ -1,6 +1,6 @@
 """Тонкий клиент к мессенджеру MAX (oneme) по websocket.
 
-Протокол — простые JSON-кадры поверх wss: opcode 6 (HELLO) -> 19 (AUTH) ->
+Протокол использует бинарные кадры MAX Web: opcode 6 (HELLO) -> 19 (AUTH) ->
 49 (история чата) -> 88 (ссылка на вложение); 46/41 — поиск и
 добавление контакта по номеру (0093); 32 — профили собеседников не из
 контактов (0099). Логика перенесена из
@@ -15,7 +15,6 @@ read-only, БД не трогаем — кроме upload_file (0015), кото�
 from __future__ import annotations
 
 import contextlib
-import json
 import time
 import urllib.parse
 import uuid
@@ -29,6 +28,7 @@ except ImportError:  # pragma: no cover
     websocket = None
 
 from app.core.config import settings
+from app.max.wire import decode_frame, encode_frame
 
 # Больше — отклоняем ещё до попытки загрузки (см. UploadError в service.py).
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024
@@ -43,7 +43,7 @@ class UploadError(RuntimeError):
     (см. MAX_UPLOAD_SIZE) — сообщение не уходит наполовину, роутер превращает
     это в понятную ошибку до отправки MSG_SEND."""
 
-WS_URL = "wss://ws-api.oneme.ru/websocket"
+WS_URL = "wss://api.oneme.ru/websocket"
 ORIGIN = "https://web.max.ru"
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -91,18 +91,15 @@ class MaxSession:
     # -- низкий уровень ------------------------------------------------
 
     def _send(self, opcode: int, payload: dict) -> int:
-        self.seq += 1
-        self.ws.send(json.dumps({
-            "ver": 11, "cmd": 0, "seq": self.seq,
-            "opcode": opcode, "payload": payload,
-        }))
+        self.seq = (self.seq + 1) % 65536
+        self.send_frame({"cmd": 0, "seq": self.seq, "opcode": opcode, "payload": payload})
         return self.seq
 
+    def send_frame(self, frame: dict) -> None:
+        self.ws.send_binary(encode_frame(frame))
+
     def _recv(self) -> dict:
-        raw = self.ws.recv()
-        if isinstance(raw, (bytes, bytearray)):
-            raw = raw.decode("utf-8", "replace")
-        return json.loads(raw)
+        return decode_frame(self.ws.recv())
 
     def _wait(self, opcode: int, seq: int | None = None, tries: int = 80) -> dict:
         """Пропускаем технические / асинхронные кадры до нужного нам."""
@@ -204,18 +201,16 @@ class MaxSession:
 
     def history(self, chat_id, forward: int = 50, backward: int = 0) -> list:
         # без "from" -> сервер отдаёт последние `forward` сообщений
-        self._send(49, {
+        seq = self._send(49, {
             "chatId": chat_id,
             "forward": forward,
             "backward": backward,
             "getMessages": True,
         })
-        for _ in range(20):
-            p = self._wait(49).get("payload", {})
-            msgs = p.get("messages")
-            if msgs is not None:
-                return msgs
-        return []
+        reply = self._wait(49, seq)
+        if reply.get("cmd") != 1:
+            raise RuntimeError("MAX отклонил запрос истории диалога")
+        return (reply.get("payload") or {}).get("messages") or []
 
     def send_message(self, chat_id, text: str, notify: bool = True, attaches: list[dict] | None = None) -> dict:
         """MSG_SEND (opcode 64). Отправляет текстовое сообщение (опционально
