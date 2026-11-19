@@ -158,9 +158,9 @@ def catalog(db, user):
     }
 
 
-def search(db, user, query="", entity_type=None, archive="active", limit=50, offset=0):
+def search(db, user, query="", entity_type=None, archive="active", limit=50, offset=0, sort="name"):
     types = [r[0] for r in db.query(SourceRecord.entity_type).distinct() if allowed(user, r[0])]
-    if entity_type and entity_type not in types:
+    if entity_type and not allowed(user, entity_type):
         raise HTTPException(403, "Нет доступа к этим данным")
     stmt = db.query(SourceRecord).filter(
         SourceRecord.entity_type.in_([entity_type] if entity_type else types)
@@ -170,7 +170,13 @@ def search(db, user, query="", entity_type=None, archive="active", limit=50, off
     for word in query.casefold().split()[:8]:
         stmt = stmt.filter(SourceRecord.search_text.contains(word, autoescape=True))
     count = stmt.count()
-    items = stmt.order_by(SourceRecord.title, SourceRecord.id).offset(offset).limit(limit).all()
+    moment = SourceRecord.payload['moment'].as_string()
+    ordering = {
+        'name': SourceRecord.title.asc(),
+        'oldest': moment.asc().nulls_last(),
+        'newest': moment.desc().nulls_last(),
+    }
+    items = stmt.order_by(ordering[sort], SourceRecord.id).offset(offset).limit(limit).all()
     return {"total": count, "items": [brief(r) for r in items]}
 
 
