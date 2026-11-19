@@ -48,8 +48,8 @@ def apply_order(db, row, body):
     payload = body.model_dump(exclude_unset=True)
     has_history = has_receipts(db, row)
     if body.organization_id is not None and body.organization_id != row.organization_id:
-        if has_history or row.opening_paid or db.query(MoneyMovement.id).filter_by(supply_id=row.id).first():
-            fail('У заказа есть приёмки или платежи. Изменение организации требует сверки документов.')
+        if row.source_id or has_history or row.opening_paid or db.query(MoneyMovement.id).filter_by(supply_id=row.id).first():
+            fail('Заказ связан с документами. Изменение организации требует их сверки.')
         require_supplier_order_organization(db, body.organization_id)
         row.organization_id = body.organization_id
         db.expire(row, ['organization'])

@@ -26,6 +26,34 @@ def test_order_journal_totals_posted_receipts_at_actual_prices(db, api, make_use
     assert row['total_cost'] == 200
 
 
+def test_posted_receipts_linked_via_supplier_invoices_are_counted_once(db, api, make_user):
+    client, owner, supplier, _, order = setup(db, api, make_user)
+    db.get(SupplierOrder, order['id']).source_id = 'source-order'
+    second = SupplierOrder(supplier_id=supplier.id, source_id='other-order', items=[], total_cost=100)
+    db.add(second)
+    for source_id, order_id in [('via-invoice', None), ('overlap', order['id']), ('conflict', None)]:
+        db.add(PurchaseReceipt(
+            actor_id=owner.id, supplier_id=supplier.id, order_id=order_id, status='posted',
+            occurred_at=datetime.now(timezone.utc), source_id=source_id,
+            lines=[{'quantity': 2, 'unit_price': 11}],
+        ))
+    for number, order_source, supply_refs in [
+        ('I1', 'source-order', ['via-invoice', 'overlap', 'conflict']),
+        ('I2', 'source-order', ['via-invoice']),
+        ('I3', 'other-order', ['conflict']),
+    ]:
+        db.add(SourceRecord(entity_type='invoicein', source_id=number, title=number, search_text='',
+            payload={'purchaseOrder': {'id': order_source}, 'supplies': [{'id': ref} for ref in supply_refs],
+                     'sum': 2200, 'applicable': True}))
+    db.commit()
+    path = '/api/purchasing/orders'
+    totals = {row['id']: row['received_amount'] for row in client.get(path).json()['items']}
+    assert totals == {order['id']: '44.00', second.id: '0.00'}
+    docs = client.get(f'{path}/{order["id"]}/documents').json()['receipts']
+    assert {d['source_id'] for d in docs} == {'via-invoice', 'overlap'}
+    assert [d['source_id'] for d in docs if d.get('via_supplier_invoice')] == ['via-invoice']
+
+
 def test_purchase_order_organization_is_selected_from_company_directory(db, api, make_user):
     client, _, supplier, material, order = setup(db, api, make_user)
     tech = db.query(Organization).filter_by(short_name='Технология').one()

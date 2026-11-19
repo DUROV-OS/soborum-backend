@@ -65,6 +65,7 @@ def balances():
 def orders(db: Session, *, query='', archive='active', supplier_id=None, payment='all', delivery='all', date_from=None, date_to=None, sort='newest', offset=0, limit=50):
     from app.purchasing.service import dec, out
     from app.purchasing.invoices import invoices_by_order, totals as invoice_totals
+    from app.purchasing.receipt_links import invoice_receipts
     paid, pending, net, unpaid = balances()
     stmt = db.query(SupplierOrder).join(Supplier)
     if archive != 'all':
@@ -106,7 +107,10 @@ def orders(db: Session, *, query='', archive='active', supplier_id=None, payment
             PurchaseReceipt.order_id.in_([row.id for row in page]),
             PurchaseReceipt.status == 'posted',
         )
-        for order_id, lines in receipts:
+        receipt_lines = list(receipts)
+        for order_id, linked in invoice_receipts(db, page).items():
+            receipt_lines.extend((order_id, receipt.lines) for receipt in linked)
+        for order_id, lines in receipt_lines:
             amount = sum((dec(line['quantity']) * dec(line['unit_price']) for line in lines), Decimal(0))
             received[order_id] += amount.quantize(Decimal('0.01'))
     return {
