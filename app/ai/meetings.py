@@ -26,9 +26,15 @@ def create_meeting(db: Session, owner: User, title: str | None) -> Meeting:
     return meeting
 
 
+def accessible_owner_ids(user: User) -> list[int]:
+    """Owner-selected delegates can manage that owner's past and future meetings."""
+    from app.core.config import settings
+    return sorted({user.id, *(owner_id for owner_id, delegates in settings.meeting_delegations.items() if user.id in delegates)})
+
+
 def get_own_meeting_or_404(db: Session, owner: User, meeting_id: int) -> Meeting:
     meeting = db.get(Meeting, meeting_id)
-    if not meeting or meeting.owner_id != owner.id:
+    if not meeting or meeting.owner_id not in accessible_owner_ids(owner):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Совещание не найдено")
     return meeting
 
@@ -96,7 +102,7 @@ def delete_meeting(db: Session, meeting: Meeting) -> None:
 def list_own_meetings(db: Session, owner: User) -> list[Meeting]:
     return (
         db.query(Meeting)
-        .filter(Meeting.owner_id == owner.id)
+        .filter(Meeting.owner_id.in_(accessible_owner_ids(owner)))
         .order_by(Meeting.started_at.desc(), Meeting.id.desc())
         .all()
     )
