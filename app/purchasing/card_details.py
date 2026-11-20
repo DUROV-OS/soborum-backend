@@ -14,7 +14,7 @@ from app.db.session import get_db
 from app.moysklad.importer import ref, rows
 from app.moysklad.models import SourceRecord
 from app.moysklad.supplier_invoices import amount, invoice_columns
-from app.purchasing.document_links import document_key, linked_source_documents
+from app.purchasing.document_links import document_key, linked_source_documents, payment_account_label
 from app.purchasing.models import PurchaseReceipt, PurchaseReturn
 from app.purchasing.receipt_register import register_items
 from app.purchasing.returns import receipt
@@ -147,7 +147,7 @@ def linked_cards(db, order, invoices, receipts, *, include_invoices, include_rec
     if include_receipts:
         result.extend(summary('receipt', row['id'], row['number'], row['occurred_at'],
                               row['amount'], row['currency'], row['status_label'] or (
-                                  'Проведена' if row['status'] == 'posted' else 'Черновик'
+                                  'На складе' if row['status'] == 'posted' else 'Черновик'
                               )) for row in receipt_rows)
     result.extend({**facture, 'kind': 'facture'} for facture in factures)
     movement_ids = {item['id'] for item in payments if item['id'] is not None}
@@ -156,18 +156,21 @@ def linked_cards(db, order, invoices, receipts, *, include_invoices, include_rec
         move = movements.get(item['id'])
         if move:
             payment = movement_card(move)
+            payment['account_label'] = payment['account_label'] or item.get('account_label')
         else:
             payment = summary('payment', item['source_record_id'], item['number'], item['date'],
                               item['amount'], item['currency'], 'Проведён' if item['status'] == 'posted' else 'Черновик')
             payment['source_type'] = item['source_type']
+            payment['account_label'] = item.get('account_label')
         result.append(payment)
     return result
 
 
 def movement_card(move, kind='payment'):
     labels = {'draft': 'На согласовании', 'approved': 'Согласован', 'posted': 'Проведён', 'cancelled': 'Отменён'}
-    return summary(kind, move.id, move.external_number or str(move.id), move.doc_date or move.created_at,
-                   move.amount, move.currency, labels.get(move.status.value))
+    return {**summary(kind, move.id, move.external_number or str(move.id), move.doc_date or move.created_at,
+                      move.amount, move.currency, labels.get(move.status.value)),
+            'account_label': payment_account_label(move.account)}
 
 
 @router.get('/supplier-invoices/{id}/documents')

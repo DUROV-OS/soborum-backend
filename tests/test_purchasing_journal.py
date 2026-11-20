@@ -161,6 +161,7 @@ def test_order_document_map_resolves_only_explicit_source_links(db, api, make_us
     db.get(SupplierOrder, order_id).source_id = 'map-order'
     posted = client.post('/api/purchasing/receipts', json=receipt(order, material)).json()
     db.get(PurchaseReceipt, posted['id']).source_id = 'map-supply'
+    default_account.account_number = '40702810000000006999'
     movement = client.post(f'/api/purchasing/orders/{order_id}/payments', json={
         'request_id': str(uuid4()), 'amount': '50', 'account_id': default_account.id,
     })
@@ -181,13 +182,16 @@ def test_order_document_map_resolves_only_explicit_source_links(db, api, make_us
         'payments': [link('paymentout', 'map-native'), link('paymentout', 'map-payment')],
         'positions': {'rows': [{'assortment': {'name': 'Брус'}, 'quantity': 3, 'price': 2000, 'discount': 10, 'vat': 20}]},
     })
-    source('supply', 'map-supply', {
+    supply = source('supply', 'map-supply', {
         'factureIn': link('facturein', 'map-facture'), 'invoicesIn': [link('invoicein', 'map-invoice')],
     })
+    supply.state = 'на складе'
     facture = source('facturein', 'map-facture', {'supplies': [link('supply', 'map-supply')], 'sum': 10000})
     source('paymentout', 'map-native', {'sum': 5000, 'applicable': True})
     linked = source('paymentout', 'map-payment', {
         'operations': [link('invoicein', 'map-invoice')], 'sum': 5000, 'applicable': True,
+        'organizationAccount': {'accountNumber': '40702810000000004155'},
+        'organization': {'name': 'Тестовая организация'},
     })
     source('paymentout', 'unrelated', {'operations': [link('invoicein', 'another-order')], 'sum': 5000})
     db.add(SourceLink(source_key='paymentout/map-native', target_type='money_movements', target_id=movement_id))
@@ -200,8 +204,12 @@ def test_order_document_map_resolves_only_explicit_source_links(db, api, make_us
     assert docs['factures'][0]['receipt_ids'] == [posted['id']]
     assert [row.get('source_record_id') for row in docs['payments']] == [None, linked.id]
     assert docs['payments'][0]['id'] == movement_id
+    assert docs['payments'][0]['account_label'] == 'Р/с ••6999 · ' + default_account.organization.short_name
     assert docs['payments'][1]['amount'] == '50.00'
+    assert docs['payments'][1]['account_label'] == 'Р/с ••4155 · Тестовая организация'
     assert docs['payments'][1]['invoice_ids'] == [docs['invoices'][0]['id']]
+    assert docs['receipts'][0]['status_label'] == 'на складе'
+    assert '40702810000000006999' not in response.text and '40702810000000004155' not in response.text
 
     invoice_path = f'/api/purchasing/supplier-invoices/{invoice.id}'
     assert client.get(invoice_path).json()['positions'] == [

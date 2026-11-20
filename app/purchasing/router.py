@@ -109,7 +109,7 @@ def order_positions(id: int, db: Session = Depends(get_db), user: User = Depends
 
 @app.get("/orders/{id}/documents")
 def order_documents(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
-    from app.purchasing.document_links import linked_source_documents
+    from app.purchasing.document_links import linked_source_documents, payment_account_label
     from app.purchasing.invoices import invoices_by_order
     from app.purchasing.receipt_links import invoice_receipts
     from app.purchasing.models import PurchaseReturn
@@ -133,7 +133,8 @@ def order_documents(id: int, db: Session = Depends(get_db), user: User = Depends
         'payments': [
             {'id': m.id, 'number': m.external_number, 'created_at': m.created_at,
              'date': m.doc_date or m.created_at, 'amount': m.amount, 'currency': m.currency,
-             'status': m.status.value, 'refund': m.purchase_return_id is not None}
+             'status': m.status.value, 'refund': m.purchase_return_id is not None,
+             'account_label': payment_account_label(m.account)}
             for m in movements
         ] + source_payments,
         'opening_paid': row.opening_paid,

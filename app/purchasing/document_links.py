@@ -4,14 +4,31 @@ from collections import defaultdict
 import re
 
 from sqlalchemy import tuple_
+from sqlalchemy.orm import joinedload
 
-from app.accounting.models import MoneyMovement
+from app.accounting.models import BankAccount, MoneyMovement
 from app.moysklad.importer import ref, rows
 from app.moysklad.models import SourceLink, SourceRecord
 from app.moysklad.supplier_invoices import amount
 
 
 PAYMENT_TYPES = {'paymentout', 'cashout'}
+
+
+def account_caption(number, organization=None, name=None):
+    digits = re.sub(r'\D', '', str(number or ''))
+    if len(digits) >= 4:
+        return ' · '.join(part for part in (f'Р/с ••{digits[-4:]}', organization) if part)
+    if name and name != 'Счёт не указан в МойСкладе':
+        return ' · '.join(part for part in (name, organization) if part)
+    return None
+
+
+def payment_account_label(account):
+    if account is None:
+        return None
+    organization = account.organization.short_name if account.organization else None
+    return account_caption(account.account_number, organization, account.name)
 
 
 def document_key(value, default_type=''):
@@ -40,6 +57,11 @@ def linked_source_documents(db, order, receipts, invoices, movement_ids, *, incl
             SourceRecord.entity_type == 'invoicein', SourceRecord.id.in_(invoice_ids),
         ))
     sources_by_key = {(row.entity_type, row.source_id): row for row in sources}
+
+    for receipt in receipts:
+        original = sources_by_key.get(('supply', receipt['source_id']))
+        if original and original.state:
+            receipt['status_label'] = original.state
 
     factures_by_source = defaultdict(set)
     for identity, native_id in receipt_ids.items():
@@ -96,10 +118,17 @@ def linked_source_documents(db, order, receipts, invoices, movement_ids, *, incl
                 'currency': currency if re.fullmatch('[A-Z]{3}', currency) else None}
 
     payment_keys = {row.entity_type + '/' + row.source_id for row in payment_records}
-    mapped_movements = dict(db.query(SourceLink.source_key, MoneyMovement.id)
+    mapped_movements = dict(db.query(SourceLink.source_key, MoneyMovement)
+                            .options(joinedload(MoneyMovement.account).joinedload(BankAccount.organization))
                             .join(MoneyMovement, MoneyMovement.id == SourceLink.target_id)
                             .filter(SourceLink.target_type == 'money_movements',
                                     SourceLink.source_key.in_(payment_keys)).all()) if payment_keys else {}
+    account_keys = {'account/' + identity for row in payment_records
+                    if (identity := ref(row.payload.get('organizationAccount')))}
+    accounts = dict(db.query(SourceLink.source_key, BankAccount)
+                    .join(BankAccount, BankAccount.id == SourceLink.target_id)
+                    .filter(SourceLink.target_type == 'bank_accounts',
+                            SourceLink.source_key.in_(account_keys)).all()) if account_keys else {}
     factures = [
         {**summary(row), 'id': row.id, 'receipt_ids': sorted(factures_by_source[row.source_id]),
          'status': row.state}
@@ -107,14 +136,23 @@ def linked_source_documents(db, order, receipts, invoices, movement_ids, *, incl
     ]
     payments = []
     for row in payment_records:
-        identity = mapped_movements.get(row.entity_type + '/' + row.source_id)
+        movement = mapped_movements.get(row.entity_type + '/' + row.source_id)
+        identity = movement.id if movement else None
         if identity in movement_ids:
             continue
         related = payment_refs[(row.entity_type, row.source_id)]
+        source_account = row.payload.get('organizationAccount') or {}
+        organization = row.payload.get('organization') or {}
+        account = movement.account if movement else None
+        account_label = payment_account_label(account) or payment_account_label(accounts.get('account/' + ref(source_account)))
+        if not account_label and isinstance(source_account, dict) and source_account.get('accountNumber'):
+            name = organization.get('name') if isinstance(organization, dict) else None
+            account_label = account_caption(source_account['accountNumber'], name)
         payments.append({
             **summary(row), 'id': identity, 'source_record_id': row.id, 'source_type': row.entity_type,
             'status': 'posted' if row.payload.get('applicable') is True else 'draft',
             'refund': False,
+            'account_label': account_label,
             'invoice_ids': sorted(sources_by_key[k].id for k in related if k[0] == 'invoicein'),
         })
 
