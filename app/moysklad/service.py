@@ -1,8 +1,9 @@
 """Department-scoped access to imported records; no live MoySklad dependency."""
 
 from pathlib import Path
+import re
 from fastapi import HTTPException
-from sqlalchemy import func, Integer
+from sqlalchemy import func, Integer, tuple_
 from app.common.module_access import Module
 from app.core.config import settings
 from app.moysklad.models import SourceRecord, ImportRun
@@ -182,7 +183,67 @@ def search(db, user, query="", entity_type=None, archive="active", limit=50, off
         columns, statuses, can_edit = invoice_columns(db, user, items)
         return {'total': count, 'items': [{**brief(row), 'invoice': columns[row.id]} for row in items],
                 'invoice_statuses': statuses, 'can_edit_invoice_statuses': can_edit}
+    if entity_type == 'facturein':
+        columns = received_facture_fields(db, items)
+        return {'total': count, 'items': [{**brief(row), 'facture': columns[row.id]} for row in items]}
     return {"total": count, "items": [brief(r) for r in items]}
+
+
+def received_facture_fields(db, records):
+    from app.accounting.models import Counterparty
+    from app.moysklad.importer import ref
+    from app.moysklad.models import SourceLink
+    from app.moysklad.supplier_invoices import amount, planned_day
+
+    if not records:
+        return {}
+
+    reference_keys = {
+        (kind, ref(value))
+        for record in records
+        for kind, value in (
+            ('counterparty', record.payload.get('agent')),
+            ('organization', record.payload.get('organization')),
+            ('currency', (record.payload.get('rate') or {}).get('currency')),
+        )
+        if ref(value)
+    }
+    references = {
+        (row.entity_type, row.source_id): row
+        for row in db.query(SourceRecord).filter(tuple_(SourceRecord.entity_type, SourceRecord.source_id).in_(reference_keys))
+    } if reference_keys else {}
+    agent_keys = {'counterparty/' + identity for kind, identity in reference_keys if kind == 'counterparty'}
+    counterparties = dict(
+        db.query(SourceLink.source_key, Counterparty.id)
+        .join(Counterparty, Counterparty.id == SourceLink.target_id)
+        .filter(SourceLink.target_type == 'counterparties', SourceLink.source_key.in_(agent_keys))
+        .all()
+    ) if agent_keys else {}
+
+    def name(value, kind):
+        reference = references.get((kind, ref(value)))
+        return (value or {}).get('name') or (reference.title if reference else None)
+
+    columns = {}
+    for record in records:
+        payload = record.payload
+        currency = references.get(('currency', ref((payload.get('rate') or {}).get('currency'))))
+        currency_code = str((currency.payload.get('isoCode') if currency else None)
+                            or payload.get('_currency_code') or '').upper()
+        total = amount(payload, 'sum')
+        incoming_date = planned_day(payload.get('incomingDate'))
+        columns[record.id] = {
+            'number': payload.get('name') or record.title,
+            'agent_name': name(payload.get('agent'), 'counterparty'),
+            'counterparty_id': counterparties.get('counterparty/' + ref(payload.get('agent'))),
+            'organization': name(payload.get('organization'), 'organization'),
+            'amount': str(total) if total is not None else None,
+            'currency': currency_code if re.fullmatch('[A-Z]{3}', currency_code) else None,
+            'incoming_number': payload.get('incomingNumber'),
+            'incoming_date': incoming_date.isoformat() if incoming_date else None,
+            'comment': payload.get('description'),
+        }
+    return columns
 
 
 def brief(r):
@@ -196,9 +257,9 @@ def brief(r):
         "state": r.state,
         "code": p.get("code"),
         "moment": p.get("moment"),
-        "sum_rub": float(p["sum"]) / 100 if "sum" in p else None,
+        "sum_rub": float(p["sum"]) / 100 if p.get("sum") is not None else None,
         "applicable": p.get("applicable"),
-        "agent": p.get("agent", {}).get("name"),
+        "agent": (p.get("agent") or {}).get("name"),
         "imported_at": r.imported_at,
     }
 

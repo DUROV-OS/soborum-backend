@@ -90,11 +90,32 @@ def test_received_factures_sort_by_document_date_and_keep_finance_scope(db, api,
     client = api(accountant)
     path = '/api/moysklad/records'
     assert client.get(path, params={'entity_type': 'facturein'}).json() == {'total': 0, 'items': []}
+    counterparty = Counterparty(name='Поставщик по документу')
+    db.add(counterparty)
+    db.flush()
+    db.add(SourceLink(source_key='counterparty/agent-doc', target_type='counterparties', target_id=counterparty.id))
+    for kind, identity, title, payload in [
+        ('counterparty', 'agent-doc', 'Поставщик по документу', {}),
+        ('organization', 'organization-doc', 'ИД Групп', {}),
+        ('currency', 'currency-doc', 'Евро', {'isoCode': 'EUR'}),
+    ]:
+        db.add(SourceRecord(entity_type=kind, source_id=identity, title=title, search_text=title, payload=payload))
+    fields = {
+        'name': '000042', 'agent': {'id': 'agent-doc'}, 'organization': {'id': 'organization-doc'},
+        'rate': {'currency': {'id': 'currency-doc'}}, 'sum': 56789, 'incomingNumber': 'ВХ-1',
+        'incomingDate': '2026-11-16 19:30:00', 'description': 'Документы проверены',
+    }
     for title, date in [('А', '2026-11-18 12:00:00'), ('Б', '2026-11-19 12:00:00'), ('В', None)]:
+        payload = {'moment': date, **(fields if title == 'А' else {})}
         db.add(SourceRecord(entity_type='facturein', source_id=str(uuid4()), title=title,
-                            search_text=title.lower(), payload={'moment': date}))
+                            search_text=title.lower(), payload=payload))
     db.commit()
     r = client.get(path, params={'entity_type': 'facturein', 'sort': 'newest', 'offset': 1, 'limit': 1})
     assert r.status_code == 200, r.text
     assert r.json()['items'][0]['title'] == 'А'
+    assert r.json()['items'][0]['facture'] == {
+        'number': '000042', 'agent_name': 'Поставщик по документу', 'counterparty_id': counterparty.id,
+        'organization': 'ИД Групп', 'currency': 'EUR', 'amount': '567.89',
+        'incoming_number': 'ВХ-1', 'incoming_date': '2026-11-16', 'comment': 'Документы проверены',
+    }
     assert api(warehouse).get(path, params={'entity_type': 'facturein'}).status_code == 403
