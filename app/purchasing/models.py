@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, Numeric, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, JSON, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
@@ -46,4 +46,18 @@ class PurchaseReturn(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     lines: Mapped[list] = mapped_column(JSON)
     note: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PurchaseDocumentFile(Base):
+    __tablename__ = 'purchase_document_files'
+    __table_args__ = (CheckConstraint(
+        '(receipt_id IS NULL) <> (invoice_id IS NULL)', name='ck_purchase_document_file_scope',
+    ),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    receipt_id: Mapped[int | None] = mapped_column(ForeignKey('purchase_receipts.id'), index=True)
+    invoice_id: Mapped[int | None] = mapped_column(ForeignKey('moysklad_records.id'), index=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey('file_assets.id'), unique=True)
+    request_id: Mapped[str] = mapped_column(String(36), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

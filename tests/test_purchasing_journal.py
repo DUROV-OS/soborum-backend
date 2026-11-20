@@ -151,6 +151,93 @@ def test_journal_filters_totals_and_pagination(db, api, make_user):
     assert client.get('/api/purchasing/orders?sort=unknown').status_code == 422
 
 
+def test_order_document_map_resolves_only_explicit_source_links(db, api, make_user, default_account):
+    from app.moysklad.models import SourceLink, SourceRecord
+    from app.purchasing.models import PurchaseReceipt
+    from uuid import uuid4
+
+    client, _, _, material, order = setup(db, api, make_user)
+    order_id = order['id']
+    db.get(SupplierOrder, order_id).source_id = 'map-order'
+    posted = client.post('/api/purchasing/receipts', json=receipt(order, material)).json()
+    db.get(PurchaseReceipt, posted['id']).source_id = 'map-supply'
+    default_account.account_number = '40702810000000006999'
+    movement = client.post(f'/api/purchasing/orders/{order_id}/payments', json={
+        'request_id': str(uuid4()), 'amount': '50', 'account_id': default_account.id,
+    })
+    assert movement.status_code == 201, movement.text
+    movement_id = movement.json()['id']
+
+    def source(kind, identity, payload):
+        row = SourceRecord(entity_type=kind, source_id=identity, title=identity, search_text=identity, payload=payload)
+        db.add(row)
+        return row
+
+    def link(kind, identity):
+        return {'meta': {'type': kind, 'href': f'https://source.example/entity/{kind}/{identity}'}}
+
+    source('purchaseorder', 'map-order', {})
+    invoice = source('invoicein', 'map-invoice', {
+        'purchaseOrder': link('purchaseorder', 'map-order'), 'applicable': True, 'sum': 10000, 'payedSum': 10000,
+        'payments': [link('paymentout', 'map-native'), link('paymentout', 'map-payment')],
+        'positions': {'rows': [{'assortment': {'name': 'Брус'}, 'quantity': 3, 'price': 2000, 'discount': 10, 'vat': 20}]},
+    })
+    supply = source('supply', 'map-supply', {
+        'factureIn': link('facturein', 'map-facture'), 'invoicesIn': [link('invoicein', 'map-invoice')],
+    })
+    supply.state = 'на складе'
+    facture = source('facturein', 'map-facture', {'supplies': [link('supply', 'map-supply')], 'sum': 10000})
+    source('paymentout', 'map-native', {'sum': 5000, 'applicable': True})
+    linked = source('paymentout', 'map-payment', {
+        'operations': [link('invoicein', 'map-invoice')], 'sum': 5000, 'applicable': True,
+        'organizationAccount': {'accountNumber': '40702810000000004155'},
+        'organization': {'name': 'Тестовая организация'},
+    })
+    source('paymentout', 'unrelated', {'operations': [link('invoicein', 'another-order')], 'sum': 5000})
+    db.add(SourceLink(source_key='paymentout/map-native', target_type='money_movements', target_id=movement_id))
+    db.commit()
+
+    response = client.get(f'/api/purchasing/orders/{order_id}/documents')
+    assert response.status_code == 200, response.text
+    docs = response.json()
+    assert docs['invoices'][0]['status'] == 'Оплачен'
+    assert docs['factures'][0]['receipt_ids'] == [posted['id']]
+    assert [row.get('source_record_id') for row in docs['payments']] == [None, linked.id]
+    assert docs['payments'][0]['id'] == movement_id
+    assert docs['payments'][0]['account_label'] == 'Р/с ••6999 · ' + default_account.organization.short_name
+    assert docs['payments'][1]['amount'] == '50.00'
+    assert docs['payments'][1]['account_label'] == 'Р/с ••4155 · Тестовая организация'
+    assert docs['payments'][1]['invoice_ids'] == [docs['invoices'][0]['id']]
+    assert docs['receipts'][0]['status_label'] == 'на складе'
+    assert '40702810000000006999' not in response.text and '40702810000000004155' not in response.text
+
+    invoice_path = f'/api/purchasing/supplier-invoices/{invoice.id}'
+    assert client.get(invoice_path).json()['positions'] == [
+        {'number': 1, 'name': 'Брус', 'quantity': 3, 'unit': None, 'vat': 20, 'price': '20.00', 'amount': '54.00'},
+    ]
+    assert client.get(f'/api/purchasing/supplier-invoices/{facture.id}').status_code == 404
+    expected = {('order', order_id), ('payment', movement_id), ('payment', linked.id), ('facture', facture.id)}
+    invoice_links = client.get(invoice_path + '/documents').json()
+    assert {(row['kind'], row['id']) for row in invoice_links} == expected | {('receipt', posted['id'])}
+    receipt_path = f'/api/purchasing/receipts/{posted["id"]}'
+    receipt_links = client.get(receipt_path + '/documents').json()
+    assert {(row['kind'], row['id']) for row in receipt_links} == expected | {('invoice', invoice.id)}
+
+    upload = {'file': ('proof.pdf', b'%PDF-1.7\nlinked evidence', 'application/pdf')}
+    request_id = {'request_id': str(uuid4())}
+    saved = client.post(invoice_path + '/files', files=upload, data=request_id)
+    assert saved.status_code == 201, saved.text
+    file = saved.json()
+    assert client.get(invoice_path + '/files').json()[0]['key'] == file['key']
+    assert client.post(invoice_path + '/files', files=upload, data=request_id).json() == file
+    assert client.post(receipt_path + '/files', files=upload, data=request_id).status_code == 409
+    assert client.get(receipt_path + '/files').json() == []
+    assert client.get(f'{receipt_path}/files/{file["key"].split("-")[1]}').status_code == 404
+    downloaded = client.get('/api/purchasing' + file['path'])
+    assert downloaded.content == upload['file'][1]
+    assert downloaded.headers['cache-control'] == 'private, no-store'
+
+
 def test_journal_return_credit_and_pending_are_not_paid(db, api, make_user, default_account):
     client, owner, supplier, material, order = setup(db, api, make_user)
     first = client.post('/api/purchasing/receipts', json=receipt(order, material)).json()

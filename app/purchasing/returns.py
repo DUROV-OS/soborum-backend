@@ -268,7 +268,9 @@ def validate_refund(
 
 @router.get("/receipts/{id}")
 def receipt_detail(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
-    return receipt_summary(db, receipt(db, id))
+    from app.purchasing.receipt_register import register_items
+    row = receipt(db, id)
+    return {**register_items(db, [row])[0], **receipt_summary(db, row)}
 
 
 @router.get("/returns")

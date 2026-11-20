@@ -30,6 +30,10 @@ from app.purchasing.receipt_editing import router as receipt_edit_router
 app.include_router(receipt_edit_router)
 from app.purchasing.reconciliation import router as reconciliation_router
 app.include_router(reconciliation_router)
+from app.purchasing.card_details import router as card_details_router
+from app.purchasing.card_files import router as card_files_router
+app.include_router(card_details_router)
+app.include_router(card_files_router)
 view = require_view(Module.ACCOUNTING)
 edit = require_edit(Module.ACCOUNTING)
 
@@ -105,6 +109,7 @@ def order_positions(id: int, db: Session = Depends(get_db), user: User = Depends
 
 @app.get("/orders/{id}/documents")
 def order_documents(id: int, db: Session = Depends(get_db), user: User = Depends(view)):
+    from app.purchasing.document_links import linked_source_documents, payment_account_label
     from app.purchasing.invoices import invoices_by_order
     from app.purchasing.receipt_links import invoice_receipts
     from app.purchasing.models import PurchaseReturn
@@ -118,11 +123,20 @@ def order_documents(id: int, db: Session = Depends(get_db), user: User = Depends
     returns = db.query(PurchaseReturn).filter_by(order_id=id).order_by(PurchaseReturn.occurred_at, PurchaseReturn.id).all()
     return_ids = [r.id for r in returns]
     movements = db.query(MoneyMovement).filter(or_(MoneyMovement.supply_id == id, MoneyMovement.purchase_return_id.in_(return_ids))).order_by(MoneyMovement.created_at, MoneyMovement.id).all()
+    invoices = invoices_by_order(db, [row]).get(id, [])
+    factures, source_payments = linked_source_documents(db, row, docs, invoices, {movement.id for movement in movements})
     return {
-        'invoices': invoices_by_order(db, [row]).get(id, []),
+        'invoices': invoices,
         'receipts': docs,
+        'factures': factures,
         'returns': [{'id': r.id, 'number': r.number, 'receipt_id': r.receipt_id, 'occurred_at': r.occurred_at, 'amount': r.amount, 'currency': r.currency, 'cancelled': r.cancelled} for r in returns],
-        'payments': [{'id': m.id, 'number': m.external_number, 'created_at': m.created_at, 'amount': m.amount, 'currency': m.currency, 'status': m.status.value, 'refund': m.purchase_return_id is not None} for m in movements],
+        'payments': [
+            {'id': m.id, 'number': m.external_number, 'created_at': m.created_at,
+             'date': m.doc_date or m.created_at, 'amount': m.amount, 'currency': m.currency,
+             'status': m.status.value, 'refund': m.purchase_return_id is not None,
+             'account_label': payment_account_label(m.account)}
+            for m in movements
+        ] + source_payments,
         'opening_paid': row.opening_paid,
     }
 
