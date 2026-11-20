@@ -30,6 +30,10 @@ from app.purchasing.receipt_editing import router as receipt_edit_router
 app.include_router(receipt_edit_router)
 from app.purchasing.reconciliation import router as reconciliation_router
 app.include_router(reconciliation_router)
+from app.purchasing.card_details import router as card_details_router
+from app.purchasing.card_files import router as card_files_router
+app.include_router(card_details_router)
+app.include_router(card_files_router)
 view = require_view(Module.ACCOUNTING)
 edit = require_edit(Module.ACCOUNTING)
 

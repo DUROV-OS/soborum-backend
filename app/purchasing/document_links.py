@@ -22,15 +22,16 @@ def document_key(value, default_type=''):
     return (str(meta.get('type') or default_type).lower(), identity) if identity else None
 
 
-def linked_source_documents(db, order, receipts, invoices, movement_ids):
+def linked_source_documents(db, order, receipts, invoices, movement_ids, *, include_order=True):
     receipt_ids = {row['source_id']: row['id'] for row in receipts if row['source_id']}
     invoice_ids = {row['id']: row for row in invoices}
-    if not order.source_id and not receipt_ids:
+    order_source = order.source_id if order is not None and include_order else None
+    if not order_source and not receipt_ids and not invoice_ids:
         return [], []
 
     source_keys = {('supply', identity) for identity in receipt_ids}
-    if order.source_id:
-        source_keys.add(('purchaseorder', order.source_id))
+    if order_source:
+        source_keys.add(('purchaseorder', order_source))
     sources = db.query(SourceRecord).filter(
         tuple_(SourceRecord.entity_type, SourceRecord.source_id).in_(source_keys),
     ).all()
@@ -88,7 +89,7 @@ def linked_source_documents(db, order, receipts, invoices, movement_ids):
         raw = row.payload
         currency_id = ref((raw.get('rate') or {}).get('currency'))
         currency = str(currencies.get(currency_id) or raw.get('_currency_code')
-                       or (order.currency if not currency_id else '') or '').upper()
+                       or (order.currency if order and not currency_id else '') or '').upper()
         total = amount(raw, 'sum')
         return {'number': raw.get('name') or row.title, 'date': raw.get('moment'),
                 'amount': str(total) if total is not None else None,
