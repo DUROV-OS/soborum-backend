@@ -1,14 +1,14 @@
 from datetime import date
 from fastapi import FastAPI, Depends, Query, Request
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.core.deps import require_view, require_edit, require_full
-from app.common.module_access import Module
+from app.common.module_access import AccessLevel, Module
 from app.db.session import get_db
 from app.users.models import User, UserRole
-from app.crm import service
+from app.crm import live_inquiries, service
 from app.crm.models import CRMEntity
 from app.crm.schemas import Entry, Patch, Note
 from app.crm import chat_links
@@ -198,6 +198,24 @@ def catalog(db: Session = Depends(get_db), user: User = Depends(view)):
             for kind in ["deal", "contact", "company", "task", "inquiry"]
         },
     }
+
+
+@app.get("/inquiries/live")
+async def website_inquiry_changes(
+    request: Request,
+    cursor: str | None = Query(None, pattern=r"^[0-9a-f]{24}$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(view),
+):
+    user_id = user.id
+    can_edit = user.access_level(Module.CLIENTS) >= AccessLevel.EDIT
+    # No auth transaction or pooled connection is held while waiting.
+    db.close()
+    snapshot = await live_inquiries.wait_for_change(request, user_id, can_edit, cursor)
+    headers = {"Cache-Control": "private, no-store"}
+    if snapshot is None:
+        return Response(status_code=204, headers=headers)
+    return JSONResponse(snapshot, headers=headers)
 
 
 @app.get("/entries")
