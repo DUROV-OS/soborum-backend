@@ -5,8 +5,10 @@ from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.clients import intake_auth
+from app.crm.live_inquiries import signal_change
 from app.clients.margin import MarginPreviewInput, margin_preview
 from app.clients import reconcile as client_reconcile
 from app.clients import service as client_service
@@ -112,15 +114,17 @@ async def intake_lead(request: Request, db: Session = Depends(get_db)):
             detail=[{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()],
         )
     client, created, replayed = client_service.intake_lead_with_receipt(db, payload)
+    client_id = client.id
     db.commit()
-    # Уведомление — после commit (notify коммитит сам); сбой уведомления не должен
-    # терять заявку, которая уже сохранена.
-    try:
-        if not replayed:
-            client_service.notify_new_lead(db, client, created)
-    except Exception:  # noqa: BLE001
-        logger.exception("intake: не удалось отправить уведомление о заявке клиента %s", client.id)
-    return LeadIntakeOut(status="created" if created else "duplicate", client_id=client.id)
+    if not replayed:
+        signal_change()
+        # Optional push delivery can perform network I/O. The feed must be
+        # able to wake the sales workspace as soon as the receipt is committed.
+        try:
+            await run_in_threadpool(client_service.notify_new_lead, db, client, created)
+        except Exception:  # noqa: BLE001
+            logger.exception("intake: не удалось отправить уведомление о заявке клиента %s", client_id)
+    return LeadIntakeOut(status="created" if created else "duplicate", client_id=client_id)
 
 
 async def _intake_fields(request: Request) -> dict:
